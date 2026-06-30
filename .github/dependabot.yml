@@ -1,0 +1,21 @@
+# https://github.com/dependabot/dependabot-core — keeps deps and CI actions current
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: "/"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 5
+    groups:
+      dev-tools:
+        patterns:
+          - ruff
+          - pyspellchecker
+          - pre-commit
+          - pip-audit
+          - codespell
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly

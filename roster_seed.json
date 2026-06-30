@@ -1,0 +1,26 @@
+{
+  "description": "Optional demo roster loaded only when the officers table is empty. Edit this file or replace via Officers tab / CSV import — no code changes required.",
+  "officers": [
+    {"name": "Chief Miller", "seniority_rank": 1, "squad": "A", "shift_start": "06:00", "shift_end": "17:00", "pay_rate": 45.0, "job_title": "Chief"},
+    {"name": "Sgt. Anderson", "seniority_rank": 2, "squad": "A", "shift_start": "06:00", "shift_end": "17:00", "pay_rate": 38.0, "job_title": "Sergeant"},
+    {"name": "Off. Thompson", "seniority_rank": 3, "squad": "A", "shift_start": "10:00", "shift_end": "21:00", "pay_rate": 32.0, "job_title": "Officer"},
+    {"name": "Off. Garcia", "seniority_rank": 4, "squad": "A", "shift_start": "10:00", "shift_end": "21:00", "pay_rate": 31.0, "job_title": "Officer"},
+    {"name": "Off. Williams", "seniority_rank": 5, "squad": "A", "shift_start": "15:00", "shift_end": "02:00", "pay_rate": 33.0, "job_title": "Officer"},
+    {"name": "Off. Davis", "seniority_rank": 6, "squad": "A", "shift_start": "15:00", "shift_end": "02:00", "pay_rate": 31.5, "job_title": "Officer"},
+    {"name": "Off. Martinez", "seniority_rank": 7, "squad": "A", "shift_start": "19:00", "shift_end": "06:00", "pay_rate": 34.0, "job_title": "Officer"},
+    {"name": "Off. Robinson", "seniority_rank": 8, "squad": "A", "shift_start": "19:00", "shift_end": "06:00", "pay_rate": 31.0, "job_title": "Officer"},
+    {"name": "Lt. Johnson", "seniority_rank": 9, "squad": "B", "shift_start": "06:00", "shift_end": "17:00", "pay_rate": 40.0, "job_title": "Lieutenant"},
+    {"name": "Sgt. Brown", "seniority_rank": 10, "squad": "B", "shift_start": "06:00", "shift_end": "17:00", "pay_rate": 37.0, "job_title": "Sergeant"},
+    {"name": "Off. Wilson", "seniority_rank": 11, "squad": "B", "shift_start": "10:00", "shift_end": "21:00", "pay_rate": 32.0, "job_title": "Officer"},
+    {"name": "Off. Taylor", "seniority_rank": 12, "squad": "B", "shift_start": "10:00", "shift_end": "21:00", "pay_rate": 30.5, "job_title": "Officer"},
+    {"name": "Off. Moore", "seniority_rank": 13, "squad": "B", "shift_start": "15:00", "shift_end": "02:00", "pay_rate": 33.0, "job_title": "Officer"},
+    {"name": "Off. Clark", "seniority_rank": 14, "squad": "B", "shift_start": "15:00", "shift_end": "02:00", "pay_rate": 31.0, "job_title": "Officer"},
+    {"name": "Off. Lewis", "seniority_rank": 15, "squad": "B", "shift_start": "19:00", "shift_end": "06:00", "pay_rate": 34.5, "job_title": "Officer"},
+    {"name": "Off. Walker", "seniority_rank": 16, "squad": "B", "shift_start": "19:00", "shift_end": "06:00", "pay_rate": 30.0, "job_title": "Officer"}
+  ],
+  "demo_users": [
+    {"username": "admin", "password": "admin", "role": "Administration", "officer_index": 0},
+    {"username": "supervisor", "password": "supervisor", "role": "Supervisor", "officer_index": 1},
+    {"username": "officer", "password": "officer", "role": "Officer", "officer_index": 2}
+  ]
+}

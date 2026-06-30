@@ -1,0 +1,7 @@
+# Optional dev/CI tooling — pip install -r requirements-dev.txt
+# Runtime deps remain in requirements.txt only.
+ruff>=0.9
+pyspellchecker>=0.8
+pre-commit>=4.0
+pip-audit>=2.7
+codespell>=2.3

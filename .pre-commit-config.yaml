@@ -1,0 +1,42 @@
+# https://pre-commit.com — install: pip install pre-commit && pre-commit install
+repos:
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+        exclude: ^(build/|dist/|logs/)
+      - id: end-of-file-fixer
+        exclude: ^(build/|dist/|logs/)
+      - id: check-yaml
+      - id: check-added-large-files
+        args: [--maxkb=2048]
+
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.15.20
+    hooks:
+      - id: ruff
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/codespell-project/codespell
+    rev: v2.4.1
+    hooks:
+      - id: codespell
+        files: ^(docs/.*\.md|SCHEDULING_RULES\.(md|txt)|README\.md|AGENTS\.md)$
+        exclude: ^docs/FULL_PROJECT_CODE\.txt$
+
+  - repo: local
+    hooks:
+      - id: dodgeville-token-scan
+        name: Token scan (large indexable files)
+        entry: python dev.py token-scan --min-kb=80
+        language: system
+        pass_filenames: false
+        always_run: true
+        verbose: true
+      - id: dodgeville-preflight
+        name: Dodgeville preflight (imports + slice-check + audit)
+        entry: python dev.py preflight
+        language: system
+        pass_filenames: false
+        always_run: true

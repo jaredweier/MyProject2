@@ -1,0 +1,32 @@
+Dodgeville PD Scheduler — Evaluation Build
+==========================================
+
+RUN THE APP
+  Double-click: Dodgeville_PD_Scheduler.exe
+
+FIRST LAUNCH
+  - Creates dodgeville_scheduler.db; seeds demo roster from roster_seed.json if present
+  - Creates photos/, logs/, backups/ folders next to the .exe
+  - Edit roster_seed.json next to the .exe to customize names/count before first launch
+
+WHAT TO TEST
+  1. Dashboard — stats, pending requests, quick actions
+  2. Officers — search roster, add/edit officer, upload photo
+  3. Requests — submit day-off, approve/reject
+  4. Gantt Timeline — current 14-day cycle, today highlighted
+  5. Monthly Schedule — squad rotation calendar
+  6. Payroll — add entry, preview calculation, view ledger
+
+SAMPLE WORKFLOW
+  Officers tab → select any officer → Upload Photo (or Import Roster from CSV)
+  Requests tab → submit vacation for an officer on a working day
+  Approve the request → check Gantt for "bumped" / "covering" colors
+  Payroll tab → add 4 hours Overtime Earned → verify ledger
+
+CLI (optional, from project source folder)
+  python cli.py officers list
+  python cli.py requests pending
+
+Reset database: delete dodgeville_scheduler.db and restart the app.
+
+Build date: evaluation package for internal review.

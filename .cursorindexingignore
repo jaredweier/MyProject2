@@ -1,0 +1,24 @@
+# Cursor codebase index exclusions (mirrors .cursorignore — keeps index lean)
+dist/
+build/
+logs/
+exports/
+backups/
+.grok/sessions/
+.grok/skills/
+.grok/rules/
+docs/FULL_PROJECT_CODE.txt
+docs/HANDOFF.md
+docs/PROJECT_README.md
+docs/DEPLOYMENT.md
+docs/USAGE_MINIMIZATION.md
+docs/ZERO_AGENT_USAGE.md
+docs/AGENT_ROUTING.md
+docs/AGENTS_REFERENCE.md
+SCHEDULING_RULES.md
+tests/ui_snapshots/baseline/
+tests/ui_live_test/
+rust/
+*.png
+*.jpg
+*.db

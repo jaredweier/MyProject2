@@ -1,0 +1,261 @@
+================================================================================
+DODGEVILLE PD — SCHEDULING RULES (DRAFT)
+================================================================================
+
+Purpose: Department source of truth for how the scheduler SHOULD behave.
+Status:  Auto-generated from current code. Correct anything that does not
+         match real policy.
+
+When you change a rule here, tell the developer to update the code and add
+a regression test.
+
+
+================================================================================
+1. ROTATION
+================================================================================
+
+Rule                          | Current implementation          | Confirm?
+------------------------------|---------------------------------|----------
+Cycle length                  | 14 days, repeating              | [ ]
+Rotation anchor               | Any date can be chosen = Cycle Day 1        | [ ]
+Dates before anchor           | Rejected for day-off requests   | [ ]
+Squad A works cycle days      | 1, 2, 5, 6, 7, 10, 11           | [ ]
+Squad B works cycle days      | 3, 4, 8, 9, 12, 13, 14          | [ ]
+Officer "working"             | Officer squad matches squad on  | [ ]
+                              | duty that day (rotation only)   |
+
+YOUR NOTES / EXCEPTIONS:
+  (e.g. holidays, training days, modified cycles, command staff schedules)
+
+
+================================================================================
+2. SHIFTS
+================================================================================
+
+Shift#   Start    End      Night shift?
+-----    -----    -----    ------------
+  1      06:00    17:00    No
+  2      10:00    21:00    No
+  3      15:00    02:00    Yes
+  4      19:00    06:00    Yes
+
+- Each officer has a fixed home shift on the roster.
+- CONFIRM: Can officers change shifts mid-cycle? How recorded?
+
+
+================================================================================
+3. DAY-OFF REQUESTS
+================================================================================
+
+WHO MAY REQUEST
+---------------
+Rule                                    | Current        | Confirm?
+----------------------------------------|----------------|----------
+Active officers only                    | Yes            | [ ]
+Must be scheduled WORKING that day      | No            | [ ]
+One open request per officer per date   | No (Pending   | [ ]
+                                        | or Manual Rev) |
+Request types (UI)                      | Vacation, Sick,| [ ]
+                                        | Personal, Comp |
+                                        | Bereavement,   |
+                                        | Training       |
+
+CONFIRM: Should request types be restricted in code (not just UI)? No
+
+
+REQUEST WORKFLOW
+----------------
+  Officer submits  -->  Pending
+         |
+  Supervisor Approve
+         |
+    +----+----+
+    |         |
+  Bump OK?   No --> Pending Manual Review --> Supervisor Approve --> Approved
+    |              (supervisor override; skips auto bump check)
+   Yes
+    |
+  Approved (override + replacement if found)
+
+  Supervisor Reject (from Pending or Manual Review) --> Rejected (final)
+
+STATUS SUMMARY
+--------------
+  Pending                  - Awaiting decision; Approve or Reject
+  Pending Manual Review    - Auto bump failed; Approve (override) or Reject
+  Approved                 - Final; override on file
+  Rejected                 - Final
+
+- Re-approve / re-reject of finished requests: BLOCKED
+- Approve is one transaction: if override fails, request stays Pending
+
+CONFIRM: May supervisor force-approve with NO replacement?
+         (Code currently allows this.)
+
+
+================================================================================
+4. BUMPING (coverage when someone is off)
+================================================================================
+
+REPLACEMENT SELECTION
+---------------------
+  Same squad only                         Yes     [ ]
+  Junior bumps first (higher rank #)        No, disregard seniorty     [ ]
+  Replacement on allowed shift (see table)  Yes     [ ]
+  Already bumped/covering that day        Excluded [ ]
+
+BUMP TABLE (requesting shift -> may bump from shifts)
+-----------------------------------------------------
+  Shift 1 (06:00)  ->  shifts 2
+  Shift 2 (10:00)  ->  shifts 1, 3
+  Shift 3 (15:00)  ->  shifts 2, 4
+  Shift 4 (19:00)  ->  shift 3
+
+CONFIRM: Is this table correct for Dodgeville PD?
+
+
+NIGHT MINIMUM (high-risk nights)
+--------------------------------
+  High-risk nights:     Friday and Saturday only
+  Applies to:           Night shifts only (15:00, 19:00 start)
+  Minimum on shift:     2 officers
+  If below minimum:     Route to Pending Manual Review
+
+  Day shifts on Fri/Sat are NOT subject to night minimum.
+
+
+KNOWN GAPS (not built yet)
+--------------------------
+  [ ] Cascading bump - replacement's own shift may go uncovered
+  [ ] Covered shift not stored - cross-shift coverage may miscount
+
+YOUR POLICY ON CASCADING BUMPS:
+  (e.g. backfill replacement's shift if possible, if not supervisor handles manually)
+
+
+================================================================================
+5. SHIFT SWAPS
+================================================================================
+
+  Both officers working that day          Validated  [ ]
+  No override conflict that day           Validated  [ ]
+  Fri/Sat night minimum                   Same as bumping  [ ]
+  After validation                        Stored as Pending  [ ]
+
+NOT IMPLEMENTED: approve/reject, apply to schedule, UI, notifications
+
+CONFIRM intended behavior when swap approved:
+  exchange for one day only
+
+
+================================================================================
+6. SCHEDULE DISPLAY (Gantt / Monthly)
+================================================================================
+
+  working   - On rotation, squad on duty, not bumped
+  off       - Squad off duty
+  bumped    - Original officer; day off approved
+  covering  - Replacement covering someone else
+
+  Gantt: current 14-day cycle window
+  Monthly: each individual officer on duty and time of shift
+
+
+================================================================================
+7. PAYROLL
+================================================================================
+
+ENTRY TYPES (UI)
+  Overtime Earned, Comp Earned, Comp Taken, Holiday Pay, Holiday Overtime Pay, Holiday Comp Earned, Holiday Overtime Comp Earned
+  Sick Time Used, Bereavement, Training, Unpaid, Float Holiday Taken, Holiday Taken
+
+PAY CALCULATION (current code)
+  Overtime Earned     1.5 x base rate
+  Holiday Pay         2.5 x base rate
+  Holiday Overtime    3.0 x base rate (checkbox)
+  Night differential  hours x (base_rate + night_differential_rate)
+Holiday Comp Earned is base rate of pay and 1.5x hours worked.  Those hours get added to the comp bank
+Holiday Overtime Comp Earned is base rate of pay and 2x hours worked.  Those hours get added to the comp bank
+
+
+CONFIRM correct pay rules:
+  Comp Earned         ________ base rate plus .5x the amount of hours worked and then add those .5x hours into a comp bank___________________
+  Comp Taken          ________base rate and Take the amount of hours and subtract it from the comp bank.___________________
+  Sick Time Used      _________Take the amount of hours and subtract it from the sick time bank.  At the beginning of each real life month, 8 hours of sick time is earned and added to the sick bank__________________
+  Bereavement         ________Base Pay___________________
+  Training            ___________________________
+  Unpaid              ________No Pay___________________
+  Float Holiday Taken __________Base Pay and subtract the amount of hours from the shift from Float Holiday Bank.  3 Float Holidays are earned at the beginning of each real life year and added to the bank.__They are each 8 hours_______________
+Holiday Taken is base pay and subtract the amount of hours from the shift from Holiday bank.  10 Holidays are earned at the beginning of each real life year and added to a Holiday Bank.  They are each 8 hours
+
+================================================================================
+8. NOTIFICATIONS
+================================================================================
+
+NOT IMPLEMENTED (database table only).
+
+CONFIRM who gets notified:
+  Event                    Notify whom?        Channel?
+  Request submitted        ___________         _________
+  Request approved         ___________         _________
+  Request rejected         ___________         _________
+  Assigned as replacement  ___________         _________
+  Shift swap requested     ___________         _________
+
+
+================================================================================
+9. ROSTER & ADMIN
+================================================================================
+
+  Squads                  A or B
+  Seniority               Lower number = more senior
+  Inactive officers       Hidden from active lists; stay in database
+  Photos                  Optional; stored in app photos folder
+  Default pay             $30.00/hr (seed data varies)  Allow this to be edited by supervisors and admin once user roles are defined
+  Night differential rate In database; not editable in UI yet  Allow it to be edited by supervisors and admin once user roles are defined
+
+CONFIRM: roster size, rank structure, command staff on same rotation?  Patrol is on the rotation provided.  Command staff does not need to be on the schedule but can be added manually if I choose to.
+
+
+================================================================================
+10. TEST SCENARIOS (dates use rotation base 2026-06-28)
+================================================================================
+
+  S-01  Squad B requests off 2026-06-28 (Squad A day)     -> Pending
+  S-02  Squad A requests off 2026-06-28                   -> Pending
+  S-03  Approve same request twice                        -> 2nd fails; 1 override
+  S-04  Day shift bump Friday 2026-07-03                  -> Not night-blocked
+  S-05  Night shift approve Friday 2026-07-03 (2 on shift)-> Manual Review
+  S-06  Supervisor approves Manual Review                 -> Approved
+  S-07  Duplicate request during Manual Review            -> Rejected
+  S-08  Date before 2026-06-28                            -> Rejected
+  S-09  Day shift bump 2026-07-05 picks junior same-squad replacement
+
+  S-10  Squad A 06:00 off 2026-07-01 (off-rotation)     -> Auto-Approved, 1 override
+  S-11  Shift swap on 2026-06-28 (both working)          -> Approved, 2 swap overrides
+
+  Run: python dev.py scenarios
+
+
+================================================================================
+11. OPEN BACKLOG (reorder as needed)
+================================================================================
+
+  [ ] Cascading bump / covered-shift modeling
+  [ ] Notifications tab + create on approve/reject
+  [ ] Shift swap UI + approval + schedule effect
+  [ ] Payroll type rules (Comp, Sick, Unpaid, etc.)
+  [ ] PDF export (schedule / payroll)
+  [ ] Logo/branding in app header
+  [ ] In-app database backup
+
+
+================================================================================
+DOCUMENT HISTORY
+================================================================================
+
+  2026-06-29  Initial draft for department review
+
+  Reviewed by: _______________________   Date: ___________
+
+================================================================================

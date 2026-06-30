@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+*.spec.bak
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+env/
+
+# App runtime (local only)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+logs/
+exports/
+backups/
+terminals/
+check_result.log
+
+# PyInstaller / eval
+*.exe
+!Start Scheduler.bat
+
+# IDE / agent session
+.idea/
+.vscode/
+.cursor/
+.grok/sessions/
+*.swp
+*~
+
+# OS
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+# UI diff output (not baselines)
+logs/ui_live_test/**/diff/
+
+# Rust build artifacts
+rust/**/target/
+*.so
+*.pyd
+*.dll
+
+# Secrets
+.env
+.env.*
+*.pem

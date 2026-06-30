@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [master, main, dev]
+  pull_request:
+    branches: [master, main, dev]
+
+jobs:
+  check:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Doctor
+        run: python dev.py doctor
+
+      - name: Dependency audit
+        run: python dev.py deps-audit
+
+      - name: Ruff lint (advisory)
+        run: python dev.py lint
+        continue-on-error: true
+
+      - name: Preflight
+        run: python dev.py preflight
+
+      - name: Full check (tests + audit)
+        run: python dev.py check
+
+      - name: UI smoke (headless)
+        run: python dev.py ui-smoke
+
+      - name: UI static review
+        run: python dev.py ui-review
+        continue-on-error: true
+
+  scenarios:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: python dev.py scenarios

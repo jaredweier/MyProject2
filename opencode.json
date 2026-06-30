@@ -1,0 +1,92 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "instructions": [
+    "Dynamic: logs/agent_pack/latest.md | Stable: docs/AGENT_STABLE.md | outline/symbol before full reads",
+    "Context: ephemeral tool results prune after 2 turns; summarize @6000t → logs/context_window/latest_summary.md",
+    "Output: compact JSON with schema fields only — dev.py --json, batch-process (see structured_output.py)",
+    "Sufficiency: stop gathering when confident; no extra reads unless contradictory or incomplete"
+  ],
+  "small_model": "fast",
+  "compaction": {
+    "auto": true,
+    "prune": true,
+    "reserved": 10000
+  },
+  "attachment": {
+    "image": {
+      "auto_resize": true,
+      "max_width": 2000,
+      "max_height": 2000,
+      "max_base64_bytes": 5242880
+    }
+  },
+  "watcher": {
+    "ignore": [
+      "build/**",
+      "dist/**",
+      "logs/**",
+      "exports/**",
+      "backups/**",
+      "__pycache__/**",
+      "terminals/**",
+      "tests/ui_snapshots/baseline/**",
+      "*.db"
+    ]
+  },
+  "permission": {
+    "bash": "allow",
+    "edit": "allow"
+  },
+  "command": {
+    "cheap-check": {
+      "template": "Run: python dev.py cheap-check. On fail: python dev.py fix-hint. Do not read source files.",
+      "description": "Ultra-fast free gate (~5s)",
+      "subtask": false
+    },
+    "usage-brief": {
+      "template": "Run: python dev.py usage-brief \"$ARGUMENTS\". Read/edit ONLY printed touch_together paths.",
+      "description": "Scoped context (no repo dump)",
+      "subtask": false
+    },
+    "fix-hint": {
+      "template": "Run: python dev.py fix-hint. Report output only — no exploratory reads.",
+      "description": "Free failure diagnosis",
+      "subtask": false
+    },
+    "route-task": {
+      "template": "Run: python dev.py route-task \"$ARGUMENTS\". Follow the printed complexity tier, skill, and model recommendation. Load only the listed skill via @ mention. Any agent/LLM is allowed.",
+      "description": "Route task to best agent/model by complexity",
+      "subtask": false
+    },
+    "check": {
+      "template": "Run: python dev.py preflight && python dev.py check. Report pass/fail.",
+      "description": "Full verification gate",
+      "subtask": false
+    },
+    "ui-observe": {
+      "template": "Run: python dev.py ui-observe --live if vision tier; else without --live. Read observation_brief.md only.",
+      "description": "UI observation (static or live per complexity)",
+      "subtask": false
+    },
+    "lint": {
+      "template": "Run: python dev.py lint. If fixable: python dev.py lint --fix. Report pass/fail.",
+      "description": "Ruff lint gate (free OSS)",
+      "subtask": false
+    },
+    "token-audit": {
+      "template": "Run: python dev.py token-audit --strict. Report score and gaps only.",
+      "description": "Verify token-minimization artifacts",
+      "subtask": false
+    },
+    "agent-pack": {
+      "template": "Run: python dev.py agent-pack \"$ARGUMENTS\". Read ONLY logs/agent_pack/latest.md.",
+      "description": "Minimal pasteable agent context",
+      "subtask": false
+    },
+    "context-window": {
+      "template": "Run: python dev.py context-window status. If >=6000t since summary, run context-window summarize and read logs/context_window/latest_summary.md.",
+      "description": "Context window status / checkpoint",
+      "subtask": false
+    }
+  }
+}
