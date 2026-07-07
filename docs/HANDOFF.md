@@ -21,9 +21,20 @@
 
 **User workflow lately:** iterative live GUI testing — launch app, fix feedback, re-run `dev.py check`, relaunch.
 
+**UI hazard (2026-07-06):** Do **not** bind `<Map>` (or other show/configure events) to `apply_main_window_layout()` in `ui/window_layout.py`. That function toggles `state("normal")` → `state("zoomed")` and steals focus (`focus_force`, `-topmost`); a Map feedback loop froze Windows (rapid popups, Task Manager unusable). Layout runs **once** at login/bootstrap only; `_applied_for` guard in `window_layout.py`. Before `ui-live` / `ui-observe --live`, confirm the guard is still present.
+
 ---
 
 ## Recent session work (2026-07)
+
+### Window layout freeze fix (2026-07-06)
+
+| Change | Purpose |
+|--------|---------|
+| `ui/session_pages.py` | Removed `<Map>` → `apply_main_window_layout` binding (feedback loop) |
+| `ui/window_layout.py` | `_applied_for` set — maximize/focus at most once per root window |
+
+**Recovery if loop returns:** Admin CMD `taskkill /F /IM python.exe`; delete `logs/ui_live_test/.running.lock` if stale. Prefer `python dev.py ui-smoke` (headless) until fixed.
 
 ### Agent tooling, OSS integration, usage minimization (2026-07-06)
 

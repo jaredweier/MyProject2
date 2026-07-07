@@ -4,9 +4,15 @@ import sys
 
 import customtkinter as ctk
 
+_applied_for: set[int] = set()
+
 
 def apply_main_window_layout(root: ctk.CTk) -> None:
-    """Center on screen, maximize, and bring the scheduler to the front."""
+    """Maximize once at startup. Re-entrant Map/configure handlers must not call this."""
+    key = id(root)
+    if key in _applied_for:
+        return
+    _applied_for.add(key)
     try:
         root.update_idletasks()
         screen_w = root.winfo_screenwidth()
@@ -26,4 +32,4 @@ def apply_main_window_layout(root: ctk.CTk) -> None:
         root.attributes("-topmost", True)
         root.after(250, lambda: root.attributes("-topmost", False))
     except Exception:
-        pass
+        _applied_for.discard(key)

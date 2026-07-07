@@ -51,10 +51,6 @@ class SessionPageMixin:
             return
         self._show_login()
         self.root.after(50, lambda: apply_main_window_layout(self.root))
-        self.root.bind(
-            "<Map>",
-            lambda e: self.root.after(80, lambda: apply_main_window_layout(self.root)),
-        )
 
     def _try_dev_auto_login(self) -> bool:
         from logic import authenticate_user, list_all_users
