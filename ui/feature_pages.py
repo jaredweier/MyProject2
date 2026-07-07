@@ -5,7 +5,8 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from config import DATE_INPUT_HINT, SHIFT_TIMES
+from config import DATE_INPUT_HINT
+from logic.staffing_config import get_active_shift_times
 from logic import (
     add_holiday,
     add_officer_availability,
@@ -346,7 +347,7 @@ class ReportsPageMixin:
                     banner.bind("<Button-1>", lambda e: self.show_page("availability"))
                     banner.configure(cursor="hand2")
                 elif "staffing gap" in msg.lower() or "coverage" in msg.lower():
-                    banner.bind("<Button-1>", lambda e: self.show_page("updated_schedule"))
+                    banner.bind("<Button-1>", lambda e: self.show_page("live_schedule"))
                     banner.configure(cursor="hand2")
         else:
             AlertBanner(
@@ -447,6 +448,8 @@ class ReportsPageMixin:
             self._build_budget_setting_card()
 
         if self.can("settings.manage"):
+            self._build_rotation_settings_card()
+            self._build_staffing_settings_card()
             self._build_department_settings_card()
 
         report_year, report_month = today.year, today.month
@@ -578,6 +581,287 @@ class ReportsPageMixin:
             self.set_status("Pay stub PDF exported")
         else:
             messagebox.showerror("Export Failed", result.get("message"))
+
+    def _build_rotation_settings_card(self):
+        from config import ROTATION_PRESETS
+        from logic import get_cycle_day, get_squad_on_duty
+        from logic.rotation_config import (
+            get_active_rotation_base_date,
+            get_active_rotation_cycle_length,
+            get_active_rotation_preset_name,
+            get_preset_cycle_length,
+            get_rotation_config,
+            save_rotation_settings,
+        )
+        from ui.helpers import refresh_after_rotation_change
+        from validators import format_date, parse_date
+
+        card = Card(self.reports_scroll)
+        card.pack(fill="x", pady=6)
+        SectionHeader(
+            card.body,
+            "Rotation Schedule",
+            "Cycle length, preset, and base date — applies department-wide immediately",
+        ).pack(fill="x", padx=CARD_PAD, pady=(CARD_PAD, 6))
+
+        form = ctk.CTkFrame(card.body, fg_color="transparent")
+        form.pack(fill="x", padx=CARD_PAD, pady=(0, CARD_PAD))
+
+        preset_row = ctk.CTkFrame(form, fg_color="transparent")
+        preset_row.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(preset_row, text="Preset", font=font("small"), text_color=UI_TEXT_MUTED, width=120, anchor="w").pack(
+            side="left"
+        )
+        self._rotation_preset_var = ctk.StringVar(value=get_active_rotation_preset_name())
+        preset_menu = ctk.CTkOptionMenu(
+            preset_row,
+            variable=self._rotation_preset_var,
+            values=list(ROTATION_PRESETS.keys()),
+            width=280,
+        )
+        preset_menu.pack(side="left", fill="x", expand=True)
+
+        cycle_row = ctk.CTkFrame(form, fg_color="transparent")
+        cycle_row.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(
+            cycle_row, text="Cycle length (days)", font=font("small"), text_color=UI_TEXT_MUTED, width=120, anchor="w"
+        ).pack(side="left")
+        self._rotation_cycle_entry = ctk.CTkEntry(cycle_row, height=36, width=80)
+        self._rotation_cycle_entry.insert(0, str(get_active_rotation_cycle_length()))
+        self._rotation_cycle_entry.pack(side="left")
+
+        base_row = ctk.CTkFrame(form, fg_color="transparent")
+        base_row.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(
+            base_row, text=f"Base date ({DATE_INPUT_HINT})", font=font("small"), text_color=UI_TEXT_MUTED, width=120, anchor="w"
+        ).pack(side="left")
+        self._rotation_base_entry = ctk.CTkEntry(base_row, height=36, width=140)
+        self._rotation_base_entry.insert(0, format_date(get_active_rotation_base_date()))
+        self._rotation_base_entry.pack(side="left")
+
+        squad_row = ctk.CTkFrame(form, fg_color="transparent")
+        squad_row.pack(fill="x", pady=(0, 8))
+        ctk.CTkLabel(
+            squad_row,
+            text="Squad A days (optional)",
+            font=font("small"),
+            text_color=UI_TEXT_MUTED,
+            width=120,
+            anchor="w",
+        ).pack(side="left")
+        self._rotation_squad_a_entry = ctk.CTkEntry(
+            squad_row,
+            height=36,
+            placeholder_text="e.g. 1,2,5,6,7,10,11 — blank uses preset",
+        )
+        squad_raw = get_department_setting("rotation_squad_a_days", "").strip()
+        if squad_raw:
+            try:
+                import json
+
+                days = json.loads(squad_raw)
+                if isinstance(days, list):
+                    self._rotation_squad_a_entry.insert(0, ",".join(str(d) for d in days))
+            except (json.JSONDecodeError, TypeError, ValueError):
+                self._rotation_squad_a_entry.insert(0, squad_raw)
+        self._rotation_squad_a_entry.pack(side="left", fill="x", expand=True)
+
+        self._rotation_preview_label = ctk.CTkLabel(
+            form,
+            text="",
+            font=font("small"),
+            text_color=UI_TEXT_MUTED,
+            anchor="w",
+        )
+        self._rotation_preview_label.pack(fill="x", pady=(0, 8))
+
+        def _update_rotation_preview():
+            try:
+                cycle_len = int(self._rotation_cycle_entry.get().strip())
+                today = date.today()
+                cycle_day = get_cycle_day(today)
+                squad = get_squad_on_duty(cycle_day)
+                win_start, win_end = get_current_cycle_window(today)
+                self._rotation_preview_label.configure(
+                    text=(
+                        f"Today: day {cycle_day}/{cycle_len}, Squad {squad} on duty · "
+                        f"Current cycle {format_date(win_start)} – {format_date(win_end)}"
+                    )
+                )
+            except ValueError:
+                self._rotation_preview_label.configure(text="Enter a valid cycle length to preview.")
+
+        def _on_preset_change(*_args):
+            preset = self._rotation_preset_var.get()
+            self._rotation_cycle_entry.delete(0, "end")
+            self._rotation_cycle_entry.insert(0, str(get_preset_cycle_length(preset)))
+            _update_rotation_preview()
+
+        self._rotation_preset_var.trace_add("write", _on_preset_change)
+        self._rotation_cycle_entry.bind("<KeyRelease>", lambda _e: _update_rotation_preview())
+        _update_rotation_preview()
+
+        def save_rotation():
+            uid = self.current_user.get("id") if self.current_user else None
+            try:
+                cycle_len = int(self._rotation_cycle_entry.get().strip())
+            except ValueError:
+                messagebox.showerror("Error", "Enter a valid cycle length (7–28)")
+                return
+            result = save_rotation_settings(
+                cycle_length=cycle_len,
+                preset=self._rotation_preset_var.get().strip(),
+                base_date_text=self._rotation_base_entry.get().strip(),
+                squad_a_days_text=self._rotation_squad_a_entry.get().strip(),
+                user_id=uid,
+            )
+            if not result.get("success"):
+                messagebox.showerror("Error", result.get("message", "Failed to save rotation"))
+                return
+            _update_rotation_preview()
+            refresh_after_rotation_change(self)
+            self.set_status(result.get("message", "Rotation saved"))
+
+        ctk.CTkButton(
+            form,
+            text="Save Rotation",
+            height=38,
+            fg_color=DODGEVILLE_ACCENT,
+            command=save_rotation,
+        ).pack(anchor="w")
+
+    def _build_staffing_settings_card(self):
+        from logic import get_officers_by_seniority
+        from logic.staffing_config import (
+            get_active_annual_hours_target,
+            get_active_shift_count,
+            get_active_shift_length_hours,
+            get_active_shift_starts,
+            get_staffing_config,
+            get_target_officer_count,
+            save_staffing_settings,
+        )
+        from ui.helpers import refresh_after_staffing_change
+
+        card = Card(self.reports_scroll)
+        card.pack(fill="x", pady=6)
+        SectionHeader(
+            card.body,
+            "Shifts & Staffing",
+            "Shift length, annual hours, shift bands, and roster target — applies department-wide",
+        ).pack(fill="x", padx=CARD_PAD, pady=(CARD_PAD, 6))
+
+        form = ctk.CTkFrame(card.body, fg_color="transparent")
+        form.pack(fill="x", padx=CARD_PAD, pady=(0, CARD_PAD))
+        label_w = 150
+
+        def _labeled_row(parent, label, widget_factory):
+            row = ctk.CTkFrame(parent, fg_color="transparent")
+            row.pack(fill="x", pady=(0, 8))
+            ctk.CTkLabel(row, text=label, font=font("small"), text_color=UI_TEXT_MUTED, width=label_w, anchor="w").pack(
+                side="left"
+            )
+            widget = widget_factory(row)
+            widget.pack(side="left", fill="x", expand=True)
+            return widget
+
+        self._staff_shift_length_entry = _labeled_row(
+            form,
+            "Shift length (hours)",
+            lambda p: ctk.CTkEntry(p, height=36, width=80),
+        )
+        self._staff_shift_length_entry.insert(0, str(get_active_shift_length_hours()))
+
+        self._staff_annual_hours_entry = _labeled_row(
+            form,
+            "Annual hours target",
+            lambda p: ctk.CTkEntry(p, height=36, width=100),
+        )
+        self._staff_annual_hours_entry.insert(0, str(int(get_active_annual_hours_target())))
+
+        self._staff_shift_count_entry = _labeled_row(
+            form,
+            "Number of shifts",
+            lambda p: ctk.CTkEntry(p, height=36, width=80),
+        )
+        self._staff_shift_count_entry.insert(0, str(get_active_shift_count()))
+
+        self._staff_target_officers_entry = _labeled_row(
+            form,
+            "Target officer count",
+            lambda p: ctk.CTkEntry(p, height=36, width=80),
+        )
+        self._staff_target_officers_entry.insert(0, str(get_target_officer_count()))
+
+        self._staff_shift_starts_entry = _labeled_row(
+            form,
+            "Shift start times",
+            lambda p: ctk.CTkEntry(p, height=36, placeholder_text="06:00, 10:00, 15:00, 19:00"),
+        )
+        self._staff_shift_starts_entry.insert(0, ", ".join(get_active_shift_starts()))
+
+        active_count = len([o for o in get_officers_by_seniority() if o.get("active") == 1])
+        self._staff_preview_label = ctk.CTkLabel(
+            form,
+            text="",
+            font=font("small"),
+            text_color=UI_TEXT_MUTED,
+            anchor="w",
+            wraplength=520,
+        )
+        self._staff_preview_label.pack(fill="x", pady=(0, 8))
+
+        def _update_staffing_preview():
+            try:
+                cfg = get_staffing_config()
+                bands = ", ".join(f"{b['start']}–{b['end']}" for b in cfg["shift_times"])
+                bump_lines = [
+                    f"{start} ← {', '.join(allowed) if allowed else '—'}"
+                    for start, allowed in cfg.get("bump_rules_by_start", {}).items()
+                ]
+                bump_text = " · ".join(bump_lines[:4])
+                if len(bump_lines) > 4:
+                    bump_text += " …"
+                self._staff_preview_label.configure(
+                    text=(
+                        f"Active roster: {active_count} officers · Target: {cfg['target_officer_count']} · "
+                        f"{cfg['shift_count']} bands ({bands})"
+                        + (f" · Bump adjacency: {bump_text}" if bump_text else "")
+                    )
+                )
+            except Exception:
+                self._staff_preview_label.configure(text="Enter valid staffing values to preview.")
+
+        _update_staffing_preview()
+
+        def save_staffing():
+            uid = self.current_user.get("id") if self.current_user else None
+            try:
+                result = save_staffing_settings(
+                    shift_length_hours=float(self._staff_shift_length_entry.get().strip()),
+                    annual_hours_target=float(self._staff_annual_hours_entry.get().strip()),
+                    shift_count=int(self._staff_shift_count_entry.get().strip()),
+                    target_officer_count=int(self._staff_target_officers_entry.get().strip()),
+                    shift_starts_text=self._staff_shift_starts_entry.get().strip(),
+                    user_id=uid,
+                )
+            except ValueError:
+                messagebox.showerror("Error", "Check numeric fields (shift length, hours, counts).")
+                return
+            if not result.get("success"):
+                messagebox.showerror("Error", result.get("message", "Failed to save staffing"))
+                return
+            _update_staffing_preview()
+            refresh_after_staffing_change(self)
+            self.set_status(result.get("message", "Staffing saved"))
+
+        ctk.CTkButton(
+            form,
+            text="Save Staffing",
+            height=38,
+            fg_color=DODGEVILLE_ACCENT,
+            command=save_staffing,
+        ).pack(anchor="w")
 
     def _build_department_settings_card(self):
         card = Card(self.reports_scroll)
@@ -721,6 +1005,16 @@ class ReportsPageMixin:
                     "department_name",
                     "department_mission",
                     "department_tagline",
+                    "rotation_cycle_length",
+                    "rotation_base_date",
+                    "rotation_preset",
+                    "rotation_squad_a_days",
+                    "shift_length_hours",
+                    "department_annual_hours_target",
+                    "shift_count",
+                    "target_officer_count",
+                    "department_shift_starts",
+                    "department_shift_times",
                 )
             ]
             if lines:
@@ -876,7 +1170,7 @@ class AvailabilityPageMixin:
             os_form.pack(fill="x", padx=CARD_PAD, pady=(0, 6))
             self._open_shift_date = ctk.CTkEntry(os_form, placeholder_text=DATE_INPUT_HINT, height=32, width=110)
             self._open_shift_date.pack(side="left", padx=(0, 4))
-            shift_opts = [f"{s} - {e}" for s, e in SHIFT_TIMES.values()]
+            shift_opts = [f"{s} - {e}" for s, e in get_active_shift_times().values()]
             self._open_shift_var = ctk.StringVar(value=shift_opts[0] if shift_opts else "")
             ctk.CTkOptionMenu(os_form, variable=self._open_shift_var, values=shift_opts, width=140).pack(
                 side="left", padx=4

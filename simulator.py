@@ -91,7 +91,9 @@ def generate_shift_templates(
     use_department_shifts: bool = False,
 ) -> List[Tuple[str, str]]:
     if use_department_shifts:
-        return list(SHIFT_TIMES.values())
+        from logic.staffing_config import get_active_shift_times
+
+        return list(get_active_shift_times().values())
 
     if shift_starts:
         cleaned = [s.strip() for s in shift_starts if s.strip()]
@@ -130,23 +132,40 @@ def _assign_officers(
     num_officers: int,
     shift_templates: List[Tuple[str, str]],
     preset: Dict,
+    roster_officers: Optional[List[Dict]] = None,
 ) -> List[SimulatorOfficerSlot]:
     squads = ["A", "B"] if preset.get("squads", 2) >= 2 else ["A"]
     slots = []
-    for i in range(num_officers):
-        squad = squads[i % len(squads)]
+    roster = (roster_officers or [])[:num_officers]
+    count = len(roster) if roster else num_officers
+    for i in range(count):
         shift_start, shift_end = shift_templates[i % len(shift_templates)]
-        slots.append(
-            SimulatorOfficerSlot(
-                slot_id=i + 1,
-                label=f"Officer {i + 1}",
-                squad=squad,
-                shift_start=shift_start,
-                shift_end=shift_end,
-                projected_annual_hours=0.0,
-                work_days_in_sim=0,
+        if roster:
+            officer = roster[i]
+            slots.append(
+                SimulatorOfficerSlot(
+                    slot_id=officer["id"],
+                    label=officer["name"],
+                    squad=officer.get("squad") or squads[i % len(squads)],
+                    shift_start=shift_start,
+                    shift_end=shift_end,
+                    projected_annual_hours=0.0,
+                    work_days_in_sim=0,
+                )
             )
-        )
+        else:
+            squad = squads[i % len(squads)]
+            slots.append(
+                SimulatorOfficerSlot(
+                    slot_id=i + 1,
+                    label=f"Officer {i + 1}",
+                    squad=squad,
+                    shift_start=shift_start,
+                    shift_end=shift_end,
+                    projected_annual_hours=0.0,
+                    work_days_in_sim=0,
+                )
+            )
     return slots
 
 
@@ -186,7 +205,12 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
     if not shift_templates:
         return SimulatorResult(success=False, message="Could not build shift templates")
 
-    slots = _assign_officers(config.num_officers, shift_templates, preset)
+    roster_officers = None
+    if config.apply_department_rules:
+        from logic import get_officers_by_seniority
+
+        roster_officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
+    slots = _assign_officers(config.num_officers, shift_templates, preset, roster_officers)
     cycle_length = preset["cycle_length"]
     sim_start = date.today()
 
@@ -445,15 +469,22 @@ def _build_suggestions(
 def config_from_current_roster() -> SimulatorConfig:
     """Build simulator defaults from live department configuration."""
     from logic import get_officers_by_seniority
+    from logic.rotation_config import get_active_rotation_preset_name
+    from logic.staffing_config import (
+        get_active_annual_hours_target,
+        get_active_shift_length_hours,
+        get_active_shift_starts,
+        get_target_officer_count,
+    )
 
     officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
-    shift_starts = sorted({o["shift_start"] for o in officers})
+    shift_starts = get_active_shift_starts() or sorted({o["shift_start"] for o in officers})
     return SimulatorConfig(
-        rotation_type="2-2-3 (Dodgeville 14-day)",
+        rotation_type=get_active_rotation_preset_name(),
         num_officers=max(len(officers), 1),
-        shift_length_hours=11.0,
-        annual_hours_target=2080.0,
-        shift_starts=shift_starts or ["06:00", "10:00", "15:00", "19:00"],
+        shift_length_hours=get_active_shift_length_hours(),
+        annual_hours_target=get_active_annual_hours_target(),
+        shift_starts=shift_starts,
         apply_department_rules=True,
         min_per_shift=1,
     )

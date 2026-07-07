@@ -109,7 +109,7 @@ def run_extended_handlers(app, ctx, run_step, *, mutating: bool) -> None:
         refreshers = {
             "dashboard": app._refresh_dashboard,
             "base_schedule": lambda: app.refresh_monthly("base"),
-            "updated_schedule": lambda: app.refresh_monthly("updated"),
+            "live_schedule": lambda: app.refresh_monthly("updated"),
             "timecard": app.refresh_timecard,
             "timeline": app.refresh_gantt,
             "requests": app.refresh_requests,
@@ -197,7 +197,7 @@ def run_extended_handlers(app, ctx, run_step, *, mutating: bool) -> None:
         import customtkinter as ctk
 
         for st in ("base", "updated"):
-            key = "base_schedule" if st == "base" else "updated_schedule"
+            key = "base_schedule" if st == "base" else "live_schedule"
             app.show_page(key)
             page = app.pages[key]
             _invoke_button(page, "Apply")

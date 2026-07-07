@@ -21,7 +21,7 @@ description: >
 1. 14-day rotation; Squad A days 1,2,5,6,7,10,11
 2. Day-off only when officer's squad is on duty that day
 3. Night minimum only for **night** shifts on Fri/Sat
-4. Bump replacements: same squad, allowed shift numbers, junior first (`seniority_rank DESC`)
+4. Bump replacements: same squad, allowed shift numbers (seniority rank not used)
 5. Only `Pending` requests/swaps processed; no duplicate overrides
 6. Manual overrides use `create_manual_coverage_override` + `validate_manual_override`
 

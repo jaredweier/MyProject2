@@ -94,6 +94,9 @@ def open_my_profile_dialog(app: "DodgevilleSchedulerApp") -> None:
             if hours_watch.get("warning_count"):
                 top = hours_watch["warnings"][0]
                 lines.append(f"FLSA hours watch: {top['message']}")
+            labor = insights.get("labor_compliance_top")
+            if labor and labor.get("message"):
+                lines.append(f"Labor compliance: {labor['message']}")
             elif insights.get("overtime_alerts"):
                 hours = insights.get("overtime_alert_top_hours") or 0
                 lines.append(f"Overtime alert: {hours:.1f}h this pay period")
@@ -195,6 +198,6 @@ def open_my_profile_dialog(app: "DodgevilleSchedulerApp") -> None:
             nav_row3,
             text="Current Monthly Schedule",
             fg_color=DODGEVILLE_GOLD,
-            command=lambda: (dlg.destroy(), app.show_page("updated_schedule"), app.refresh_monthly("updated")),
+            command=lambda: (dlg.destroy(), app.show_page("live_schedule"), app.refresh_monthly("updated")),
             **_profile_btn,
         ).pack(side="left", fill="x", expand=True, padx=(4, 0))

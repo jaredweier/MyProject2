@@ -49,6 +49,12 @@ def get_hours_watch(
     return _watch(period_start=period_start, officer_id=officer_id)
 
 
+def get_labor_compliance_report(officer_id: Optional[int] = None) -> Dict:
+    from logic.labor_compliance import get_labor_compliance_report as _report
+
+    return _report(officer_id=officer_id)
+
+
 def get_equitable_ot_ledger(period_start: Optional[date] = None) -> Dict:
     from analytics import get_equitable_ot_ledger as _ledger
 

@@ -4,7 +4,13 @@ from tkinter import filedialog, messagebox
 
 import customtkinter as ctk
 
-from config import DEFAULT_ANNUAL_HOURS, SIMULATOR_ROTATION_TYPES
+from config import SIMULATOR_ROTATION_TYPES
+from logic.staffing_config import (
+    get_active_annual_hours_target,
+    get_active_shift_length_hours,
+    get_active_shift_starts,
+    get_target_officer_count,
+)
 from logic import (
     export_simulation_csv,
     get_simulator_defaults_from_roster,
@@ -47,27 +53,30 @@ class SimulatorPageMixin:
         self.sim_officers = FormField(
             form, "Number of Officers", lambda p: ctk.CTkSlider(p, from_=4, to=40, number_of_steps=36)
         ).widget
-        self.sim_officers.set(16)
-        self.sim_officers_label = ctk.CTkLabel(form, text="Officers: 16", font=font("small"), text_color=UI_TEXT_MUTED)
+        target_officers = get_target_officer_count()
+        self.sim_officers.set(target_officers)
+        self.sim_officers_label = ctk.CTkLabel(
+            form, text=f"Officers: {target_officers}", font=font("small"), text_color=UI_TEXT_MUTED
+        )
         self.sim_officers_label.pack(anchor="w", pady=(0, 8))
         self.sim_officers.configure(command=lambda v: self.sim_officers_label.configure(text=f"Officers: {int(v)}"))
 
         self.sim_shift_length = FormField(
             form, "Shift Length (hours)", lambda p: ctk.CTkEntry(p, height=36, placeholder_text="11")
         ).widget
-        self.sim_shift_length.insert(0, "11")
+        self.sim_shift_length.insert(0, str(get_active_shift_length_hours()))
 
         self.sim_annual_hours = FormField(
             form, "Annual Hours Target (per officer)", lambda p: ctk.CTkEntry(p, height=36, placeholder_text="2080")
         ).widget
-        self.sim_annual_hours.insert(0, str(int(DEFAULT_ANNUAL_HOURS)))
+        self.sim_annual_hours.insert(0, str(int(get_active_annual_hours_target())))
 
         self.sim_shift_starts = FormField(
             form,
             "Shift Start Times (comma separated)",
             lambda p: ctk.CTkEntry(p, height=36, placeholder_text="06:00, 10:00, 15:00, 19:00"),
         ).widget
-        self.sim_shift_starts.insert(0, "06:00, 10:00, 15:00, 19:00")
+        self.sim_shift_starts.insert(0, ", ".join(get_active_shift_starts()))
 
         self.sim_min_shift = FormField(
             form, "Minimum Officers per Shift", lambda p: ctk.CTkEntry(p, height=36, placeholder_text="1")
@@ -76,7 +85,7 @@ class SimulatorPageMixin:
 
         self.sim_use_rules = ctk.CTkCheckBox(
             form,
-            text="Apply Dodgeville PD rules (14 day rotation, night minimum Fri/Sat, department shifts)",
+            text="Apply department rules (rotation, night minimum Fri/Sat, roster officers on any shift band)",
             font=font("body"),
         )
         self.sim_use_rules.select()

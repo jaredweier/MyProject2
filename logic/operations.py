@@ -59,12 +59,14 @@ def set_department_setting(key: str, value: str, user_id: Optional[int] = None) 
 
 def get_position_pay_rates() -> Dict:
     """Return compensation config keyed by roster title."""
-    from config import (
-        DEFAULT_POSITION_PAY_RATES,
-        OFFICER_TITLE_OPTIONS,
-        POSITION_PAY_SETTINGS_KEY,
+    from config import DEFAULT_POSITION_PAY_RATES, OFFICER_TITLE_OPTIONS, POSITION_PAY_SETTINGS_KEY
+    from logic.roster_titles import get_officer_title_options
+    from logic.payroll import count_pay_periods_in_year, monthly_pay_to_per_pay_period
+    from validators import (
+        default_annual_hours_for_title,
+        position_amount_to_hourly,
+        position_amount_to_monthly,
     )
-    from validators import position_amount_to_hourly
 
     raw = get_department_setting(POSITION_PAY_SETTINGS_KEY, "")
     stored: Dict = {}
@@ -75,33 +77,70 @@ def get_position_pay_rates() -> Dict:
             stored = {}
 
     rates = {}
-    for title in OFFICER_TITLE_OPTIONS:
-        entry = dict(DEFAULT_POSITION_PAY_RATES.get(title, {}))
+    for title in get_officer_title_options():
+        entry = dict(
+            DEFAULT_POSITION_PAY_RATES.get(
+                title,
+                {"amount": 0.0, "pay_basis": "hourly", "is_salary": False},
+            )
+        )
         entry.update(stored.get(title) or {})
         entry["title"] = title
-        entry["pay_basis"] = entry.get("pay_basis") or "hourly"
+        from validators import default_pay_basis_for_title
+
+        entry["pay_basis"] = entry.get("pay_basis") or default_pay_basis_for_title(title)
         entry["amount"] = float(entry.get("amount") or 0)
         entry["is_salary"] = bool(entry.get("is_salary"))
+        try:
+            entry["annual_hours"] = float(
+                entry.get("annual_hours") or default_annual_hours_for_title(title)
+            )
+        except (TypeError, ValueError):
+            entry["annual_hours"] = default_annual_hours_for_title(title)
+        entry["monthly_equivalent"] = position_amount_to_monthly(
+            entry["amount"],
+            entry["pay_basis"],
+            entry["annual_hours"],
+        )
         entry["hourly_equivalent"] = position_amount_to_hourly(
             entry["amount"],
             entry["pay_basis"],
+            entry["annual_hours"],
         )
+        entry["annual_salary"] = round(entry["monthly_equivalent"] * 12, 2)
+        entry["per_pay_period_amount"] = monthly_pay_to_per_pay_period(entry["monthly_equivalent"])
         rates[title] = entry
-    return {"success": True, "rates": rates}
+    return {
+        "success": True,
+        "rates": rates,
+        "pay_periods_per_year": count_pay_periods_in_year(),
+        "default_annual_hours": default_annual_hours_for_title(None),
+        "salary_annual_hours": default_annual_hours_for_title("Chief"),
+    }
 
 
 def save_position_pay_rates(rates: Dict, user_id: Optional[int] = None) -> Dict:
     """Persist position compensation (amount, basis, salary flag per title)."""
     from config import OFFICER_TITLE_OPTIONS, POSITION_PAY_SETTINGS_KEY
+    from logic.roster_titles import get_officer_title_options
+    from logic.payroll import monthly_pay_to_per_pay_period
     from validators import (
+        default_annual_hours_for_title,
         normalize_position_pay_basis,
         position_amount_to_hourly,
+        position_amount_to_monthly,
         validate_position_pay_entry,
     )
 
     existing = get_position_pay_rates().get("rates") or {}
-    payload = {}
-    for title in OFFICER_TITLE_OPTIONS:
+    stored_raw = get_department_setting(POSITION_PAY_SETTINGS_KEY, "")
+    try:
+        prior_payload = json.loads(stored_raw) if stored_raw else {}
+    except json.JSONDecodeError:
+        prior_payload = {}
+
+    payload = dict(prior_payload)
+    for title in get_officer_title_options():
         entry = dict(existing.get(title) or {})
         if title in rates:
             entry.update(rates[title] or {})
@@ -111,14 +150,32 @@ def save_position_pay_rates(rates: Dict, user_id: Optional[int] = None) -> Dict:
             return {"success": False, "message": f"{title}: amount must be numeric"}
         pay_basis = normalize_position_pay_basis(entry.get("pay_basis"))
         is_salary = bool(entry.get("is_salary"))
-        validation = validate_position_pay_entry(title, amount, pay_basis, is_salary)
+        try:
+            annual_hours = float(
+                entry.get("annual_hours") or default_annual_hours_for_title(title)
+            )
+        except (TypeError, ValueError):
+            return {"success": False, "message": f"{title}: annual hours must be numeric"}
+        if amount <= 0:
+            if title in OFFICER_TITLE_OPTIONS:
+                return {"success": False, "message": f"{title}: amount must be greater than zero"}
+            payload.pop(title, None)
+            continue
+        validation = validate_position_pay_entry(
+            title, amount, pay_basis, is_salary, annual_hours=annual_hours
+        )
         if not validation.ok:
             return {"success": False, "message": validation.message}
+        monthly = position_amount_to_monthly(amount, pay_basis, annual_hours)
         payload[title] = {
             "amount": round(amount, 2),
             "pay_basis": pay_basis,
             "is_salary": is_salary,
-            "hourly_equivalent": position_amount_to_hourly(amount, pay_basis),
+            "annual_hours": round(annual_hours, 1),
+            "monthly_equivalent": monthly,
+            "hourly_equivalent": position_amount_to_hourly(amount, pay_basis, annual_hours),
+            "annual_salary": round(monthly * 12, 2),
+            "per_pay_period_amount": monthly_pay_to_per_pay_period(monthly),
         }
 
     result = set_department_setting(
@@ -145,11 +202,16 @@ def apply_position_pay_rates_to_roster(user_id: Optional[int] = None) -> Dict:
         if not title or title not in rates:
             skipped += 1
             continue
-        hourly = rates[title].get("hourly_equivalent") or 0
+        config = rates[title]
+        hourly = config.get("hourly_equivalent") or 0
         if hourly <= 0:
             skipped += 1
             continue
-        result = update_officer(officer["id"], pay_rate=hourly)
+        annual_hours = config.get("annual_hours")
+        update_kwargs = {"pay_rate": hourly}
+        if annual_hours:
+            update_kwargs["annual_hours_target"] = float(annual_hours)
+        result = update_officer(officer["id"], **update_kwargs)
         if result.get("success"):
             updated += 1
         else:

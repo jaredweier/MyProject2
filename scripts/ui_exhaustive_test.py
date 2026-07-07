@@ -577,8 +577,8 @@ def run_ui_exhaustive(
 
                 _run_step("base_schedule: publish + day + pdf", _base_schedule)
 
-                def _updated_schedule():
-                    app.show_page("updated_schedule")
+                def _live_schedule():
+                    app.show_page("live_schedule")
                     state = app._schedule_pages["updated"]
                     state["month_year"].set(f"{work_day.year}-{work_day.month:02d}")
                     app.refresh_monthly("updated")
@@ -617,7 +617,7 @@ def run_ui_exhaustive(
                     with patch("tkinter.filedialog.asksaveasfilename", return_value=export_pdf):
                         app._export_monthly_pdf("updated")
 
-                _run_step("updated_schedule: sync/diff/coverage/edit", _updated_schedule)
+                _run_step("live_schedule: sync/diff/coverage/edit", _live_schedule)
 
                 def _timecard_periods():
                     app.show_page("timecard")

@@ -14,7 +14,7 @@ Run `python dev.py audit` to verify fix status. Mark fixed items in this file wh
 ## High
 
 - [x] `count_officers_on_shift_on_date` ignores replacements → count replacement_officer_id
-- [x] Bump picks most senior (ASC) → DESC (junior first)
+- [x] Seniority rank not used in bump/cascade (only vacation grant ordering)
 - [x] `get_cycle_day` wrong before `ROTATION_BASE_DATE` → reject via `validate_cycle_date`
 - [x] Approve succeeds when override insert fails → single transaction in `process_day_off_request`
 - [x] Duplicate day-off while manual review pending → `_has_pending_request` includes manual status

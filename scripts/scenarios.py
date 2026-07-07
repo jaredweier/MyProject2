@@ -163,13 +163,13 @@ def _run_all() -> List[ScenarioResult]:
         detail09 = bump09.message or "no replacement"
         if bump09.replacement_name:
             officers = logic.get_officers_by_seniority()
+            from logic.staffing_config import can_officer_cover_shift
+
             eligible = [
                 o
                 for o in officers
-                if o["squad"] == day_officer["squad"]
-                and o["id"] != day_officer["id"]
-                and logic.get_shift_number(o["shift_start"])
-                in __import__("config").BUMP_RULES.get(logic.get_shift_number(day_officer["shift_start"]), ())
+                if o["id"] != day_officer["id"]
+                and can_officer_cover_shift(o["shift_start"], day_officer["shift_start"])
             ]
             eligible_names = {o["name"] for o in eligible}
             s09_ok = bump09.replacement_name in eligible_names

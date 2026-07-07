@@ -80,5 +80,5 @@ Full list: `.grok/rules/cli-reference.md`
 - Officers only request off on days their squad is on duty
 - Night minimum only for night shifts on Fri/Sat
 - Pending-only approval; no duplicate overrides
-- Bump replacements: same squad, allowed shift, junior seniority first
+- Bump replacements: same squad, allowed shift (seniority rank only for vacation grant ordering)
 - `cli.py` must use `logic.add_officer`, not raw SQL

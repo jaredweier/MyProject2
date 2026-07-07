@@ -499,9 +499,20 @@ class AdminPageMixin:
         return result["ok"]
 
     def _prompt_setup_wizard(self):
+        from config import DATE_INPUT_HINT, ROTATION_PRESETS
+        from logic.rotation_config import (
+            get_active_rotation_base_date,
+            get_active_rotation_cycle_length,
+            get_active_rotation_preset_name,
+            get_preset_cycle_length,
+            save_rotation_settings,
+        )
+        from ui.helpers import refresh_after_rotation_change
+        from validators import format_date
+
         dialog = ctk.CTkToplevel(self.root)
         dialog.title("Welcome: Department Setup")
-        dialog.geometry("460x280")
+        dialog.geometry("500x420")
         dialog.configure(fg_color=UI_BG)
         dialog.transient(self.root)
         dialog.grab_set()
@@ -515,24 +526,60 @@ class AdminPageMixin:
         ).pack(padx=CARD_PAD, pady=(CARD_PAD, 4))
         ctk.CTkLabel(
             card,
-            text="Confirm your department name. Rotation rules use the configured base date.",
+            text="Set department name and rotation schedule. Changes apply to scheduling, requests, and payroll.",
             font=font("small"),
             text_color=UI_TEXT_MUTED,
-            wraplength=380,
+            wraplength=420,
         ).pack(padx=CARD_PAD, pady=(0, 12))
 
         from logic import get_department_setting
 
-        name_entry = ctk.CTkEntry(card, height=36)
+        name_entry = ctk.CTkEntry(card, height=36, placeholder_text="Department name")
         name_entry.pack(fill="x", padx=CARD_PAD, pady=4)
         name_entry.insert(0, get_department_setting("department_name", "Dodgeville Police Department"))
 
+        rot_frame = ctk.CTkFrame(card, fg_color="transparent")
+        rot_frame.pack(fill="x", padx=CARD_PAD, pady=(8, 4))
+        preset_var = ctk.StringVar(value=get_active_rotation_preset_name())
+        ctk.CTkOptionMenu(rot_frame, variable=preset_var, values=list(ROTATION_PRESETS.keys()), width=260).pack(
+            side="left", padx=(0, 8)
+        )
+        cycle_entry = ctk.CTkEntry(rot_frame, height=36, width=60)
+        cycle_entry.insert(0, str(get_active_rotation_cycle_length()))
+        cycle_entry.pack(side="left", padx=(0, 8))
+
+        def _sync_preset(*_args):
+            cycle_entry.delete(0, "end")
+            cycle_entry.insert(0, str(get_preset_cycle_length(preset_var.get())))
+
+        preset_var.trace_add("write", _sync_preset)
+
+        base_entry = ctk.CTkEntry(card, height=36, placeholder_text=f"Rotation base date ({DATE_INPUT_HINT})")
+        base_entry.pack(fill="x", padx=CARD_PAD, pady=4)
+        base_entry.insert(0, format_date(get_active_rotation_base_date()))
+
         def finish():
+            uid = self.current_user.get("id")
+            try:
+                cycle_len = int(cycle_entry.get().strip())
+            except ValueError:
+                messagebox.showerror("Setup", "Enter a valid rotation cycle length.", parent=dialog)
+                return
+            rot_result = save_rotation_settings(
+                cycle_length=cycle_len,
+                preset=preset_var.get().strip(),
+                base_date_text=base_entry.get().strip(),
+                user_id=uid,
+            )
+            if not rot_result.get("success"):
+                messagebox.showerror("Setup", rot_result.get("message", "Rotation save failed"), parent=dialog)
+                return
             result = complete_initial_setup(
                 name_entry.get(),
-                actor_user_id=self.current_user.get("id"),
+                actor_user_id=uid,
             )
             if result.get("success"):
+                refresh_after_rotation_change(self)
                 dialog.destroy()
                 self.set_status("Department setup complete")
             else:

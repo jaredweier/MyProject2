@@ -26,7 +26,7 @@ main.py / cli.py
 1. Validate request is `Pending`
 2. Validate officer active and working on `request_date`
 3. `validate_bump_feasibility` (night min only if night shift + high-risk night)
-4. `find_replacement_officer` (junior first, same squad, allowed shifts)
+4. `find_replacement_officer` (same squad, allowed shifts; seniority not used)
 5. Insert `schedule_overrides`, update request status
 6. (TODO) Notify replacement officer
 

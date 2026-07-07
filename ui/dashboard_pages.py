@@ -4,7 +4,7 @@ from datetime import date
 
 import customtkinter as ctk
 
-from config import SHIFT_TIMES
+from logic.staffing_config import get_active_shift_times
 from logic import (
     get_current_cycle_window,
     get_cycle_day,
@@ -40,9 +40,6 @@ from ui.theme import (
 )
 from ui.widgets import AlertBanner, Card, CompactButton, MetricRow, PrimaryButton, SectionHeader, StatCard
 from validators import format_date
-
-_SHIFT_LABELS = [f"{start}–{end}" for start, end in SHIFT_TIMES.values()]
-
 
 class DashboardPageMixin:
     def _dashboard_officer_id(self):
@@ -195,7 +192,7 @@ class DashboardPageMixin:
             badge_style=True,
         )
         self.stat_cards["schedule_diff"].grid(row=1, column=0, sticky="ew", padx=(0, 6), pady=(0, 0))
-        self.stat_cards["schedule_diff"].bind("<Button-1>", lambda e: self.show_page("updated_schedule"))
+        self.stat_cards["schedule_diff"].bind("<Button-1>", lambda e: self.show_page("live_schedule"))
 
         self.stat_cards["open_shifts"] = StatCard(
             stats_row,
@@ -241,7 +238,7 @@ class DashboardPageMixin:
             gap_hdr,
             text="View Schedule",
             width=110,
-            command=lambda: self.show_page("updated_schedule"),
+            command=lambda: self.show_page("live_schedule"),
         ).pack(side="right")
         self._dash_gap_board_list = ctk.CTkScrollableFrame(
             self._dash_gap_board_card.body,
@@ -359,7 +356,7 @@ class DashboardPageMixin:
             ]
             if self.can("schedule.updated.view"):
                 actions.append(
-                    ("Current Monthly", DODGEVILLE_GOLD, lambda: self.show_page("updated_schedule")),
+                    ("Live Schedule", DODGEVILLE_GOLD, lambda: self.show_page("live_schedule")),
                 )
         else:
             actions = [
@@ -368,7 +365,7 @@ class DashboardPageMixin:
             ]
             if self.can("schedule.updated.view"):
                 actions.append(
-                    ("Current Monthly Schedule", DODGEVILLE_GOLD, lambda: self.show_page("updated_schedule")),
+                    ("Live Schedule", DODGEVILLE_GOLD, lambda: self.show_page("live_schedule")),
                 )
             if self.can("reports.view"):
                 actions.append(("Ops Reports", DODGEVILLE_WARNING, lambda: self.show_page("reports")))
@@ -458,7 +455,7 @@ class DashboardPageMixin:
         squad = get_squad_on_duty(get_cycle_day(today))
         coverage = get_shift_coverage_counts_for_range(today, today)
         shift_labels = []
-        for shift_start, shift_end in SHIFT_TIMES.values():
+        for shift_start, shift_end in get_active_shift_times().values():
             count = coverage.get((day_str, squad, shift_start), 0)
             shift_labels.append(f"{shift_start}–{shift_end}: {count}")
         ctk.CTkLabel(
@@ -599,6 +596,31 @@ class DashboardPageMixin:
                         "warning",
                     )
                 )
+        lc_count = insights.get("labor_compliance_count", 0)
+        if lc_count > 0:
+            top_lc = insights.get("labor_compliance_top") or {}
+            if top_lc.get("message"):
+                alerts.append(
+                    (
+                        f"Labor compliance: {top_lc['message']}",
+                        top_lc.get("severity", "warning"),
+                    )
+                )
+            elif insights.get("labor_compliance_critical", 0):
+                alerts.append(
+                    (
+                        f"Labor compliance: {insights['labor_compliance_critical']} critical issue(s) "
+                        "(§207(k), comp cap, or consecutive days).",
+                        "critical",
+                    )
+                )
+            else:
+                alerts.append(
+                    (
+                        f"Labor compliance: {lc_count} officer(s) with FLSA or fatigue warnings.",
+                        "warning",
+                    )
+                )
         elif insights.get("overtime_alerts", 0) > 0:
             top_h = insights.get("overtime_alert_top_hours")
             if top_h is not None:
@@ -653,7 +675,9 @@ class DashboardPageMixin:
         squad = get_squad_on_duty(cycle)
         start, end = get_current_cycle_window(today)
         unread = get_unread_notification_count(officer_id=self._dashboard_officer_id())
-        shift_times = " · ".join(_SHIFT_LABELS)
+        shift_times = " · ".join(
+            f"{start}–{end}" for start, end in get_active_shift_times().values()
+        )
 
         for child in self._dash_ops_metrics_host.winfo_children():
             child.destroy()
