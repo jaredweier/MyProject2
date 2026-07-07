@@ -754,12 +754,12 @@ class RequestsPageMixin:
         messagebox.showinfo("Bulk Approve", result.get("message", "Done"))
         if result.get("failed"):
             messagebox.showwarning("Partial Failures", "\n".join(result["failed"][:5]))
+        from ui.helpers import refresh_after_schedule_change
+
         self.refresh_day_off_request_ledger(force=True)
         self.refresh_requests()
         self.refresh_notifications()
-        self._refresh_dashboard_data()
-        if self.current_page == "dashboard":
-            self._refresh_dashboard()
+        refresh_after_schedule_change(self)
 
     def _bulk_reject_requests(self):
         if not self.can("requests.approve"):
@@ -789,16 +789,13 @@ class RequestsPageMixin:
             messagebox.showinfo("Manual Review", result.message)
         else:
             messagebox.showwarning("Action Failed", result.message)
+        from ui.helpers import refresh_after_schedule_change
+
         self.refresh_day_off_request_ledger(force=True)
         self.refresh_requests()
         self.refresh_notifications()
         self._update_notification_badge()
-        if self.current_page == "dashboard":
-            self._refresh_dashboard()
-        else:
-            self._refresh_dashboard_data()
-        if self.current_page == "timeline":
-            self.refresh_gantt()
+        refresh_after_schedule_change(self)
 
     # ── Shift Swaps ────────────────────────────────────────────────────
     def _build_swaps(self):
@@ -966,10 +963,11 @@ class RequestsPageMixin:
             messagebox.showinfo("Manual Review", result.message)
         else:
             messagebox.showwarning("Action Failed", result.message)
+        from ui.helpers import refresh_after_schedule_change
+
         self.refresh_swaps()
         self.refresh_notifications()
-        if self.current_page == "timeline":
-            self.refresh_gantt()
+        refresh_after_schedule_change(self)
 
     def refresh_swaps(self):
         filt = self.swap_filter.get()

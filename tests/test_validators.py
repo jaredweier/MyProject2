@@ -50,7 +50,8 @@ class TestValidators(unittest.TestCase):
     def test_officer_job_title_options(self):
         self.assertTrue(validate_officer_job_title("Sergeant").ok)
         self.assertTrue(validate_officer_job_title("Investigator").ok)
-        self.assertTrue(validate_officer_job_title("Administrative Assistant").ok)
+        bad_admin = validate_officer_job_title("Administrative Assistant")
+        self.assertFalse(bad_admin.ok)
         self.assertTrue(validate_officer_job_title(None).ok)
         self.assertTrue(validate_officer_job_title("Patrol Officer").ok)
         self.assertEqual(normalize_officer_job_title("Patrol Officer"), "Officer")

@@ -186,24 +186,25 @@ class TestRegressions(unittest.TestCase):
 
     def test_manual_review_approve_and_reject(self):
         with test_database():
+            from unittest.mock import patch
+
             import logic
             from database import get_connection
 
-            officer = get_any_officer("A", "19:00")
-            friday = "2026-07-03"
-            if not logic.is_officer_working_on_day(officer["id"], __import__("datetime").date(2026, 7, 3)):
-                self.skipTest("Night officer not on duty on test Friday")
+            officer = get_any_officer("A", "06:00")
+            work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
 
-            cr = logic.create_day_off_request(officer["id"], friday, "Vacation")
-            self.assertTrue(cr["success"])
+            with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
+                cr = logic.create_day_off_request(officer["id"], work_day, "Vacation")
+                self.assertTrue(cr["success"])
 
-            first = logic.process_day_off_request(cr["request_id"], "approve")
-            self.assertTrue(first.requires_manual)
-            self.assertEqual(first.status, "Pending Manual Review")
+                first = logic.process_day_off_request(cr["request_id"], "approve")
+                self.assertTrue(first.requires_manual)
+                self.assertEqual(first.status, "Pending Manual Review")
 
-            second = logic.process_day_off_request(cr["request_id"], "approve")
-            self.assertTrue(second.success)
-            self.assertEqual(second.status, "Approved")
+                second = logic.process_day_off_request(cr["request_id"], "approve")
+                self.assertTrue(second.success)
+                self.assertEqual(second.status, "Approved")
 
             conn = get_connection()
             c = conn.cursor()
@@ -212,34 +213,34 @@ class TestRegressions(unittest.TestCase):
                 (cr["request_id"],),
             )
             self.assertEqual(c.fetchone()[0], "Approved")
-            # Supervisor may force-approve without a replacement when cascade is blocked.
             self.assertTrue(second.override_created or second.message.startswith("Approved"))
             conn.close()
 
-            cr2 = logic.create_day_off_request(officer["id"], "2026-07-04", "Sick")
-            logic.process_day_off_request(cr2["request_id"], "approve")
-            rejected = logic.process_day_off_request(cr2["request_id"], "reject")
+            second_day = "2026-07-02"
+            with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
+                cr2 = logic.create_day_off_request(officer["id"], second_day, "Sick")
+                pending = logic.process_day_off_request(cr2["request_id"], "approve")
+                self.assertEqual(pending.status, "Pending Manual Review")
+                rejected = logic.process_day_off_request(cr2["request_id"], "reject")
             self.assertTrue(rejected.success)
             self.assertEqual(rejected.status, "Rejected")
 
     def test_scenario_s07_duplicate_blocked_during_manual_review(self):
         with test_database():
+            from unittest.mock import patch
+
             import logic
 
-            officer = get_any_officer("A", "19:00")
-            dup_day = "2026-07-17"
-            if not logic.is_officer_working_on_day(
-                officer["id"],
-                __import__("datetime").date.fromisoformat(dup_day),
-            ):
-                self.skipTest("Night officer not on duty on test date")
+            officer = get_any_officer("A", "06:00")
+            dup_day = working_date_for_squad("A").strftime("%Y-%m-%d")
 
-            cr = logic.create_day_off_request(officer["id"], dup_day, "Vacation")
-            logic.process_day_off_request(cr["request_id"], "approve")
+            with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
+                cr = logic.create_day_off_request(officer["id"], dup_day, "Vacation")
+                logic.process_day_off_request(cr["request_id"], "approve")
 
-            duplicate = logic.create_day_off_request(officer["id"], dup_day, "Personal")
-            self.assertFalse(duplicate["success"])
-            self.assertIn("pending", duplicate.get("message", "").lower())
+                duplicate = logic.create_day_off_request(officer["id"], dup_day, "Personal")
+                self.assertFalse(duplicate["success"])
+                self.assertIn("pending", duplicate.get("message", "").lower())
 
     def test_scenario_s10_cascade_auto_approve_off_rotation(self):
         with test_database():
@@ -288,7 +289,7 @@ class TestRegressions(unittest.TestCase):
     def test_scenario_s09_eligible_replacement_selected(self):
         with test_database():
             import logic
-            from config import BUMP_RULES
+            from logic.staffing_config import can_officer_cover_shift
 
             officer = get_any_officer("A", "06:00")
             result = logic.validate_bump_feasibility(
@@ -301,13 +302,31 @@ class TestRegressions(unittest.TestCase):
             eligible = [
                 o
                 for o in logic.get_officers_by_seniority()
-                if o["squad"] == officer["squad"]
-                and o["id"] != officer["id"]
-                and logic.get_shift_number(o["shift_start"])
-                in BUMP_RULES.get(logic.get_shift_number(officer["shift_start"]), ())
+                if o["id"] != officer["id"]
+                and can_officer_cover_shift(o["shift_start"], officer["shift_start"])
             ]
             eligible_names = {o["name"] for o in eligible}
             self.assertIn(result.replacement_name, eligible_names)
+
+    def test_vacation_pending_sorted_by_seniority_for_granting(self):
+        """Seniority rank applies only to Vacation requests — senior officers first in grant queue."""
+        with test_database():
+            import logic
+
+            senior = get_any_officer("A", "06:00")
+            junior = get_any_officer("A", "10:00")
+            self.assertLess(senior["seniority_rank"], junior["seniority_rank"])
+            day = off_date_for_squad("A").strftime("%Y-%m-%d")
+            logic.create_day_off_request(junior["id"], day, "Vacation")
+            logic.create_day_off_request(senior["id"], day, "Vacation")
+            pending = logic.get_pending_day_off_requests()
+            vacation_ids = [
+                r["officer_id"]
+                for r in pending
+                if r["request_type"] == "Vacation" and r["request_date"] == day
+            ]
+            self.assertEqual(vacation_ids[0], senior["id"])
+            self.assertEqual(vacation_ids[1], junior["id"])
 
     def test_approve_not_committed_when_override_insert_fails(self):
         with test_database():

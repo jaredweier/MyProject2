@@ -13,10 +13,12 @@ from logic.officers import (
     get_request_reviewer_officer_ids,
 )
 from logic.scheduling import (
-    count_officers_on_shift_on_date,
+    get_shift_coverage_counts_for_range,
     is_officer_working_on_day,
     officer_meets_minimum_rest,
+    resolve_officer_shift_band,
     suggest_bump_chain,
+    _rotation_only_status,
 )
 from logic.snapshots import _insert_override_record
 from models import ProcessRequestResult, ProcessSwapResult, SwapValidationResult
@@ -79,7 +81,10 @@ def validate_swap_feasibility(officer1_id: int, officer2_id: int, swap_date: str
             message="Double-booking conflict",
         )
 
-    if not is_officer_working_on_day(officer1_id, req_date) or not is_officer_working_on_day(officer2_id, req_date):
+    if (
+        _rotation_only_status(officer1, req_date) != "working"
+        or _rotation_only_status(officer2, req_date) != "working"
+    ):
         conn.close()
         return SwapValidationResult(
             success=False,
@@ -90,8 +95,10 @@ def validate_swap_feasibility(officer1_id: int, officer2_id: int, swap_date: str
         )
 
     if is_high_risk_night(req_date):
-        c1 = count_officers_on_shift_on_date(req_date, officer1["squad"], officer1["shift_start"])
-        c2 = count_officers_on_shift_on_date(req_date, officer2["squad"], officer2["shift_start"])
+        date_str = req_date.strftime("%Y-%m-%d")
+        coverage = get_shift_coverage_counts_for_range(req_date, req_date)
+        c1 = coverage.get((date_str, officer1["squad"], officer1["shift_start"]), 0)
+        c2 = coverage.get((date_str, officer2["squad"], officer2["shift_start"]), 0)
         night1 = applies_night_minimum(req_date, officer1["shift_start"], is_high_risk_night)
         night2 = applies_night_minimum(req_date, officer2["shift_start"], is_high_risk_night)
         if (night1 and night_minimum_violation(c1)) or (night2 and night_minimum_violation(c2)):
@@ -275,6 +282,9 @@ def process_shift_swap(swap_id: int, action: str = "approve", admin_notes: str =
         )
         conn.commit()
 
+        from logic.snapshots import apply_live_schedule_for_date
+
+        apply_live_schedule_for_date(swap_date, None)
         msg = "Swap approved — shifts exchanged for one day."
         if manual_override:
             msg = "Swap approved (supervisor override) — shifts exchanged for one day."
@@ -539,11 +549,17 @@ def process_day_off_request(
             return ProcessRequestResult(success=False, message=f"Unknown action: {action}")
 
         manual_override = request["status"] == REQUEST_STATUS["pending_manual"]
+        covered_start, _covered_end = resolve_officer_shift_band(
+            request["officer_id"],
+            parse_date(request["request_date"]),
+            home_shift_start=request.get("shift_start"),
+            home_shift_end=request.get("shift_end"),
+        )
         suggestion = suggest_bump_chain(
             request["officer_id"],
             request["request_date"],
             request["squad"],
-            request["shift_start"],
+            covered_start,
         )
         if not manual_override and (not suggestion.success or suggestion.requires_manual):
             cursor.execute(
@@ -585,6 +601,10 @@ def process_day_off_request(
             message = f"Approved (supervisor override). Replacement: {replacement_name}{cascade_note}"
             if suggestion.failure_reason == "minimum_rest":
                 message = f"Approved (minimum rest override). Replacement: {replacement_name}{cascade_note}"
+            elif suggestion.failure_reason == "consecutive_days":
+                message = (
+                    f"Approved (consecutive day override). Replacement: {replacement_name}{cascade_note}"
+                )
         else:
             message = f"Approved. Replacement: {replacement_name}{cascade_note}"
 
@@ -597,6 +617,9 @@ def process_day_off_request(
             (admin_notes, request_id),
         )
         conn.commit()
+        from logic.snapshots import apply_live_schedule_for_date
+
+        apply_live_schedule_for_date(request["request_date"], actor_user_id)
         _notify_day_off_processed(request, officer, "Approved", replacement_id, replacement_name)
         return ProcessRequestResult(
             success=True,
@@ -612,6 +635,23 @@ def process_day_off_request(
         conn.close()
 
 
+def _sort_for_vacation_granting(requests: List[Dict]) -> List[Dict]:
+    """Vacation grants use seniority (lower rank = more senior); other types sort by date."""
+
+    def sort_key(req: Dict):
+        if req.get("request_type") == "Vacation":
+            return (
+                0,
+                req.get("seniority_rank", 9999),
+                req.get("request_date", ""),
+                req.get("created_at", "") or "",
+                req.get("id", 0),
+            )
+        return (1, req.get("request_date", ""), req.get("created_at", "") or "", req.get("id", 0))
+
+    return sorted(requests, key=sort_key)
+
+
 def bulk_approve_auto_ok_requests() -> Dict:
     """Approve pending requests where bump chain resolves automatically."""
     pending = get_pending_day_off_requests()
@@ -623,11 +663,17 @@ def bulk_approve_auto_ok_requests() -> Dict:
         if req["status"] != REQUEST_STATUS["pending"]:
             skipped_manual += 1
             continue
+        covered_start, _covered_end = resolve_officer_shift_band(
+            req["officer_id"],
+            parse_date(req["request_date"]),
+            home_shift_start=req.get("shift_start"),
+            home_shift_end=req.get("shift_end"),
+        )
         suggestion = suggest_bump_chain(
             req["officer_id"],
             req["request_date"],
             req["squad"],
-            req["shift_start"],
+            covered_start,
         )
         if not suggestion.success:
             skipped_manual += 1
@@ -732,7 +778,7 @@ def get_pending_day_off_requests() -> List[Dict]:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT r.*, o.name AS officer_name, o.squad, o.shift_start, o.shift_end
+        SELECT r.*, o.name AS officer_name, o.squad, o.shift_start, o.shift_end, o.seniority_rank
         FROM day_off_requests r
         JOIN officers o ON r.officer_id = o.id
         WHERE r.status IN ('Pending', 'Pending Manual Review')
@@ -740,7 +786,7 @@ def get_pending_day_off_requests() -> List[Dict]:
     """)
     rows = cursor.fetchall()
     conn.close()
-    return [dict(row) for row in rows]
+    return _sort_for_vacation_granting([dict(row) for row in rows])
 
 
 def get_day_off_requests(

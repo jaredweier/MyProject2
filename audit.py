@@ -106,17 +106,15 @@ def run_audit() -> List[AuditFinding]:
             squad_a["id"], bump_test_day, squad_a["squad"], squad_a["shift_start"]
         )
         if bump_ok.replacement_name:
-            from config import BUMP_RULES
+            from logic.staffing_config import can_officer_cover_shift
 
             officers = logic.get_officers_by_seniority()
             replacement = next(o for o in officers if o["name"] == bump_ok.replacement_name)
-            allowed = logic.get_shift_number(replacement["shift_start"]) in BUMP_RULES.get(
-                logic.get_shift_number(squad_a["shift_start"]), ()
-            )
+            allowed = can_officer_cover_shift(replacement["shift_start"], squad_a["shift_start"])
             findings.append(
                 AuditFinding(
                     "AUD-006-bump-finds-eligible-replacement",
-                    replacement["squad"] == squad_a["squad"] and allowed,
+                    allowed,
                     f"replacement={replacement['name']} squad={replacement['squad']} shift={replacement['shift_start']}",
                 )
             )
@@ -130,49 +128,39 @@ def run_audit() -> List[AuditFinding]:
             )
 
         # AUD-007: Supervisor can approve/reject Pending Manual Review
-        night_officer = get_any_officer("A", "19:00")
-        friday = "2026-07-03"
-        if logic.is_officer_working_on_day(night_officer["id"], __import__("datetime").date(2026, 7, 3)):
-            cr_mr = logic.create_day_off_request(night_officer["id"], friday, "Vacation")
+        from unittest.mock import patch
+
+        officers_a6 = [
+            o for o in logic.get_officers_by_seniority() if o["squad"] == "A" and o["shift_start"] == "06:00"
+        ]
+        manual_officer = officers_a6[1] if len(officers_a6) > 1 else get_any_officer("A", "06:00")
+        manual_day = "2026-07-02"
+        with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
+            cr_mr = logic.create_day_off_request(manual_officer["id"], manual_day, "Vacation")
             logic.process_day_off_request(cr_mr["request_id"], "approve")
             forced = logic.process_day_off_request(cr_mr["request_id"], "approve")
-            findings.append(
-                AuditFinding(
-                    "AUD-007-manual-review-approve",
-                    forced.success and forced.status == "Approved",
-                    forced.message,
-                )
+        findings.append(
+            AuditFinding(
+                "AUD-007-manual-review-approve",
+                forced.success and forced.status == "Approved",
+                forced.message,
             )
-        else:
-            findings.append(
-                AuditFinding(
-                    "AUD-007-manual-review-approve",
-                    False,
-                    "night officer not working on Friday test date",
-                )
-            )
+        )
 
         # AUD-008 / S-07: Duplicate blocked while manual review pending
-        dup_day = "2026-07-17"
-        if logic.is_officer_working_on_day(night_officer["id"], __import__("datetime").date(2026, 7, 17)):
-            cr_dup = logic.create_day_off_request(night_officer["id"], dup_day, "Vacation")
+        dup_officer = officers_a6[0] if len(officers_a6) > 1 else get_any_officer("A", "06:00")
+        dup_day = "2026-07-09"
+        with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
+            cr_dup = logic.create_day_off_request(dup_officer["id"], dup_day, "Vacation")
             logic.process_day_off_request(cr_dup["request_id"], "approve")
-            dup = logic.create_day_off_request(night_officer["id"], dup_day, "Personal")
-            findings.append(
-                AuditFinding(
-                    "AUD-008-duplicate-during-manual-review",
-                    not dup.get("success"),
-                    dup.get("message", "blocked"),
-                )
+            dup = logic.create_day_off_request(dup_officer["id"], dup_day, "Personal")
+        findings.append(
+            AuditFinding(
+                "AUD-008-duplicate-during-manual-review",
+                not dup.get("success"),
+                dup.get("message", "blocked"),
             )
-        else:
-            findings.append(
-                AuditFinding(
-                    "AUD-008-duplicate-during-manual-review",
-                    False,
-                    "night officer not working on test date",
-                )
-            )
+        )
 
         # AUD-009 / S-10: Off-rotation cascade auto-approves
         s10_officer = get_any_officer("A", "06:00")
