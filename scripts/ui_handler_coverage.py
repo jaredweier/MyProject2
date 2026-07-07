@@ -83,7 +83,7 @@ def run_ui_handler_coverage() -> int:
     print(f"Named handlers referenced in tests (approx): {covered}/{len(unique)}")
     print("Step list includes role sessions (supervisor/officer) and extended toolbar coverage.")
     print("=" * 60)
-    print("Run: python dev.py ui-exhaustive   (78 steps)")
+    print("Run: python dev.py ui-exhaustive   (81 steps)")
     print("Run: python dev.py ui-live         (visible + screenshots)")
     return 0
 

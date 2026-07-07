@@ -243,6 +243,34 @@ def run_extended_handlers(app, ctx, run_step, *, mutating: bool) -> None:
 
     run_step("payroll: filter + Refresh Period + history Payroll jump", _payroll_toolbar)
 
+    def _payroll_flsa_position_pay():
+        app.show_page("payroll")
+        if hasattr(app, "refresh_flsa_settings"):
+            app.refresh_flsa_settings()
+        if hasattr(app, "refresh_position_pay_rates"):
+            app.refresh_position_pay_rates()
+
+    run_step("payroll: FLSA settings + position pay rates refresh", _payroll_flsa_position_pay)
+
+    def _banked_time_scope():
+        app.show_page("banked_time")
+        app.refresh_banked_time()
+        if hasattr(app, "bt_scope_combo"):
+            for label in app.bt_scope_combo.cget("values")[:3]:
+                app.bt_scope_combo.set(label)
+                app._on_banked_time_scope_change(label)
+        if hasattr(app, "_shift_banked_time_scope"):
+            app._shift_banked_time_scope(-1)
+            app._shift_banked_time_scope(1)
+            app._reset_banked_time_reference()
+        if hasattr(app, "bt_officer_combo") and app.bt_officer_combo:
+            vals = app.bt_officer_combo.cget("values")
+            if len(vals) > 1:
+                app.bt_officer_combo.set(vals[1])
+                app.refresh_banked_time()
+
+    run_step("banked_time: scope nav + officer filter + FLSA card", _banked_time_scope)
+
     def _reports_filters_budget():
         app.show_page("reports")
         if hasattr(app, "_reports_month_year"):
@@ -312,8 +340,23 @@ def run_extended_handlers(app, ctx, run_step, *, mutating: bool) -> None:
         rows = _buttons_in(app.officer_list)
         if rows:
             rows[0].invoke()
+        for combo_name in ("off_job_title", "off_squad", "off_shift"):
+            combo = getattr(app, combo_name, None)
+            if combo is None:
+                continue
+            vals = combo.cget("values")
+            if len(vals) > 1:
+                combo.set(vals[1])
+                if combo_name == "off_job_title" and hasattr(app, "_on_job_title_selected"):
+                    app._on_job_title_selected(vals[1])
+                elif combo_name == "off_squad" and hasattr(app, "_on_squad_selected"):
+                    app._on_squad_selected(vals[1])
+                elif combo_name == "off_shift" and hasattr(app, "_on_shift_selected"):
+                    app._on_shift_selected(vals[1])
+        if hasattr(app, "_refresh_pay_rate_hint"):
+            app._refresh_pay_rate_hint()
 
-    run_step("officers: roster row click load", _officers_roster_row_click)
+    run_step("officers: roster row + assignment combos", _officers_roster_row_click)
 
     if mutating:
 
