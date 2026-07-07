@@ -33,6 +33,7 @@ check_result.log
 .idea/
 .vscode/
 .cursor/
+agent-tools/
 .grok/sessions/
 *.swp
 *~

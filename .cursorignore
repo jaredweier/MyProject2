@@ -4,6 +4,7 @@ logs/
 exports/
 backups/
 terminals/
+agent-tools/
 __pycache__/
 *.db
 *.pyc

@@ -29,8 +29,30 @@ Stop gathering when confident to answer. No extra reads/tools unless info is con
 
 `python dev.py route-task "<task>"` for pick · edit `touch_together` only
 
+## Edit boundaries
+- Business rules → `validators.py` then `logic/*` — never SQL in UI, never duplicate logic in `cli.py`
+- UI → `ui/*_pages.py`; refresh after mutations (`ui/helpers.py`)
+- Slice `touch_together` only; registry: `slices/registry.py`
+- Import: `import logic` (package re-exports)
+
 ## Conventions
 `validators.is_officer_active()` · `validators.parse_date()` · `logic.get_shift_number()` · `PRAGMA foreign_keys=ON` · no SQL in UI · no rules in `cli.py`
+
+## Payroll (stable facts)
+
+| Topic | Rule |
+|-------|------|
+| Pay period | 14 days from `PAY_PERIOD_BASE_DATE` (6 Jul 2026); hours attach to shift-start period |
+| Titles | Built-in: Officer, Sergeant, Investigator, Lieutenant, Chief · custom via `add_custom_officer_title` |
+| Title pay | Monthly default; **Chief, Lieutenant** → yearly (`YEARLY_SALARY_TITLES`) · custom titles hourly/manual |
+| Hourly base | `monthly × 12 ÷ hrs/yr` or `yearly ÷ hrs/yr` → officer `pay_rate` · defaults: 2008 (patrol ranks), **2080** (Chief/Lt) · editable per title on Position Pay Rates |
+| Per-period salary | `annual ÷ count_pay_periods_in_year()` |
+| FLSA §207(k) | Manual work-period **days** + anchor date — **not** pay period, **not** rotation cycle (`logic/labor_compliance.py`) |
+| Banks | Timecard-driven earned/used; tab `banked_time` in payroll hub |
+
+## Scheduling (stable facts)
+
+Rotation/bump/day-off: `logic/scheduling.py`, `validators.py`. Night minimum Fri/Sat only. Known fixes: `.grok/rules/known-issues.md`
 
 ## Env
 `SCHEDULER_SLICE` · `SCHEDULER_AGENT_TASK` · `SCHEDULER_SKIP_AGENT_GATES=1` · `SCHEDULER_SKIP_STARTUP_GATES=1`
