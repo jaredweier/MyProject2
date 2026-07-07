@@ -136,7 +136,18 @@ def cmd_token_audit(args):
 def cmd_token_scan(args):
     from scripts.token_scan import run_token_scan
 
-    return run_token_scan(min_kb=getattr(args, "min_kb", 100))
+    return run_token_scan(min_kb=getattr(args, "min_kb", 100), fix=getattr(args, "fix", False))
+
+
+def cmd_token_minimize(args):
+    from scripts.token_audit import run_token_audit
+    from scripts.token_scan import run_token_scan
+
+    min_kb = getattr(args, "min_kb", 50)
+    do_fix = not getattr(args, "no_fix", False)
+    code = run_token_scan(min_kb=min_kb, fix=do_fix)
+    audit = run_token_audit(strict=getattr(args, "strict", False))
+    return max(code, audit)
 
 
 def cmd_agent_pack(args):
@@ -500,6 +511,18 @@ def main():
         help="Find large files still indexed (not in .cursorignore)",
     )
     token_scan.add_argument("--min-kb", type=int, default=100, help="Min file size KB (default 100)")
+    token_scan.add_argument(
+        "--fix",
+        action="store_true",
+        help="Append large indexable paths to .cursorignore + .cursorindexingignore",
+    )
+    token_min = sub.add_parser(
+        "token-minimize",
+        help="Scan + fix index bloat + audit minimization artifacts (free, no LLM)",
+    )
+    token_min.add_argument("--min-kb", type=int, default=50, help="Scan threshold KB (default 50)")
+    token_min.add_argument("--no-fix", action="store_true", help="Scan only; do not update ignore files")
+    token_min.add_argument("--strict", action="store_true", help="Fail audit on any gap")
     agent_pack = sub.add_parser(
         "agent-pack",
         help="Minimal pasteable context (route + slice + token estimates)",
@@ -707,6 +730,7 @@ def main():
         "deps-audit": cmd_deps_audit,
         "token-audit": cmd_token_audit,
         "token-scan": cmd_token_scan,
+        "token-minimize": cmd_token_minimize,
         "agent-pack": cmd_agent_pack,
         "outline": cmd_outline,
         "symbol": cmd_symbol,

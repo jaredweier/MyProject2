@@ -22,3 +22,9 @@ rust/
 *.png
 *.jpg
 *.db
+# Large source files (token-scan) — outline/symbol instead of full read
+ui/payroll_pages.py
+ui/feature_pages.py
+ui/schedule_pages.py
+logic/payroll.py
+cli.py

@@ -29,7 +29,7 @@ repos:
     hooks:
       - id: dodgeville-token-scan
         name: Token scan (large indexable files)
-        entry: python dev.py token-scan --min-kb=80
+        entry: python dev.py token-scan --min-kb=50
         language: system
         pass_filenames: false
         always_run: true

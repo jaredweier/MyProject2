@@ -232,6 +232,28 @@ def run_token_audit(*, strict: bool = False) -> int:
                 pattern in ignore,
             )
         )
+    for pattern in (
+        "ui/payroll_pages.py",
+        "ui/feature_pages.py",
+        "ui/schedule_pages.py",
+        "logic/payroll.py",
+        "cli.py",
+    ):
+        checks.append(Check(f"cursorignore blocks large file {pattern}", pattern in ignore))
+
+    try:
+        from scripts.token_scan import scan_large_files
+
+        indexed, _ = scan_large_files(min_kb=50, limit=5)
+        checks.append(
+            Check(
+                "token-scan clean at 50KB (no surprise index files)",
+                not indexed,
+                "run: python dev.py token-scan --fix",
+            )
+        )
+    except Exception as exc:
+        checks.append(Check("token-scan clean at 50KB", False, str(exc)))
 
     pack_src = _read("scripts/agent_pack.py")
     checks.append(

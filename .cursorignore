@@ -43,3 +43,10 @@ logo.png
 check_result.log
 *.log
 EVALUATE.txt
+
+# Large source files — use: python dev.py outline <path> | symbol <name> | usage-brief <slice>
+ui/payroll_pages.py
+ui/feature_pages.py
+ui/schedule_pages.py
+logic/payroll.py
+cli.py

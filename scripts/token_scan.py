@@ -20,6 +20,10 @@ SKIP_DIRS = {
     "terminals",
 }
 
+IGNORE_MARKER = "# Large source files"
+IGNORE_HINT = "# Large source files — use: python dev.py outline <path> | symbol <name> | usage-brief <slice>"
+INDEXING_MARKER = "# Large source files (token-scan)"
+
 
 def _load_ignore_patterns() -> List[str]:
     path = os.path.join(ROOT, ".cursorignore")
@@ -57,6 +61,8 @@ def scan_large_files(*, min_kb: int = 100, limit: int = 25) -> Tuple[List[dict],
     for dirpath, dirnames, filenames in os.walk(ROOT):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
         for name in filenames:
+            if not name.endswith((".py", ".md", ".txt", ".json", ".yaml", ".yml")):
+                continue
             full = os.path.join(dirpath, name)
             rel = os.path.relpath(full, ROOT).replace("\\", "/")
             try:
@@ -80,7 +86,55 @@ def scan_large_files(*, min_kb: int = 100, limit: int = 25) -> Tuple[List[dict],
     return indexed_large[:limit], ignored_large[:limit]
 
 
-def run_token_scan(*, min_kb: int = 100) -> int:
+def _append_paths_to_ignore_file(path: str, paths: List[str], *, marker: str, hint: str) -> List[str]:
+    added: List[str] = []
+    if not paths:
+        return added
+
+    existing = ""
+    if os.path.isfile(path):
+        with open(path, encoding="utf-8") as fh:
+            existing = fh.read()
+
+    existing_lines = {line.strip() for line in existing.splitlines()}
+    for rel in paths:
+        if rel in existing_lines:
+            continue
+        added.append(rel)
+
+    if not added:
+        return added
+
+    block = [hint if hint not in existing else marker]
+    if marker not in existing and hint not in existing:
+        block = [hint]
+    block.extend(added)
+
+    with open(path, "a", encoding="utf-8", newline="\n") as fh:
+        if existing and not existing.endswith("\n"):
+            fh.write("\n")
+        fh.write("\n".join(block) + "\n")
+    return added
+
+
+def apply_token_scan_fix(indexed: List[dict]) -> List[str]:
+    paths = [e["path"] for e in indexed]
+    added = _append_paths_to_ignore_file(
+        os.path.join(ROOT, ".cursorignore"),
+        paths,
+        marker=IGNORE_MARKER,
+        hint=IGNORE_HINT,
+    )
+    _append_paths_to_ignore_file(
+        os.path.join(ROOT, ".cursorindexingignore"),
+        paths,
+        marker=INDEXING_MARKER,
+        hint=f"{INDEXING_MARKER} — outline/symbol instead of full read",
+    )
+    return added
+
+
+def run_token_scan(*, min_kb: int = 100, fix: bool = False) -> int:
     os.chdir(ROOT)
     indexed, ignored = scan_large_files(min_kb=min_kb)
 
@@ -100,9 +154,19 @@ def run_token_scan(*, min_kb: int = 100) -> int:
     if len(ignored) > 8:
         print(f"  ... {len(ignored) - 8} more")
 
+    if fix and indexed:
+        added = apply_token_scan_fix(indexed)
+        if added:
+            print(f"\n+ Added {len(added)} path(s) to .cursorignore / .cursorindexingignore")
+            for rel in added:
+                print(f"    {rel}")
+            indexed, _ = scan_large_files(min_kb=min_kb)
+        else:
+            print("\n(fix: paths already listed in ignore files)")
+
     print("\n" + "=" * 60)
     if indexed:
-        print(f"token-scan: {len(indexed)} large indexable file(s) — consider .cursorignore")
+        print(f"token-scan: {len(indexed)} large indexable file(s) — run: python dev.py token-scan --fix")
         return 1
     print("token-scan: no large surprise index files")
     return 0
@@ -112,7 +176,10 @@ if __name__ == "__main__":
     import sys
 
     kb = 100
+    do_fix = False
     for arg in sys.argv[1:]:
         if arg.startswith("--min-kb="):
             kb = int(arg.split("=", 1)[1])
-    raise SystemExit(run_token_scan(min_kb=kb))
+        elif arg == "--fix":
+            do_fix = True
+    raise SystemExit(run_token_scan(min_kb=kb, fix=do_fix))
