@@ -24,6 +24,15 @@ IGNORE_MARKER = "# Large source files"
 IGNORE_HINT = "# Large source files — use: python dev.py outline <path> | symbol <name> | usage-brief <slice>"
 INDEXING_MARKER = "# Large source files (token-scan)"
 
+# Editable source — indexable by design; agents use outline/symbol instead of hiding.
+ALLOWED_LARGE_SOURCE = {
+    "ui/payroll_pages.py",
+    "ui/feature_pages.py",
+    "ui/schedule_pages.py",
+    "logic/payroll.py",
+    "cli.py",
+}
+
 
 def _load_ignore_patterns() -> List[str]:
     path = os.path.join(ROOT, ".cursorignore")
@@ -141,9 +150,17 @@ def run_token_scan(*, min_kb: int = 100, fix: bool = False) -> int:
     print("Dodgeville PD — token scan (index vs cursorignore)")
     print("=" * 60)
     print(f"Threshold: {min_kb} KB+")
+    allowed = [e for e in indexed if e["path"] in ALLOWED_LARGE_SOURCE]
+    surprise = [e for e in indexed if e["path"] not in ALLOWED_LARGE_SOURCE]
+
+    if allowed:
+        print("\n✓ Large editable source (use outline/symbol — not cursorignored):")
+        for e in allowed:
+            print(f"  {e['path']}: {e['kb']} KB (~{e['tokens']:,} tokens)")
+
     print("\n⚠ Still indexable (add to .cursorignore if not needed every turn):")
-    if indexed:
-        for e in indexed:
+    if surprise:
+        for e in surprise:
             print(f"  {e['path']}: {e['kb']} KB (~{e['tokens']:,} tokens)")
     else:
         print("  (none — good)")
@@ -154,8 +171,8 @@ def run_token_scan(*, min_kb: int = 100, fix: bool = False) -> int:
     if len(ignored) > 8:
         print(f"  ... {len(ignored) - 8} more")
 
-    if fix and indexed:
-        added = apply_token_scan_fix(indexed)
+    if fix and surprise:
+        added = apply_token_scan_fix(surprise)
         if added:
             print(f"\n+ Added {len(added)} path(s) to .cursorignore / .cursorindexingignore")
             for rel in added:
@@ -165,8 +182,8 @@ def run_token_scan(*, min_kb: int = 100, fix: bool = False) -> int:
             print("\n(fix: paths already listed in ignore files)")
 
     print("\n" + "=" * 60)
-    if indexed:
-        print(f"token-scan: {len(indexed)} large indexable file(s) — run: python dev.py token-scan --fix")
+    if surprise:
+        print(f"token-scan: {len(surprise)} large indexable file(s) — run: python dev.py token-scan --fix")
         return 1
     print("token-scan: no large surprise index files")
     return 0

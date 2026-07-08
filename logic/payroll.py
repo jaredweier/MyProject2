@@ -1366,7 +1366,7 @@ def copy_timecard_from_previous_period(
 
 
 def get_pay_stub_preview(officer_id: int, period_start: Optional[date] = None) -> Dict:
-    from analytics import get_pay_stub_preview as _stub
+    from logic.analytics import get_pay_stub_preview as _stub
 
     return _stub(officer_id, period_start)
 

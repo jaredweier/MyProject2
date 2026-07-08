@@ -41,8 +41,8 @@ IMPORT_MODULES = [
 # Concrete steps only — tiers expand these lists (no duplicate steps).
 STEP_FAST: List[str] = ["imports", "audit", "readiness"]
 STEP_PREFLIGHT: List[str] = ["imports", "slice-check", "audit", "readiness"]
-STEP_CHECK: List[str] = STEP_PREFLIGHT + ["test", "scenarios"]
-STEP_FULL: List[str] = STEP_CHECK + ["smoke", "ui-smoke"]
+STEP_CHECK: List[str] = STEP_PREFLIGHT + ["rust-backend", "test", "scenarios"]
+STEP_FULL: List[str] = STEP_CHECK + ["smoke", "ui-workflow", "ui-smoke"]
 STEP_RELEASE: List[str] = STEP_FULL + ["ui-exhaustive"]
 
 TIERS: dict[str, List[str]] = {
@@ -120,15 +120,44 @@ def _step_smoke() -> int:
 
 
 def _step_ui_smoke() -> int:
-    from scripts.ui_smoke_test import run_ui_smoke
+    """Subprocess — isolate Tk teardown from later ui-exhaustive in release tier."""
+    result = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "scripts", "ui_smoke_test.py")],
+        cwd=ROOT,
+    )
+    return result.returncode
 
-    return run_ui_smoke()
+
+def _step_rust_backend() -> int:
+    from logic import rust_bridge
+
+    name = rust_bridge.backend_name()
+    if name != "rust":
+        print(f"  [FAIL] scheduling backend is {name!r} — run: python dev.py build-rust")
+        err = rust_bridge.load_error()
+        if err:
+            print(f"  detail: {err}")
+        return 1
+    print(f"  ok: scheduling backend ({name})")
+    return 0
+
+
+def _step_ui_workflow() -> int:
+    """Subprocess — headless Tk teardown must not poison in-process ui-smoke login probe."""
+    result = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "scripts", "ui_workflow_probe.py")],
+        cwd=ROOT,
+    )
+    return result.returncode
 
 
 def _step_ui_exhaustive() -> int:
-    from scripts.ui_exhaustive_test import run_ui_exhaustive
-
-    return run_ui_exhaustive()
+    """Subprocess — fresh Tk root; must not share process with ui-smoke."""
+    result = subprocess.run(
+        [sys.executable, os.path.join(ROOT, "scripts", "ui_exhaustive_test.py")],
+        cwd=ROOT,
+    )
+    return result.returncode
 
 
 def _step_refactor_check() -> int:
@@ -147,6 +176,8 @@ _STEP_RUNNERS: dict[str, Callable[[], int]] = {
     "scenarios": _step_scenarios,
     "smoke": _step_smoke,
     "ui-smoke": _step_ui_smoke,
+    "ui-workflow": _step_ui_workflow,
+    "rust-backend": _step_rust_backend,
     "ui-exhaustive": _step_ui_exhaustive,
     "refactor-check": _step_refactor_check,
 }

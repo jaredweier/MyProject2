@@ -42,7 +42,7 @@ def export_audit_csv(
     limit: int = 500,
     action_filter: Optional[str] = None,
 ) -> Dict:
-    from analytics import export_audit_csv as _export
+    from logic.analytics import export_audit_csv as _export
 
     return _export(output_path, limit, action_filter=action_filter)
 
@@ -126,7 +126,7 @@ def export_pay_period_history_csv(
     officer_id: Optional[int] = None,
     output_path: Optional[str] = None,
 ) -> Dict:
-    from analytics import export_pay_period_history_csv as _export
+    from logic.analytics import export_pay_period_history_csv as _export
 
     return _export(limit, officer_id, output_path)
 
@@ -154,7 +154,7 @@ def export_payroll_csv(
     officer_id: Optional[int] = None,
     output_path: Optional[str] = None,
 ) -> Dict:
-    from analytics import export_payroll_csv as _export
+    from logic.analytics import export_payroll_csv as _export
 
     return _export(period_start, officer_id, output_path)
 
@@ -189,7 +189,7 @@ def export_requests_csv(
     officer_id: Optional[int] = None,
     output_path: Optional[str] = None,
 ) -> Dict:
-    from analytics import export_requests_csv as _export
+    from logic.analytics import export_requests_csv as _export
 
     return _export(status_filter, date_from, date_to, officer_id, output_path)
 
@@ -218,7 +218,7 @@ def export_requests_pdf(
 
 
 def export_roster_csv(output_path: Optional[str] = None) -> Dict:
-    from analytics import export_roster_csv as _export
+    from logic.analytics import export_roster_csv as _export
 
     return _export(output_path)
 
@@ -229,7 +229,7 @@ def export_schedule_diff_csv(
     output_path: Optional[str] = None,
     officer_id: Optional[int] = None,
 ) -> Dict:
-    from analytics import export_schedule_diff_csv as _export
+    from logic.analytics import export_schedule_diff_csv as _export
 
     return _export(year, month, output_path, officer_id=officer_id)
 
@@ -242,7 +242,7 @@ def export_shift_swaps_csv(
     pending_only: bool = False,
     output_path: Optional[str] = None,
 ) -> Dict:
-    from analytics import export_shift_swaps_csv as _export
+    from logic.analytics import export_shift_swaps_csv as _export
 
     return _export(status_filter, date_from, date_to, officer_id, pending_only, output_path)
 
@@ -276,7 +276,7 @@ def export_simulation_csv(
     result: Dict,
     output_path: Optional[str] = None,
 ) -> Dict:
-    from analytics import export_simulation_csv as _export
+    from logic.analytics import export_simulation_csv as _export
 
     return _export(result, output_path)
 
@@ -286,6 +286,6 @@ def export_timecard_csv(
     officer_id: Optional[int] = None,
     output_path: Optional[str] = None,
 ) -> Dict:
-    from analytics import export_timecard_csv as _export
+    from logic.analytics import export_timecard_csv as _export
 
     return _export(period_start, officer_id, output_path)

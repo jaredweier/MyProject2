@@ -45,7 +45,8 @@ HIDDEN_IMPORTS = [
     "logic.operations",
     "logic.exports",
     "logic.dashboard",
-    "logic._core",
+    "logic.analytics",
+    "logic.rotation_preview",
     "logic.rust_bridge",
     "logic.rust_fallback",
     "logic.labor_compliance",
@@ -153,6 +154,15 @@ def build_portable(*, quick: bool = False, zip_package: bool = True) -> int:
     except ImportError:
         print("scheduler_core not built — running build-rust...", flush=True)
         _run([sys.executable, "dev.py", "build-rust"])
+
+    from logic import rust_bridge
+
+    if rust_bridge.backend_name() != "rust":
+        print(
+            f"ERROR: portable build requires Rust scheduler_core (got {rust_bridge.backend_name()!r})",
+            file=sys.stderr,
+        )
+        return 1
 
     _run([sys.executable, "scripts/generate_assets.py"])
     _run([sys.executable, "-m", "pip", "install", "-r", "requirements.txt", "pyinstaller", "-q"])

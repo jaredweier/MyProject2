@@ -43,6 +43,10 @@ class VerifyUnifiedTests(unittest.TestCase):
     def test_full_includes_smoke_and_ui_smoke(self):
         self.assertIn("smoke", STEP_FULL)
         self.assertIn("ui-smoke", STEP_FULL)
+        self.assertIn("ui-workflow", STEP_FULL)
+
+    def test_check_includes_rust_backend(self):
+        self.assertIn("rust-backend", STEP_CHECK)
 
     def test_tier_alias_cheap_check(self):
         self.assertEqual(tier_steps("cheap-check"), tier_steps("fast"))

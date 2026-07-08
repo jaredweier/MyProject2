@@ -422,7 +422,7 @@ def compute_fatigue_score(officer_id: int, *, as_of: Optional[date] = None) -> D
     Composite fatigue index 0–100 (higher = more fatigued).
     Weights: consecutive work days 40%, weekly hours 35%, FLSA period hours 25%.
     """
-    from analytics import get_hours_watch
+    from logic.analytics import get_hours_watch
 
     today = as_of or date.today()
     max_consecutive = get_max_consecutive_work_days()

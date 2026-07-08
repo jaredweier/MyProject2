@@ -158,7 +158,12 @@ AUTO_LOGIN_ENABLED = os.environ.get("SCHEDULER_AUTO_LOGIN", "0").strip().lower()
     "on",
 )
 AUTO_LOGIN_USERNAME = os.environ.get("SCHEDULER_AUTO_LOGIN_USER", "admin").strip() or "admin"
-AUTO_LOGIN_SKIP_PASSWORD_CHANGE = True
+AUTO_LOGIN_SKIP_PASSWORD_CHANGE = os.environ.get("SCHEDULER_AUTO_LOGIN_SKIP_PW_CHANGE", "0").strip().lower() in (
+    "1",
+    "true",
+    "yes",
+    "on",
+)
 
 # ==================== DAY-OFF REQUESTS ====================
 DAY_OFF_REQUEST_TYPES = (

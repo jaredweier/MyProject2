@@ -16,7 +16,6 @@ from logic import (
     export_audit_csv,
     export_coverage_pdf,
     export_pay_period_history_csv,
-    export_pay_stub_pdf,
     export_payroll_csv,
     export_requests_csv,
     export_roster_csv,
@@ -37,7 +36,6 @@ from logic import (
     get_officers_by_seniority,
     get_open_shifts,
     get_overtime_alerts,
-    get_pay_stub_preview,
     get_payroll_ytd,
     get_schedule_conflicts,
     set_department_setting,
@@ -495,7 +493,11 @@ class ReportsPageMixin:
             )
 
         if self.can("reports.export"):
-            self._build_pay_stub_section()
+            self._render_report_section(
+                "Pay Stub",
+                "Use the Payroll tab for preview and PDF export.",
+                [("Open Payroll → Pay Stub section", UI_TEXT_MUTED)],
+            )
 
     def _render_report_section(self, title: str, subtitle: str, lines: list):
         card = Card(self.reports_scroll)
@@ -530,59 +532,6 @@ class ReportsPageMixin:
             self.set_status("Schedule diff CSV exported")
         else:
             messagebox.showerror("Export Failed", result.get("message", "Export failed"))
-
-    def _build_pay_stub_section(self):
-        card = Card(self.reports_scroll)
-        card.pack(fill="x", pady=6)
-        SectionHeader(card.body, "Pay Stub Preview", "Select officer for current period").pack(
-            fill="x",
-            padx=CARD_PAD,
-            pady=(CARD_PAD, 6),
-        )
-        row = ctk.CTkFrame(card.body, fg_color="transparent")
-        row.pack(fill="x", padx=CARD_PAD, pady=(0, CARD_PAD))
-        officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
-        names = [o["name"] for o in officers]
-        self._stub_officer_var = ctk.StringVar(value=names[0] if names else "")
-        ctk.CTkOptionMenu(row, variable=self._stub_officer_var, values=names or ["None"], width=220).pack(side="left")
-        ctk.CTkButton(
-            row,
-            text="Preview",
-            height=32,
-            fg_color=DODGEVILLE_ACCENT,
-            command=self._show_pay_stub_preview,
-        ).pack(side="left", padx=8)
-        ctk.CTkButton(
-            row,
-            text="Export PDF",
-            height=32,
-            fg_color=DODGEVILLE_GOLD,
-            command=self._export_pay_stub_pdf,
-        ).pack(side="left", padx=4)
-        self._stub_preview_label = ctk.CTkLabel(
-            card.body,
-            text="",
-            font=font("body"),
-            justify="left",
-            anchor="nw",
-        )
-        self._stub_preview_label.pack(fill="x", padx=CARD_PAD, pady=(0, CARD_PAD))
-        self._stub_officers = {o["name"]: o["id"] for o in officers}
-
-    def _export_pay_stub_pdf(self):
-        oid = self._stub_officers.get(self._stub_officer_var.get())
-        if not oid:
-            return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".pdf",
-            filetypes=[("PDF", "*.pdf")],
-        )
-        result = export_pay_stub_pdf(oid, output_path=path or None)
-        if result.get("success"):
-            messagebox.showinfo("Export", f"Pay stub saved to:\n{result['path']}")
-            self.set_status("Pay stub PDF exported")
-        else:
-            messagebox.showerror("Export Failed", result.get("message"))
 
     def _build_rotation_settings_card(self):
         from config import ROTATION_PRESETS
@@ -1058,23 +1007,6 @@ class ReportsPageMixin:
         ctk.CTkButton(row, text="Save Budget", height=36, fg_color=DODGEVILLE_ACCENT, command=save_budget).pack(
             side="left",
             padx=8,
-        )
-
-    def _show_pay_stub_preview(self):
-        oid = self._stub_officers.get(self._stub_officer_var.get())
-        if not oid:
-            return
-        stub = get_pay_stub_preview(oid)
-        if not stub.get("success"):
-            self._stub_preview_label.configure(text=stub.get("message", "Error"))
-            return
-        o = stub["officer"]
-        self._stub_preview_label.configure(
-            text=(
-                f"{o['name']}  ·  {format_date(stub['period_start'])} to {format_date(stub['period_end'])}\n"
-                f"Rate: ${stub['hourly_rate']:.2f}/hr  ·  Regular: {stub['regular_hours']:.1f}h  ·  "
-                f"Other: {stub['other_hours']:.1f}h  ·  Gross: ${stub['gross_pay']:,.2f}"
-            )
         )
 
 

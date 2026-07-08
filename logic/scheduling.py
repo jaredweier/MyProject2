@@ -1270,7 +1270,7 @@ def get_schedule_conflicts(
     end_date: date,
     officer_id: Optional[int] = None,
 ) -> Dict:
-    from analytics import get_schedule_conflicts as _conflicts
+    from logic.analytics import get_schedule_conflicts as _conflicts
 
     return _conflicts(start_date, end_date, officer_id=officer_id)
 

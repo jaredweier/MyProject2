@@ -29,13 +29,13 @@ def get_audit_log(limit: int = 50, action_filter: Optional[str] = None) -> List[
 
 
 def get_coverage_report(start_date: date, end_date: date) -> Dict:
-    from analytics import get_coverage_report as _report
+    from logic.analytics import get_coverage_report as _report
 
     return _report(start_date, end_date)
 
 
 def get_coverage_gap_board(hours_ahead: int = 48) -> Dict:
-    from analytics import get_coverage_gap_board as _board
+    from logic.analytics import get_coverage_gap_board as _board
 
     return _board(hours_ahead=hours_ahead)
 
@@ -44,7 +44,7 @@ def get_hours_watch(
     period_start: Optional[date] = None,
     officer_id: Optional[int] = None,
 ) -> Dict:
-    from analytics import get_hours_watch as _watch
+    from logic.analytics import get_hours_watch as _watch
 
     return _watch(period_start=period_start, officer_id=officer_id)
 
@@ -56,13 +56,13 @@ def get_labor_compliance_report(officer_id: Optional[int] = None) -> Dict:
 
 
 def get_equitable_ot_ledger(period_start: Optional[date] = None) -> Dict:
-    from analytics import get_equitable_ot_ledger as _ledger
+    from logic.analytics import get_equitable_ot_ledger as _ledger
 
     return _ledger(period_start=period_start)
 
 
 def get_dashboard_insights(officer_id: Optional[int] = None) -> Dict:
-    from analytics import get_dashboard_insights as _insights
+    from logic.analytics import get_dashboard_insights as _insights
 
     return _insights(officer_id=officer_id)
 
@@ -85,13 +85,13 @@ def get_department_pay_summary() -> Dict:
 
 
 def get_labor_budget_status(year: Optional[int] = None) -> Dict:
-    from analytics import get_labor_budget_status as _status
+    from logic.analytics import get_labor_budget_status as _status
 
     return _status(year)
 
 
 def get_labor_cost_forecast(months_ahead: int = 3) -> Dict:
-    from analytics import get_labor_cost_forecast as _forecast
+    from logic.analytics import get_labor_cost_forecast as _forecast
 
     return _forecast(months_ahead)
 
@@ -101,12 +101,12 @@ def get_overtime_alerts(
     hours_threshold: float = 80.0,
     officer_id: Optional[int] = None,
 ) -> Dict:
-    from analytics import get_overtime_alerts as _alerts
+    from logic.analytics import get_overtime_alerts as _alerts
 
     return _alerts(period_start, hours_threshold, officer_id=officer_id)
 
 
 def get_payroll_ytd(year: Optional[int] = None) -> Dict:
-    from analytics import get_payroll_ytd as _ytd
+    from logic.analytics import get_payroll_ytd as _ytd
 
     return _ytd(year)

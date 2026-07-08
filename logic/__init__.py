@@ -2,6 +2,7 @@
 Dodgeville Police Department Scheduler — Core Business Logic (package).
 """
 
+from logic.analytics import *
 from logic.banked_time import *
 from logic.bidding import *
 from logic.callbacks import *

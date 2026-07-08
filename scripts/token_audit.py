@@ -256,17 +256,35 @@ def run_token_audit(*, strict: bool = False) -> int:
         "logic/payroll.py",
         "cli.py",
     ):
-        checks.append(Check(f"cursorignore blocks large file {pattern}", pattern in ignore))
+        checks.append(
+            Check(
+                f"cursorignore allows large source {pattern}",
+                pattern not in ignore,
+                "use outline/symbol — do not hide editable source",
+            )
+        )
 
     try:
+        import sys
+
+        if ROOT not in sys.path:
+            sys.path.insert(0, ROOT)
         from scripts.token_scan import scan_large_files
 
         indexed, _ = scan_large_files(min_kb=50, limit=5)
+        allowed_large = {
+            "ui/payroll_pages.py",
+            "ui/feature_pages.py",
+            "ui/schedule_pages.py",
+            "logic/payroll.py",
+            "cli.py",
+        }
+        surprise = [e["path"] for e in indexed if e["path"] not in allowed_large]
         checks.append(
             Check(
                 "token-scan clean at 50KB (no surprise index files)",
-                not indexed,
-                "run: python dev.py token-scan --fix",
+                not surprise,
+                f"unexpected: {', '.join(surprise) or 'ok'} — use outline/symbol for allowed large source",
             )
         )
     except Exception as exc:

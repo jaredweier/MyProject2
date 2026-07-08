@@ -7,7 +7,7 @@ on:
     branches: [master, main, dev]
 
 jobs:
-  check:
+  verify-full:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
@@ -24,44 +24,27 @@ jobs:
       - name: Build Rust core
         run: python dev.py build-rust
 
+      - name: Assert Rust scheduling backend
+        run: python -c "from logic import rust_bridge; assert rust_bridge.backend_name()=='rust', rust_bridge.backend_name()"
+
       - name: Doctor
         run: python dev.py doctor
 
       - name: Dependency audit
         run: python dev.py deps-audit
 
-      - name: Ruff lint (advisory)
+      - name: Ruff lint
         run: python dev.py lint
-        continue-on-error: true
 
-      - name: Preflight
-        run: python dev.py preflight
-
-      - name: Full check (tests + audit)
-        run: python dev.py check
-
-      - name: UI smoke (headless)
-        run: python dev.py ui-smoke
+      - name: Unified full verification (check + smoke + ui-smoke)
+        run: python dev.py verify --tier full
 
       - name: UI static review
         run: python dev.py ui-review
-        continue-on-error: true
-
-  scenarios:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - uses: dtolnay/rust-toolchain@stable
-      - run: pip install -r requirements.txt -r requirements-dev.txt
-      - run: python dev.py build-rust
-      - run: python dev.py scenarios
 
   build-portable:
     runs-on: windows-latest
-    needs: check
+    needs: verify-full
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -70,7 +53,8 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - run: pip install -r requirements.txt -r requirements-dev.txt pyinstaller
       - run: python dev.py build-rust
-      - run: python scripts/build_portable.py --quick
+      - run: python -c "from logic import rust_bridge; assert rust_bridge.backend_name()=='rust'"
+      - run: python scripts/build_portable.py
       - uses: actions/upload-artifact@v4
         with:
           name: Dodgeville_PD_Portable

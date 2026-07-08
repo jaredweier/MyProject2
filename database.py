@@ -327,6 +327,7 @@ def _ensure_schema_migrations(cursor) -> None:
     user_cols = {row[1] for row in cursor.fetchall()}
     if "must_change_password" not in user_cols:
         cursor.execute("ALTER TABLE app_users ADD COLUMN must_change_password INTEGER DEFAULT 1")
+    _migrate_demo_password_policy(cursor)
 
     cursor.execute("PRAGMA table_info(schedule_overrides)")
     override_cols = {row[1] for row in cursor.fetchall()}
@@ -349,6 +350,38 @@ def _ensure_schema_migrations(cursor) -> None:
     _migrate_timecard_multi_entry(cursor)
     _ensure_department_setting_defaults(cursor)
     _ensure_tier2_tables(cursor)
+
+
+def _migrate_demo_password_policy(cursor) -> None:
+    """Existing DBs: demo accounts still on factory passwords must change on next login."""
+    from auth_password import verify_password
+    from seed_data import load_roster_seed
+
+    try:
+        demo_users = load_roster_seed().get("demo_users", [])
+    except Exception:
+        return
+    for demo in demo_users:
+        username = (demo.get("username") or "").strip()
+        default_pw = demo.get("password") or ""
+        if not username or not default_pw:
+            continue
+        cursor.execute(
+            """
+            SELECT id, password, must_change_password
+            FROM app_users WHERE username = ? AND active = 1
+            """,
+            (username,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            continue
+        user_id, stored_pw, must_chg = row[0], row[1], row[2]
+        if verify_password(default_pw, stored_pw) and must_chg != 1:
+            cursor.execute(
+                "UPDATE app_users SET must_change_password = 1 WHERE id = ?",
+                (user_id,),
+            )
 
 
 def _ensure_department_setting_defaults(cursor) -> None:
@@ -381,34 +414,6 @@ def _ensure_department_setting_defaults(cursor) -> None:
 
 def _ensure_tier2_tables(cursor) -> None:
     """Tier 2 features: shift bidding, callback rotation, certifications, fatigue settings."""
-    # Legacy per-slot bidding (superseded by shift_bid_events); retained for DB compatibility only.
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS shift_bid_slots (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            shift_date DATE NOT NULL,
-            shift_start TEXT NOT NULL,
-            shift_end TEXT NOT NULL,
-            squad TEXT CHECK(squad IN ('A', 'B')),
-            status TEXT DEFAULT 'bidding' CHECK(status IN ('bidding', 'awarded', 'cancelled')),
-            notes TEXT,
-            awarded_officer_id INTEGER,
-            bids_close_at TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (awarded_officer_id) REFERENCES officers(id)
-        )
-    """)
-    cursor.execute("""
-        CREATE TABLE IF NOT EXISTS shift_bids (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            slot_id INTEGER NOT NULL,
-            officer_id INTEGER NOT NULL,
-            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'awarded', 'rejected')),
-            FOREIGN KEY (slot_id) REFERENCES shift_bid_slots(id),
-            FOREIGN KEY (officer_id) REFERENCES officers(id),
-            UNIQUE(slot_id, officer_id)
-        )
-    """)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS callback_rotation (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -463,7 +468,6 @@ def _ensure_tier2_tables(cursor) -> None:
             UNIQUE(shift_start, cert_type_id)
         )
     """)
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_shift_bids_slot ON shift_bids(slot_id)")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS shift_bid_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -527,6 +531,25 @@ def _ensure_tier2_tables(cursor) -> None:
                 (code, name, desc),
             )
     _migrate_tier2_bidding_extensions(cursor)
+    _drop_legacy_shift_bid_tables(cursor)
+
+
+def _drop_legacy_shift_bid_tables(cursor) -> None:
+    """Remove superseded per-slot bid tables when empty (shift_bid_events is canonical)."""
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('shift_bids', 'shift_bid_slots')")
+    if not cursor.fetchall():
+        return
+    for table in ("shift_bids", "shift_bid_slots"):
+        cursor.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name = ?",
+            (table,),
+        )
+        if not cursor.fetchone():
+            continue
+        cursor.execute(f"SELECT COUNT(*) AS n FROM {table}")
+        if cursor.fetchone()["n"]:
+            continue
+        cursor.execute(f"DROP TABLE {table}")
 
 
 def _migrate_tier2_bidding_extensions(cursor) -> None:

@@ -37,7 +37,7 @@ LOGIC_HIDDEN = [
     "logic.operations",
     "logic.exports",
     "logic.dashboard",
-    "logic._core",
+    "logic.analytics",
     "analytics",
     "exports",
     "simulator",

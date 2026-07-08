@@ -20,14 +20,17 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt pyinstaller
 
-      - name: Full verification
-        run: python dev.py check
-
       - name: Build Rust core
         run: python dev.py build-rust
 
+      - name: Assert Rust scheduling backend
+        run: python -c "from logic import rust_bridge; assert rust_bridge.backend_name()=='rust'"
+
+      - name: Full verification
+        run: python dev.py verify --tier full
+
       - name: Build portable package
-        run: python scripts/build_portable.py --quick --no-zip
+        run: python scripts/build_portable.py --no-zip
 
       - name: Create release zip
         shell: pwsh
