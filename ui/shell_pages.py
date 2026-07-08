@@ -134,7 +134,10 @@ class ShellPageMixin:
             return
         try:
             self.show_page("dashboard", defer_refresh=True)
-            self.root.after(120, self._refresh_dashboard_safe)
+            if os.environ.get("SCHEDULER_UI_TEST", "").strip() == "1":
+                self._refresh_dashboard_safe()
+            else:
+                self.root.after(120, self._refresh_dashboard_safe)
             user = self.current_user
             name = user.get("officer_name") or user.get("username")
             nav_count = len(self.nav_buttons) if hasattr(self, "nav_buttons") else 0
@@ -150,6 +153,8 @@ class ShellPageMixin:
 
     def _refresh_dashboard_safe(self) -> None:
         if getattr(self, "_shell_building", False):
+            if os.environ.get("SCHEDULER_UI_TEST", "").strip() == "1":
+                return
             self.root.after(100, self._refresh_dashboard_safe)
             return
         if self.current_page != "dashboard":

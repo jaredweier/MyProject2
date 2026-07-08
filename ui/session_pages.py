@@ -148,8 +148,15 @@ class SessionPageMixin:
         except Exception:
             pass
         self.current_user = None
-        if hasattr(self, "shell") and self.shell.winfo_exists():
-            self.shell.destroy()
+        if hasattr(self, "shell") and self.shell is not None:
+            try:
+                if self.shell.winfo_exists():
+                    self.shell.destroy()
+            except Exception:
+                try:
+                    self.shell.grid_forget()
+                except Exception:
+                    pass
         self.shell = None
         self.pages = {}
         self.nav_buttons = {}

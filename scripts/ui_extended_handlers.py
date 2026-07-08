@@ -17,13 +17,16 @@ from scripts.ui_exhaustive_test import (
     _shell_alive,
     _walk_widgets,
 )
+from scripts.ui_test_helpers import refresh_tk
 
 
 def _login_role(app, username: str, password: str) -> None:
     from logic import authenticate_user, set_department_setting
     from ui.assets import reset_brand_image_cache
+    from ui.display import clear_login_window_layout
     from ui.helpers import cancel_pending_after
 
+    prev_role = (getattr(app, "current_user", None) or {}).get("role")
     cancel_pending_after(app.root)
     reset_brand_image_cache()
     auth = authenticate_user(username, password)
@@ -31,13 +34,16 @@ def _login_role(app, username: str, password: str) -> None:
         raise RuntimeError(auth.get("message", f"login failed for {username}"))
     user = auth["user"]
     user["must_change_password"] = 0
-    app.current_user = user
     if getattr(app, "login_frame", None):
         try:
             app.login_frame.destroy()
         except Exception:
             pass
         app.login_frame = None
+    role_changed = prev_role != user.get("role")
+    if role_changed and _shell_alive(app):
+        app._teardown_shell_state()
+    app.current_user = user
     app._gantt_spec = None
     app._monthly_spec = None
     if not _shell_alive(app):
@@ -48,7 +54,8 @@ def _login_role(app, username: str, password: str) -> None:
     app._refresh_department_branding()
     app._apply_dashboard_role_layout()
     app.show_page("dashboard")
-    app.root.update_idletasks()
+    refresh_tk(app.root)
+    clear_login_window_layout(app.root)
 
 
 def _buttons_in(widget):
@@ -86,7 +93,7 @@ def run_extended_handlers(app, ctx, run_step, *, mutating: bool) -> None:
         from ui.profile_dialog import open_my_profile_dialog
 
         open_my_profile_dialog(app)
-        app.root.update()
+        refresh_tk(app.root)
         tops = [w for w in app.root.winfo_children() if w.winfo_class() == "CTkToplevel"]
         if tops:
             dlg = tops[-1]
@@ -106,7 +113,7 @@ def run_extended_handlers(app, ctx, run_step, *, mutating: bool) -> None:
                     "Current Monthly Schedule",
                 ):
                     cmd()
-                    app.root.update()
+                    refresh_tk(app.root)
                     break
         _close_toplevels(app.root)
 
@@ -140,7 +147,7 @@ def run_extended_handlers(app, ctx, run_step, *, mutating: bool) -> None:
         app.show_page("dashboard")
         for i in range(10):
             app.root.event_generate(f"<Control-Key-{i}>")
-            app.root.update()
+            refresh_tk(app.root)
 
     run_step("shell: Ctrl+0..9 shortcuts", _shell_all_shortcuts)
 
@@ -387,8 +394,6 @@ def run_role_sessions(app, ctx, run_step, *, mutating: bool) -> None:
     for username, password, label in roles:
 
         def _role_fn(u=username, p=password):
-            app.sign_out()
-            app.root.update()
             _login_role(app, u, p)
             app._refresh_dashboard()
             app._build_dashboard_quick_actions()
@@ -407,6 +412,4 @@ def run_role_sessions(app, ctx, run_step, *, mutating: bool) -> None:
 
         run_step(label, _role_fn)
 
-    app.sign_out()
-    app.root.update()
     _login_role(app, "admin", "admin")

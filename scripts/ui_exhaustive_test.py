@@ -26,8 +26,9 @@ def _safe_filename(name: str) -> str:
 def _screenshot_window(root, path: str) -> None:
     from PIL import ImageGrab
 
-    root.update_idletasks()
-    root.update()
+    from scripts.ui_test_helpers import refresh_tk
+
+    refresh_tk(root)
     x = root.winfo_rootx()
     y = root.winfo_rooty()
     w = max(root.winfo_width(), 1)
@@ -41,7 +42,18 @@ if ROOT not in sys.path:
 
 os.environ["SCHEDULER_UI_TEST"] = "1"
 
+from scripts.ui_test_helpers import refresh_tk
+
 _EXHAUSTIVE_LOCK = os.path.join(ROOT, "logs", ".ui_exhaustive.lock")
+
+
+def _lock_holder_alive(pid: str) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except (OSError, ValueError, TypeError):
+        return False
+    else:
+        return True
 
 
 def _acquire_exhaustive_lock() -> bool:
@@ -53,11 +65,17 @@ def _acquire_exhaustive_lock() -> bool:
                 pid = fh.read().strip()
         except OSError:
             pid = "?"
-        print(
-            f"ui-exhaustive: lock held ({_EXHAUSTIVE_LOCK}, pid={pid}) — wait for other run to finish",
-            flush=True,
-        )
-        return False
+        if pid and pid != "?" and not _lock_holder_alive(pid):
+            try:
+                os.remove(_EXHAUSTIVE_LOCK)
+            except OSError:
+                pass
+        elif os.path.isfile(_EXHAUSTIVE_LOCK):
+            print(
+                f"ui-exhaustive: lock held ({_EXHAUSTIVE_LOCK}, pid={pid}) — wait for other run to finish",
+                flush=True,
+            )
+            return False
     with open(_EXHAUSTIVE_LOCK, "w", encoding="utf-8") as fh:
         fh.write(str(os.getpid()))
     return True
@@ -83,7 +101,7 @@ def _step(
         fn()
         results.append((name, True, ""))
         if app is not None and step_delay > 0:
-            app.root.update()
+            refresh_tk(app.root)
             time.sleep(step_delay)
         if app is not None and screenshot_dir:
             path = os.path.join(screenshot_dir, f"{len(results):02d}_{_safe_filename(name)}.png")
@@ -191,7 +209,7 @@ def _open_dialog_without_wait(app, opener) -> object | None:
 
     with patch.object(ctk.CTkToplevel, "wait_window", lambda self: None):
         opener()
-    app.root.update()
+    refresh_tk(app.root)
     tops = [w for w in app.root.winfo_children() if w.winfo_class() == "CTkToplevel"]
     return tops[-1] if tops else None
 
@@ -934,9 +952,9 @@ def _run_ui_exhaustive_impl(
                 def _shell_shortcuts():
                     app.show_page("dashboard")
                     app.root.event_generate("<Control-Key-2>")
-                    app.root.update()
+                    refresh_tk(app.root)
                     app.root.event_generate("<Control-Key-0>")
-                    app.root.update()
+                    refresh_tk(app.root)
 
                 _run_step("shell: keyboard shortcuts", _shell_shortcuts)
 
@@ -946,7 +964,7 @@ def _run_ui_exhaustive_impl(
 
                     def _shell_sign_out_login():
                         app.sign_out()
-                        app.root.update()
+                        refresh_tk(app.root)
                         _login_admin(app)
 
                     _run_step("shell: sign out + re-login", _shell_sign_out_login)
@@ -956,7 +974,7 @@ def _run_ui_exhaustive_impl(
                     p.stop()
 
             if visible and hold_seconds > 0:
-                app.root.update()
+                refresh_tk(app.root)
                 time.sleep(hold_seconds)
 
             report_path = _write_ui_report(

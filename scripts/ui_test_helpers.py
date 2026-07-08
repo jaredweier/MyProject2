@@ -33,14 +33,27 @@ def install_callback_error_collector(root) -> list[str]:
     return errors
 
 
-def pump_tk(root, *, seconds: float = 0.25) -> None:
+def refresh_tk(root) -> None:
+    """Flush layout without root.update() — safe for headless Windows Tk tests."""
+    try:
+        root.update_idletasks()
+    except Exception:
+        pass
+
+
+def _pump_tk_idle(root, *, seconds: float = 0.25) -> None:
+    """Process idle/layout work without root.update() — blocks on headless Windows Tk."""
     deadline = time.time() + seconds
     while time.time() < deadline:
         try:
-            root.update()
+            root.update_idletasks()
         except Exception:
             break
         time.sleep(0.01)
+
+
+def pump_tk(root, *, seconds: float = 0.25) -> None:
+    _pump_tk_idle(root, seconds=seconds)
 
 
 def destroy_app(root) -> None:
@@ -74,7 +87,10 @@ def wait_for(
 ) -> None:
     deadline = time.time() + timeout_s
     while time.time() < deadline:
-        root.update()
+        try:
+            root.update_idletasks()
+        except Exception:
+            break
         if predicate():
             return
         time.sleep(0.01)
@@ -103,16 +119,20 @@ def headless_login(app, user: dict) -> None:
         app.login_frame = None
 
     app._finish_login_shell()
-    app.root.update_idletasks()
-    app.root.update()
-    wait_for(app.root, lambda: shell_ready(app), timeout_s=45.0, label="shell ready")
-    wait_for(
-        app.root,
-        lambda: getattr(app, "current_page", None) == "dashboard",
-        timeout_s=15.0,
-        label="initial dashboard",
-    )
-    pump_tk(app.root, seconds=0.5)
+    # UI test mode builds the shell synchronously — avoid Tk pump calls that block on
+    # withdrawn Windows roots (both update() and update_idletasks() can hang).
+    if not shell_ready(app) or getattr(app, "current_page", None) != "dashboard":
+        _pump_tk_idle(app.root, seconds=0.05)
+        if not shell_ready(app):
+            wait_for(app.root, lambda: shell_ready(app), timeout_s=45.0, label="shell ready")
+        if getattr(app, "current_page", None) != "dashboard":
+            wait_for(
+                app.root,
+                lambda: getattr(app, "current_page", None) == "dashboard",
+                timeout_s=15.0,
+                label="initial dashboard",
+            )
+        pump_tk(app.root, seconds=0.1)
     clear_login_window_layout(app.root)
 
 
@@ -168,7 +188,6 @@ def visit_all_pages(app, errors: list[str]) -> int:
         try:
             app.show_page(key)
             app.root.update_idletasks()
-            app.root.update()
             visited += 1
         except Exception:
             errors.append(f"show_page({key}):\n{traceback.format_exc()}")

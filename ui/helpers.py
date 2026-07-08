@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from datetime import date
 from tkinter import filedialog, messagebox
@@ -244,7 +245,10 @@ def destroy_tk_root(root) -> None:
 
     cancel_pending_after(root)
     try:
-        root.update()
+        if os.environ.get("SCHEDULER_UI_TEST", "").strip() == "1":
+            root.update_idletasks()
+        else:
+            root.update()
         root.quit()
     except Exception:
         pass
