@@ -260,6 +260,8 @@ class RequestsPageMixin:
         self.refresh_day_off_request_ledger()
 
     def _refresh_officer_dropdown(self):
+        if getattr(self, "_shell_building", False):
+            return
         officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
         if self._is_officer_role():
             oid = self._linked_officer_id()
@@ -486,9 +488,12 @@ class RequestsPageMixin:
         )
         summary = format_bump_suggestion(suggestion)
         officer_name = req.get("officer_name") or "Officer"
+        manual_note = ""
+        if suggestion.get("requires_manual"):
+            manual_note = "\n\nThis request may route to manual review if no on-duty replacement is found."
         prompt = (
             f"Approve {req.get('request_type', 'time off')} for {officer_name} "
-            f"on {format_date(req['request_date'])}?\n\n{summary}"
+            f"on {format_date(req['request_date'])}?\n\n{summary}{manual_note}"
         )
         if messagebox.askyesno("Approve Request", prompt):
             self.handle_request(req["id"], "approve")
@@ -633,7 +638,12 @@ class RequestsPageMixin:
                 widget.destroy()
 
         if not requests:
-            empty = "No requests in history." if self._request_view == "history" else "No pending requests."
+            if self._request_view == "history":
+                empty = "No requests in history."
+            elif self._is_officer_role():
+                empty = "No pending requests. Submit time off from the form above."
+            else:
+                empty = "Queue is clear — no pending time-off requests."
             ctk.CTkLabel(
                 self.request_list,
                 text=empty,

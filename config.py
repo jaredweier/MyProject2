@@ -8,6 +8,10 @@ import os
 from datetime import date
 from typing import Dict, Tuple
 
+# ==================== APPLICATION ====================
+APP_VERSION = "2026.07.1"
+APP_NAME = "Dodgeville PD Scheduler"
+
 # ==================== ROTATION ====================
 ROTATION_BASE_DATE: date = date(2026, 6, 28)
 ROTATION_CYCLE_LENGTH: int = 14
@@ -60,6 +64,8 @@ POSITION_PAY_BASIS_LABELS = {
 # Exempt/command titles default to annual salary on Position Pay Rates (still editable).
 DEFAULT_ANNUAL_HOURS = 2008.0
 YEARLY_SALARY_TITLES = frozenset({"Chief", "Lieutenant"})
+# Command staff default schedule: Monday–Friday (overrides/manual snapshot rows may change).
+COMMAND_STAFF_TITLES = frozenset({"Chief", "Lieutenant"})
 SALARY_ANNUAL_HOURS = 2080.0
 DEFAULT_POSITION_PAY_RATES = {
     "Officer": {"amount": 5355.0, "pay_basis": "monthly", "is_salary": False, "annual_hours": DEFAULT_ANNUAL_HOURS},
@@ -92,43 +98,50 @@ def is_high_risk_night(target_date) -> bool:
 
 
 # ==================== COLORS ====================
-# Tactical command-center palette — deep navy void, electric cyan HUD, badge gold
-DODGEVILLE_BLUE = "#081018"
-DODGEVILLE_ACCENT = "#00B4D8"
-DODGEVILLE_RED = "#E53935"
-DODGEVILLE_GOLD = "#D4AF37"
-DODGEVILLE_SUCCESS = "#00C853"
+# Modern command-center UI — deep navy surfaces, single blue accent, badge gold (accents only)
+DODGEVILLE_BLUE = "#1E3A5F"
+DODGEVILLE_ACCENT = "#4B8BF5"
+DODGEVILLE_RED = "#F87171"
+DODGEVILLE_GOLD = "#C4A24A"
+DODGEVILLE_SUCCESS = "#34D399"
+SCHEDULE_TYPE_TRAINING = "#1ABC9C"
+SCHEDULE_TYPE_COURT = "#8E44AD"
+SCHEDULE_TYPE_LEAVE = "#5D6D7E"
+SCHEDULE_TYPE_COVERING = "#0096B8"
 DODGEVILLE_DANGER = DODGEVILLE_RED
-DODGEVILLE_WARNING = "#FFAB00"
-DODGEVILLE_ORANGE = "#FF8F00"
+DODGEVILLE_WARNING = "#F59E0B"
+DODGEVILLE_ORANGE = "#F97316"
 
 GANTT_COLORS = {
-    "working": "#00C853",
-    "off": "#3D4F66",
-    "bumped": "#FF8F00",
-    "covering": "#D4AF37",
-    "swapped": "#7C4DFF",
-    "training": "#00BFA5",
-    "court": "#AB47BC",
-    "leave": "#546E7A",
-    "night_window": "#00B4D8",
-    "unknown": "#607D8B",
+    "working": "#22C55E",
+    "off": "#475569",
+    "bumped": "#F97316",
+    "covering": "#B8952B",
+    "swapped": "#8B5CF6",
+    "training": "#14B8A6",
+    "court": "#A855F7",
+    "leave": "#64748B",
+    "night_window": "#3B82F6",
+    "unknown": "#64748B",
 }
 
-# UI theme extensions
-UI_BG = "#050A12"
-UI_SURFACE = "#0C1624"
-UI_SURFACE_LIGHT = "#132238"
-UI_BORDER = "#1E3A5F"
-UI_TEXT_MUTED = "#7A9CC6"
-UI_SIDEBAR = "#060D16"
-UI_ACCENT_GLOW = "#00E5FF"
+# UI theme extensions — enterprise command center (Mark43 / Linear)
+UI_BG = "#07090D"
+UI_SURFACE = "#0F1318"
+UI_SURFACE_LIGHT = "#161B22"
+UI_BORDER = "#21262D"
+UI_TEXT_PRIMARY = "#F0F3F7"
+UI_TEXT_MUTED = "#8B949E"
+UI_SIDEBAR = "#0A0D12"
+UI_ACCENT_GLOW = "#58A6FF"
+UI_ACCENT_SUBTLE = "#1F6FEB"
+UI_NAV_ACTIVE = "#161B22"
 
 # ==================== DATE FORMATS ====================
 # User-facing input/display (DD-MM-YYYY); SQLite storage remains ISO (YYYY-MM-DD).
-DATE_DISPLAY_FORMAT = "%d-%m-%Y"
-DATETIME_DISPLAY_FORMAT = "%d-%m-%Y %H:%M"
-DATE_INPUT_HINT = "DD-MM-YYYY"
+DATE_DISPLAY_FORMAT = "%d/%m/%Y"
+DATETIME_DISPLAY_FORMAT = "%d/%m/%Y %H:%M"
+DATE_INPUT_HINT = "DD/MM/YYYY"
 DATE_STORAGE_FORMAT = "%Y-%m-%d"
 
 # ==================== DEPARTMENT BRANDING ====================
@@ -355,13 +368,20 @@ def configure_logging() -> logging.Logger:
     log = logging.getLogger("DodgevilleScheduler")
     if _logging_configured:
         return log
-    if not os.path.exists("logs"):
-        os.makedirs("logs")
+    try:
+        from paths import data_path, ensure_data_dirs
+
+        ensure_data_dirs()
+        log_path = data_path(os.path.join("logs", LOG_FILE))
+    except Exception:
+        if not os.path.exists("logs"):
+            os.makedirs("logs")
+        log_path = f"logs/{LOG_FILE}"
     logging.basicConfig(
         level=getattr(logging, LOG_LEVEL),
         format="%(asctime)s - %(levelname)s - %(message)s",
         handlers=[
-            logging.FileHandler(f"logs/{LOG_FILE}"),
+            logging.FileHandler(log_path),
             logging.StreamHandler(),
         ],
     )

@@ -204,7 +204,7 @@ From `AGENTS.md` and session context:
 1. **Continue live UI feedback** — user may report tab-specific polish after Tier 1 / Visual rollout
 2. **Production credential policy** — auto-login off by default (done); still TODO: force password change on demo accounts, optional LDAP
 3. ~~**Evaluation build**~~ — frozen package replaced 2026-07-01 (`C:\Users\Windows\Dodgeville_PD_Scheduler_Frozen_2026-07-01`, `scripts/build_frozen_eval.py`)
-4. **Tier 2 backlog** (deferred): shift bidding, callback list, certifications gating, fatigue score
+4. ~~**Tier 2 backlog**~~ **Shipped (2026-07):** shift bidding (events, seniority awards, simulator import, award preview), callback rotation, certifications gating, fatigue score, LDAP auth scaffold, simulator scenario library
 
 ---
 

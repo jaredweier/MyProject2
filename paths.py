@@ -18,9 +18,13 @@ def resource_path(relative: str) -> str:
     """Resolve bundled assets (logo, team photo) in dev and frozen builds."""
     candidates = []
     if is_frozen():
-        candidates.append(os.path.join(getattr(sys, "_MEIPASS", app_dir()), relative))
+        meipass = getattr(sys, "_MEIPASS", "")
+        if meipass:
+            candidates.append(os.path.join(meipass, relative))
+        candidates.append(os.path.join(app_dir(), "_internal", relative))
     candidates.append(os.path.join(app_dir(), relative))
     candidates.append(os.path.join(os.getcwd(), relative))
+    candidates.append(os.path.join(os.getcwd(), "_internal", relative))
     for path in candidates:
         if os.path.isfile(path):
             return path

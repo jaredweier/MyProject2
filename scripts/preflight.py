@@ -1,41 +1,16 @@
-"""Fast pre-commit gate — imports, slice bindings, audit, optional refactor-check."""
+"""Pre-commit gate — delegates to unified verify tier 'preflight'."""
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from scripts.verify import run_preflight as verify_preflight
 
 
 def run_preflight(with_refactor: bool = False) -> int:
-    dev_py = os.path.join(ROOT, "dev.py")
-    steps = ["imports", "slice-check", "audit"]
-    if with_refactor:
-        steps.append("refactor-check")
-
-    print("Dodgeville PD Scheduler — preflight")
-    print("=" * 60)
-    failed: list[str] = []
-    for name in steps:
-        print(f"\n>>> {name}", flush=True)
-        result = subprocess.run(
-            [sys.executable, dev_py, name],
-            cwd=ROOT,
-            stderr=subprocess.STDOUT,
-        )
-        if result.returncode != 0:
-            failed.append(name)
-
-    print("\n" + "=" * 60)
-    if failed:
-        print(f"preflight: FAILED — {', '.join(failed)}")
-        return 1
-    print("preflight: ALL PASSED")
-    return 0
+    return verify_preflight(source="preflight", with_refactor=with_refactor)
 
 
 if __name__ == "__main__":
+    import sys
+
     with_refactor = "--with-refactor" in sys.argv
     raise SystemExit(run_preflight(with_refactor=with_refactor))

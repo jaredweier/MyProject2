@@ -326,7 +326,7 @@ def _ensure_schema_migrations(cursor) -> None:
     cursor.execute("PRAGMA table_info(app_users)")
     user_cols = {row[1] for row in cursor.fetchall()}
     if "must_change_password" not in user_cols:
-        cursor.execute("ALTER TABLE app_users ADD COLUMN must_change_password INTEGER DEFAULT 0")
+        cursor.execute("ALTER TABLE app_users ADD COLUMN must_change_password INTEGER DEFAULT 1")
 
     cursor.execute("PRAGMA table_info(schedule_overrides)")
     override_cols = {row[1] for row in cursor.fetchall()}
@@ -348,6 +348,7 @@ def _ensure_schema_migrations(cursor) -> None:
     _migrate_officers_nullable_assignment(cursor)
     _migrate_timecard_multi_entry(cursor)
     _ensure_department_setting_defaults(cursor)
+    _ensure_tier2_tables(cursor)
 
 
 def _ensure_department_setting_defaults(cursor) -> None:
@@ -376,6 +377,191 @@ def _ensure_department_setting_defaults(cursor) -> None:
                 "UPDATE department_settings SET value = ? WHERE key = ?",
                 (DEFAULT_DEPARTMENT_MISSION, key),
             )
+
+
+def _ensure_tier2_tables(cursor) -> None:
+    """Tier 2 features: shift bidding, callback rotation, certifications, fatigue settings."""
+    # Legacy per-slot bidding (superseded by shift_bid_events); retained for DB compatibility only.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shift_bid_slots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            shift_date DATE NOT NULL,
+            shift_start TEXT NOT NULL,
+            shift_end TEXT NOT NULL,
+            squad TEXT CHECK(squad IN ('A', 'B')),
+            status TEXT DEFAULT 'bidding' CHECK(status IN ('bidding', 'awarded', 'cancelled')),
+            notes TEXT,
+            awarded_officer_id INTEGER,
+            bids_close_at TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (awarded_officer_id) REFERENCES officers(id)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shift_bids (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            slot_id INTEGER NOT NULL,
+            officer_id INTEGER NOT NULL,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            status TEXT DEFAULT 'pending' CHECK(status IN ('pending', 'awarded', 'rejected')),
+            FOREIGN KEY (slot_id) REFERENCES shift_bid_slots(id),
+            FOREIGN KEY (officer_id) REFERENCES officers(id),
+            UNIQUE(slot_id, officer_id)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS callback_rotation (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            officer_id INTEGER NOT NULL UNIQUE,
+            sort_order INTEGER NOT NULL,
+            active INTEGER DEFAULT 1,
+            notes TEXT,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (officer_id) REFERENCES officers(id)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS callback_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            officer_id INTEGER NOT NULL,
+            event_date DATE NOT NULL,
+            hours REAL NOT NULL,
+            notes TEXT,
+            created_by_user_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (officer_id) REFERENCES officers(id)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS certification_types (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            description TEXT,
+            active INTEGER DEFAULT 1
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS officer_certifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            officer_id INTEGER NOT NULL,
+            cert_type_id INTEGER NOT NULL,
+            issued_date DATE,
+            expires_date DATE,
+            notes TEXT,
+            FOREIGN KEY (officer_id) REFERENCES officers(id),
+            FOREIGN KEY (cert_type_id) REFERENCES certification_types(id),
+            UNIQUE(officer_id, cert_type_id)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shift_cert_requirements (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            shift_start TEXT NOT NULL,
+            cert_type_id INTEGER NOT NULL,
+            FOREIGN KEY (cert_type_id) REFERENCES certification_types(id),
+            UNIQUE(shift_start, cert_type_id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_shift_bids_slot ON shift_bids(slot_id)")
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shift_bid_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            title TEXT,
+            status TEXT DEFAULT 'draft' CHECK(status IN ('draft', 'open', 'finalized', 'cancelled')),
+            number_of_shifts TEXT,
+            shift_length TEXT,
+            rotation TEXT,
+            shift_start_times TEXT,
+            shifts_begin TEXT,
+            bids_due_by TEXT,
+            squad TEXT CHECK(squad IN ('A', 'B') OR squad IS NULL),
+            notes TEXT,
+            created_by_user_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            published_at TEXT,
+            finalized_at TEXT
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shift_bid_options (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            option_number INTEGER NOT NULL,
+            label TEXT NOT NULL,
+            status TEXT DEFAULT 'open' CHECK(status IN ('open', 'awarded', 'unassigned')),
+            awarded_officer_id INTEGER,
+            FOREIGN KEY (event_id) REFERENCES shift_bid_events(id) ON DELETE CASCADE,
+            FOREIGN KEY (awarded_officer_id) REFERENCES officers(id),
+            UNIQUE(event_id, option_number)
+        )
+    """)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS shift_bid_rankings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_id INTEGER NOT NULL,
+            officer_id INTEGER NOT NULL,
+            option_id INTEGER NOT NULL,
+            preference_rank INTEGER NOT NULL,
+            submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (event_id) REFERENCES shift_bid_events(id) ON DELETE CASCADE,
+            FOREIGN KEY (officer_id) REFERENCES officers(id),
+            FOREIGN KEY (option_id) REFERENCES shift_bid_options(id) ON DELETE CASCADE,
+            UNIQUE(event_id, officer_id, option_id),
+            UNIQUE(event_id, officer_id, preference_rank)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_shift_bid_options_event ON shift_bid_options(event_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_shift_bid_rankings_event ON shift_bid_rankings(event_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_callback_events_officer ON callback_events(officer_id)")
+    defaults = (
+        ("FIREARMS", "Firearms Qualification", "Annual range qualification"),
+        ("CPR", "CPR / First Aid", "Current CPR certification"),
+        ("FTO", "Field Training Officer", "Authorized FTO"),
+    )
+    for code, name, desc in defaults:
+        cursor.execute("SELECT id FROM certification_types WHERE code = ?", (code,))
+        if not cursor.fetchone():
+            cursor.execute(
+                "INSERT INTO certification_types (code, name, description, active) VALUES (?, ?, ?, 1)",
+                (code, name, desc),
+            )
+    _migrate_tier2_bidding_extensions(cursor)
+
+
+def _migrate_tier2_bidding_extensions(cursor) -> None:
+    """Shift-bid v2 columns and simulator scenario library."""
+    cursor.execute("PRAGMA table_info(shift_bid_events)")
+    event_cols = {row[1] for row in cursor.fetchall()}
+    for col, ddl in [
+        ("rotation_json", "ALTER TABLE shift_bid_events ADD COLUMN rotation_json TEXT"),
+        ("simulation_id", "ALTER TABLE shift_bid_events ADD COLUMN simulation_id INTEGER"),
+        ("bids_closed_at", "ALTER TABLE shift_bid_events ADD COLUMN bids_closed_at TEXT"),
+    ]:
+        if col not in event_cols:
+            cursor.execute(ddl)
+
+    cursor.execute("PRAGMA table_info(shift_bid_options)")
+    option_cols = {row[1] for row in cursor.fetchall()}
+    for col, ddl in [
+        ("shift_start", "ALTER TABLE shift_bid_options ADD COLUMN shift_start TEXT"),
+        ("shift_date", "ALTER TABLE shift_bid_options ADD COLUMN shift_date TEXT"),
+    ]:
+        if col not in option_cols:
+            cursor.execute(ddl)
+
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS simulator_scenarios (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            config_json TEXT NOT NULL,
+            result_json TEXT,
+            notes TEXT,
+            created_by_user_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_simulator_scenarios_created ON simulator_scenarios(created_at)")
 
 
 def _backfill_payroll_pay_period_start(cursor) -> None:
@@ -541,3 +727,63 @@ def backup_database() -> str:
         init_database()
     shutil.copy2(DB_PATH, backup_path)
     return backup_path
+
+
+def _resolve_db_file_path() -> str:
+    """Filesystem path for the live database (not in-memory URI)."""
+    if DB_PATH.startswith("file:"):
+        raise RuntimeError("Cannot restore while using in-memory database URI")
+    return DB_PATH
+
+
+def list_backup_files() -> list[str]:
+    """Return backup .db paths under backups/, newest first."""
+    backup_dir = data_path("backups")
+    if not os.path.isdir(backup_dir):
+        return []
+    files = [
+        os.path.join(backup_dir, name)
+        for name in os.listdir(backup_dir)
+        if name.endswith(".db") and os.path.isfile(os.path.join(backup_dir, name))
+    ]
+    return sorted(files, key=os.path.getmtime, reverse=True)
+
+
+def restore_database(backup_path: str) -> str:
+    """
+    Replace the live database from a backup file.
+    Creates a pre-restore safety copy in backups/ first.
+    """
+    if not os.path.isfile(backup_path):
+        raise FileNotFoundError(f"Backup not found: {backup_path}")
+
+    try:
+        probe = sqlite3.connect(backup_path)
+        try:
+            probe.execute("SELECT name FROM sqlite_master LIMIT 1")
+        finally:
+            probe.close()
+    except sqlite3.Error as exc:
+        raise ValueError(f"Invalid SQLite backup: {backup_path}") from exc
+
+    live_path = _resolve_db_file_path()
+    if os.path.normcase(os.path.normpath(backup_path)) == os.path.normcase(os.path.normpath(live_path)):
+        raise ValueError("Cannot restore from the live database file")
+
+    safety = backup_database()
+    if not os.path.exists(os.path.dirname(live_path)):
+        os.makedirs(os.path.dirname(live_path), exist_ok=True)
+    try:
+        live_conn = sqlite3.connect(live_path)
+        try:
+            live_conn.execute("PRAGMA wal_checkpoint(FULL)")
+        finally:
+            live_conn.close()
+    except sqlite3.Error:
+        pass
+    for suffix in ("", "-wal", "-shm"):
+        path = f"{live_path}{suffix}"
+        if os.path.isfile(path):
+            os.remove(path)
+    shutil.copy2(backup_path, live_path)
+    return safety

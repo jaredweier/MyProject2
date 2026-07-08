@@ -26,6 +26,36 @@ def list_login_users() -> List[Dict]:
 
 
 def authenticate_user(username: str, password: str) -> Dict:
+    from logic.ldap_auth import ldap_auth_enabled, try_ldap_authenticate
+
+    if ldap_auth_enabled():
+        ldap_result = try_ldap_authenticate(username, password)
+        if ldap_result.get("success"):
+            conn = get_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                SELECT u.*, o.name AS officer_name
+                FROM app_users u
+                LEFT JOIN officers o ON u.officer_id = o.id
+                WHERE u.username = ? AND u.active = 1
+                """,
+                (ldap_result.get("ldap_username") or username.strip(),),
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                user = dict(row)
+                user.pop("password", None)
+                log_audit_action("user.login", "app_user", user["id"], user["id"], user["username"])
+                return {"success": True, "user": user, "auth_source": "ldap"}
+            return {
+                "success": False,
+                "message": "LDAP authentication succeeded but no linked app account exists",
+            }
+        if not ldap_result.get("skipped"):
+            return {"success": False, "message": ldap_result.get("message", "LDAP authentication failed")}
+
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute(

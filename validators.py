@@ -137,7 +137,12 @@ def parse_date(value: str) -> date:
     text = (value or "").strip()
     if not text:
         raise ValueError(f"Date must be {DATE_INPUT_HINT}")
-    for fmt in (DATE_DISPLAY_FORMAT, DATE_STORAGE_FORMAT):
+    for fmt in (
+        DATE_DISPLAY_FORMAT,
+        "%d-%m-%Y",
+        "%d.%m.%Y",
+        DATE_STORAGE_FORMAT,
+    ):
         try:
             return datetime.strptime(text, fmt).date()
         except ValueError:
@@ -479,6 +484,22 @@ def normalize_officer_job_title(job_title: Optional[str]) -> Optional[str]:
         if option.lower() == text.lower():
             return option
     return text
+
+
+def is_command_staff_title(job_title: Optional[str]) -> bool:
+    from config import COMMAND_STAFF_TITLES
+
+    title = normalize_officer_job_title(job_title)
+    return bool(title and title in COMMAND_STAFF_TITLES)
+
+
+def officer_uses_command_staff_schedule(officer: Optional[dict]) -> bool:
+    return bool(officer and is_command_staff_title(officer.get("job_title")))
+
+
+def is_command_staff_weekday(target_date: date) -> bool:
+    """Command staff work Monday–Friday (weekday 0–4)."""
+    return target_date.weekday() < 5
 
 
 def validate_officer_job_title(job_title: Optional[str]) -> ValidationResult:
@@ -885,4 +906,169 @@ def validate_rotation_settings(
         if not squad_days:
             return ValidationResult.fail(f"Squad A days must be cycle days 1–{days} (comma-separated or JSON list)")
 
+    return ValidationResult.pass_()
+
+
+def parse_bids_due_datetime(value: Optional[str]) -> Optional[datetime]:
+    """Parse supervisor free-text bid deadlines (ISO, display date, date+time)."""
+    from datetime import datetime, time
+
+    text = (value or "").strip()
+    if not text:
+        return None
+    normalized = text.replace("Z", "").replace("T", " ")
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        DATE_STORAGE_FORMAT + " %H:%M:%S",
+        DATE_STORAGE_FORMAT + " %H:%M",
+        DATE_DISPLAY_FORMAT + " %H:%M",
+        DATE_DISPLAY_FORMAT + " %H:%M:%S",
+        "%d-%m-%Y %H:%M:%S",
+        "%d-%m-%Y %H:%M",
+        "%d.%m.%Y %H:%M:%S",
+        "%d.%m.%Y %H:%M",
+    ):
+        try:
+            return datetime.strptime(normalized, fmt)
+        except ValueError:
+            continue
+    try:
+        return datetime.fromisoformat(normalized)
+    except ValueError:
+        pass
+    date_part, _, time_part = text.partition(" ")
+    try:
+        day = parse_date(date_part)
+    except ValueError:
+        return None
+    if time_part:
+        for fmt in ("%H:%M:%S", "%H:%M"):
+            try:
+                parsed_time = datetime.strptime(time_part, fmt).time()
+                return datetime.combine(day, parsed_time)
+            except ValueError:
+                continue
+        return None
+    return datetime.combine(day, time(23, 59, 59))
+
+
+def validate_shift_bid_eligibility(officer_id: int, shift_date: str) -> ValidationResult:
+    """Officer must be active and not unavailable on the bid date."""
+    from logic.officers import get_officer_by_id
+    from logic.operations import is_officer_unavailable_on_date
+
+    officer = get_officer_by_id(officer_id)
+    if not officer or officer.get("active") != 1:
+        return ValidationResult.fail("Officer not found or inactive")
+    try:
+        target = parse_date(shift_date)
+    except ValueError:
+        return ValidationResult.fail(f"Shift date must use {DATE_INPUT_HINT}")
+    if is_officer_unavailable_on_date(officer_id, target):
+        return ValidationResult.fail("Officer is unavailable (blackout) on that date")
+    return ValidationResult.pass_()
+
+
+def can_officer_work_day_band(
+    officer_id: int,
+    shift_date: str,
+    shift_start: str,
+    *,
+    as_of: Optional[date] = None,
+    check_fatigue: bool = True,
+    check_consecutive: bool = True,
+) -> ValidationResult:
+    """Central gate for shift-band eligibility (blackout, certs, fatigue, consecutive days)."""
+    from logic.labor_compliance import (
+        compute_fatigue_score,
+        get_fatigue_score_threshold,
+        would_exceed_consecutive_work_limit,
+    )
+
+    base = validate_shift_bid_eligibility(officer_id, shift_date)
+    if not base.ok:
+        return base
+
+    cert_check = validate_officer_certifications(officer_id, shift_start, as_of=as_of)
+    if not cert_check.ok:
+        return cert_check
+
+    try:
+        target = parse_date(shift_date)
+    except ValueError:
+        return ValidationResult.fail(f"Shift date must use {DATE_INPUT_HINT}")
+
+    if check_consecutive and would_exceed_consecutive_work_limit(officer_id, target, adding_work_day=True):
+        from logic.labor_compliance import get_max_consecutive_work_days
+
+        return ValidationResult.fail(
+            f"Would exceed {get_max_consecutive_work_days()}-day consecutive work limit on {format_date(target)}"
+        )
+
+    if check_fatigue:
+        fatigue = compute_fatigue_score(officer_id, as_of=as_of or target)
+        threshold = get_fatigue_score_threshold()
+        if fatigue.get("severity") and fatigue.get("score", 0) >= threshold:
+            return ValidationResult.fail(fatigue.get("message") or "Fatigue score above department threshold")
+
+    return ValidationResult.pass_()
+
+
+def validate_officer_certifications(
+    officer_id: int,
+    shift_start: str,
+    *,
+    as_of: Optional[date] = None,
+) -> ValidationResult:
+    """Required certifications for a shift band must be current."""
+    from database import get_connection
+
+    check_date = as_of or date.today()
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT t.code, t.name
+        FROM shift_cert_requirements r
+        JOIN certification_types t ON r.cert_type_id = t.id
+        WHERE r.shift_start = ? AND t.active = 1
+        """,
+        (shift_start,),
+    )
+    required = cursor.fetchall()
+    if not required:
+        conn.close()
+        return ValidationResult.pass_()
+
+    cursor.execute(
+        """
+        SELECT t.code, c.expires_date
+        FROM officer_certifications c
+        JOIN certification_types t ON c.cert_type_id = t.id
+        WHERE c.officer_id = ? AND t.active = 1
+        """,
+        (officer_id,),
+    )
+    held = {r["code"]: r["expires_date"] for r in cursor.fetchall()}
+    conn.close()
+
+    missing = []
+    expired = []
+    for req in required:
+        code = req["code"]
+        if code not in held:
+            missing.append(req["name"])
+            continue
+        exp = held[code]
+        if exp:
+            try:
+                if parse_date(exp) < check_date:
+                    expired.append(req["name"])
+            except ValueError:
+                pass
+    if missing:
+        return ValidationResult.fail(f"Missing certification(s): {', '.join(missing)}")
+    if expired:
+        return ValidationResult.fail(f"Expired certification(s): {', '.join(expired)}")
     return ValidationResult.pass_()

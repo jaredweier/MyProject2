@@ -1,4 +1,4 @@
-"""Main window placement — maximize and focus on startup."""
+"""Main window placement — maximize and focus after login."""
 
 import sys
 
@@ -33,3 +33,8 @@ def apply_main_window_layout(root: ctk.CTk) -> None:
         root.after(250, lambda: root.attributes("-topmost", False))
     except Exception:
         _applied_for.discard(key)
+
+
+def reset_main_window_layout_guard(root: ctk.CTk) -> None:
+    """Allow maximize again after sign-out (new shell session)."""
+    _applied_for.discard(id(root))

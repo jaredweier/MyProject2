@@ -4,13 +4,13 @@
 
 Auto-context OFF. Load on demand: one `.grok/skills/*/SKILL.md` · `@docs/AGENTS_REFERENCE.md` · `@docs/HANDOFF.md`
 
-State: `logs/last_agent_gate.json` · `logs/last_gate.json`
+State: `logs/last_agent_gate.json` · `logs/last_verify.json` · `logs/last_gate.json`
 
 ## Sufficiency / Minimize (mandatory)
-Stop when confident · `outline`/`symbol` first · `usage-brief <slice>` before reads · `cheap-check` after edits · `token-improve` if prompts/index change
+Stop when confident · `outline`/`symbol` first · `usage-brief <slice>` before reads · `verify --tier fast` after edits · `token-improve` if prompts/index change
 
-## Verify
-`cheap-check` → `preflight` → `verify-slice <id>` → `check`. Route: `route-task` (advisory).
+## Verify (unified — see `.grok/rules/verify-policy.md`)
+`verify --tier fast` → `verify --tier preflight` → `verify-slice <id>` → **`verify --tier check`** (ship gate). Never claim done below check.
 
 ## Edit boundaries
 `validators.py` + `logic/*` · `ui/*_pages.py` · slice `touch_together` · `import logic`

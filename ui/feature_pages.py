@@ -6,7 +6,6 @@ from tkinter import filedialog, messagebox
 import customtkinter as ctk
 
 from config import DATE_INPUT_HINT
-from logic.staffing_config import get_active_shift_times
 from logic import (
     add_holiday,
     add_officer_availability,
@@ -44,6 +43,7 @@ from logic import (
     set_department_setting,
     update_holiday,
 )
+from logic.staffing_config import get_active_shift_times
 from ui.theme import (
     CARD_PAD,
     DODGEVILLE_ACCENT,
@@ -397,6 +397,8 @@ class ReportsPageMixin:
             ledger_lines or [("No OT/comp entries this period", DODGEVILLE_SUCCESS)],
         )
 
+        self._append_tier2_report_sections()
+
         conflict_lines = [
             (
                 f"{c['officer_name']}  ·  {format_date(c['unavailable_date'])}  ·  scheduled {c['schedule_status']}",
@@ -590,11 +592,10 @@ class ReportsPageMixin:
             get_active_rotation_cycle_length,
             get_active_rotation_preset_name,
             get_preset_cycle_length,
-            get_rotation_config,
             save_rotation_settings,
         )
         from ui.helpers import refresh_after_rotation_change
-        from validators import format_date, parse_date
+        from validators import format_date
 
         card = Card(self.reports_scroll)
         card.pack(fill="x", pady=6)
@@ -609,9 +610,9 @@ class ReportsPageMixin:
 
         preset_row = ctk.CTkFrame(form, fg_color="transparent")
         preset_row.pack(fill="x", pady=(0, 8))
-        ctk.CTkLabel(preset_row, text="Preset", font=font("small"), text_color=UI_TEXT_MUTED, width=120, anchor="w").pack(
-            side="left"
-        )
+        ctk.CTkLabel(
+            preset_row, text="Preset", font=font("small"), text_color=UI_TEXT_MUTED, width=120, anchor="w"
+        ).pack(side="left")
         self._rotation_preset_var = ctk.StringVar(value=get_active_rotation_preset_name())
         preset_menu = ctk.CTkOptionMenu(
             preset_row,
@@ -633,7 +634,12 @@ class ReportsPageMixin:
         base_row = ctk.CTkFrame(form, fg_color="transparent")
         base_row.pack(fill="x", pady=(0, 8))
         ctk.CTkLabel(
-            base_row, text=f"Base date ({DATE_INPUT_HINT})", font=font("small"), text_color=UI_TEXT_MUTED, width=120, anchor="w"
+            base_row,
+            text=f"Base date ({DATE_INPUT_HINT})",
+            font=font("small"),
+            text_color=UI_TEXT_MUTED,
+            width=120,
+            anchor="w",
         ).pack(side="left")
         self._rotation_base_entry = ctk.CTkEntry(base_row, height=36, width=140)
         self._rotation_base_entry.insert(0, format_date(get_active_rotation_base_date()))
@@ -652,7 +658,7 @@ class ReportsPageMixin:
         self._rotation_squad_a_entry = ctk.CTkEntry(
             squad_row,
             height=36,
-            placeholder_text="e.g. 1,2,5,6,7,10,11 — blank uses preset",
+            placeholder_text="e.g. 1,2,5,6,7,10,11 — Squad B uses remaining days",
         )
         squad_raw = get_department_setting("rotation_squad_a_days", "").strip()
         if squad_raw:
@@ -1134,7 +1140,11 @@ class AvailabilityPageMixin:
         right = Card(page)
         right.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         right.body.grid_rowconfigure(1, weight=1)
-        hdr = ctk.CTkFrame(right.body, fg_color="transparent")
+        self._avail_right_scroll = ctk.CTkScrollableFrame(right.body, fg_color="transparent")
+        self._avail_right_scroll.pack(fill="both", expand=True, padx=0, pady=0)
+        self._build_tier2_availability_sections(self._avail_right_scroll)
+
+        hdr = ctk.CTkFrame(self._avail_right_scroll, fg_color="transparent")
         hdr.pack(fill="x", padx=CARD_PAD, pady=(CARD_PAD, 8))
         SectionHeader(hdr, "Department Holidays", "Administration: add, edit, or remove").pack(side="left")
         if self.can("holidays.manage"):
@@ -1156,17 +1166,17 @@ class AvailabilityPageMixin:
                 command=self._show_add_holiday_dialog,
             ).pack(side="right", padx=(4, 0))
 
-        self.holiday_list = ctk.CTkScrollableFrame(right.body, fg_color="transparent", height=180)
+        self.holiday_list = ctk.CTkScrollableFrame(self._avail_right_scroll, fg_color="transparent", height=160)
         self.holiday_list.pack(fill="x", padx=8, pady=(0, 8))
 
         self._open_shift_header = SectionHeader(
-            right.body,
+            self._avail_right_scroll,
             "Open Shifts",
             "Coverage gaps officers can claim",
         )
         self._open_shift_header.pack(fill="x", padx=CARD_PAD, pady=(4, 6))
         if self.can("open_shifts.manage"):
-            os_form = ctk.CTkFrame(right.body, fg_color="transparent")
+            os_form = ctk.CTkFrame(self._avail_right_scroll, fg_color="transparent")
             os_form.pack(fill="x", padx=CARD_PAD, pady=(0, 6))
             self._open_shift_date = ctk.CTkEntry(os_form, placeholder_text=DATE_INPUT_HINT, height=32, width=110)
             self._open_shift_date.pack(side="left", padx=(0, 4))
@@ -1184,7 +1194,7 @@ class AvailabilityPageMixin:
                 command=self._post_open_shift,
             ).pack(side="left", padx=4)
 
-        self.open_shift_list = ctk.CTkScrollableFrame(right.body, fg_color="transparent")
+        self.open_shift_list = ctk.CTkScrollableFrame(self._avail_right_scroll, fg_color="transparent")
         self.open_shift_list.pack(fill="both", expand=True, padx=8, pady=(0, 8))
 
     def _add_availability(self):
@@ -1533,6 +1543,8 @@ class AvailabilityPageMixin:
                 self._highlight_open_shift_id,
                 "_highlight_open_shift_id",
             )
+
+        self._refresh_shift_bidding()
 
     def _delete_availability(self, entry_id: int):
         uid = self.current_user.get("id") if self.current_user else None

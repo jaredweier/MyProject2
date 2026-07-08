@@ -54,8 +54,14 @@ def test_database(seed: bool = True) -> Iterator[str]:
             os.unlink(path)
 
 
-def get_any_officer(squad: str = "A", shift_start: Optional[str] = None) -> dict:
+def get_any_officer(
+    squad: str = "A",
+    shift_start: Optional[str] = None,
+    *,
+    include_command_staff: bool = False,
+) -> dict:
     import logic
+    from validators import officer_uses_command_staff_schedule
 
     officers = logic.get_officers_by_seniority()
     for o in officers:
@@ -63,14 +69,30 @@ def get_any_officer(squad: str = "A", shift_start: Optional[str] = None) -> dict
             continue
         if shift_start and o["shift_start"] != shift_start:
             continue
+        if not include_command_staff and officer_uses_command_staff_schedule(o):
+            continue
         return o
     raise ValueError(f"No officer for squad={squad} shift={shift_start}")
 
 
 def working_date_for_squad(squad: str) -> date:
-    """Return a date when the given squad is on duty (cycle day 1 = Squad A)."""
-    return date(2026, 6, 28) if squad == "A" else date(2026, 6, 30)
+    """Rotation day when the squad is on duty (stable date near TEST_REFERENCE_DATE)."""
+    from datetime import timedelta
+
+    from config import ROTATION_CYCLE_LENGTH
+    from logic import get_cycle_day, get_squad_on_duty
+
+    squad = squad.upper()
+    anchor = TEST_REFERENCE_DATE
+    for offset in range(ROTATION_CYCLE_LENGTH + 1):
+        for delta in (offset, -offset):
+            day = anchor + timedelta(days=delta)
+            if get_squad_on_duty(get_cycle_day(day)) == squad:
+                return day
+    raise ValueError(f"No working day found for squad {squad}")
 
 
 def off_date_for_squad(squad: str) -> date:
-    return date(2026, 6, 30) if squad == "A" else date(2026, 6, 28)
+    """Rotation day when the squad is off (other squad on duty)."""
+    other = "B" if squad.upper() == "A" else "A"
+    return working_date_for_squad(other)

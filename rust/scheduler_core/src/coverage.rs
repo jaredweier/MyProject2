@@ -2,7 +2,33 @@ use std::collections::{HashMap, HashSet};
 
 use pyo3::prelude::*;
 
-use crate::status::Officer;
+use crate::rotation::{cycle_day, RotationSchedule};
+use crate::status::{officer_base_rotation_working, Officer};
+
+fn parse_minutes(value: &str) -> i32 {
+    let parts: Vec<&str> = value.split(':').collect();
+    if parts.len() < 2 {
+        return 0;
+    }
+    let h: i32 = parts[0].parse().unwrap_or(0);
+    let m: i32 = parts[1].parse().unwrap_or(0);
+    h * 60 + m
+}
+
+fn normalize_shift_band(shift_start: &str, bands: &[String]) -> String {
+    if shift_start.is_empty() {
+        return String::new();
+    }
+    if bands.iter().any(|b| b == shift_start) {
+        return shift_start.to_string();
+    }
+    let target = parse_minutes(shift_start);
+    bands
+        .iter()
+        .min_by_key(|b| (parse_minutes(b) - target).abs())
+        .cloned()
+        .unwrap_or_else(|| shift_start.to_string())
+}
 
 pub fn compute_shift_coverage_counts(
     officers: &[Officer],
@@ -11,7 +37,7 @@ pub fn compute_shift_coverage_counts(
     end: &str,
     shift_starts: &[String],
     base_ordinal: i32,
-    cycle_length: i32,
+    schedule: &RotationSchedule,
 ) -> PyResult<HashMap<(String, String, String), i32>> {
     let start_ord = crate::rotation::parse_ymd(start)?;
     let end_ord = crate::rotation::parse_ymd(end)?;
@@ -20,7 +46,7 @@ pub fn compute_shift_coverage_counts(
     let mut replacements_by_date: HashMap<String, Vec<(i64, Option<String>)>> = HashMap::new();
 
     for (day, orig, repl, covered) in overrides {
-        if start <= day && day <= end {
+        if day.as_str() >= start && day.as_str() <= end {
             bumped_by_date.entry(day.clone()).or_default().insert(*orig);
             if let Some(rid) = repl {
                 replacements_by_date
@@ -39,16 +65,23 @@ pub fn compute_shift_coverage_counts(
         let day_str = crate::status::ordinal_to_iso_public(ord);
         let bumped = bumped_by_date.get(&day_str).cloned().unwrap_or_default();
 
+        let cycle_day = cycle_day(base_ordinal, ord, schedule.cycle_length);
+        let squad_on_duty = schedule.squad_on_duty(cycle_day);
         for squad in ["A", "B"] {
             for shift_start in shift_starts {
-                let base = active
-                    .iter()
-                    .filter(|o| {
-                        o.squad == squad
-                            && o.shift_start == *shift_start
-                            && !bumped.contains(&o.id)
-                    })
-                    .count() as i32;
+                let base = if squad != squad_on_duty {
+                    0
+                } else {
+                    active
+                        .iter()
+                        .filter(|o| {
+                            o.squad == squad
+                                && normalize_shift_band(&o.shift_start, shift_starts) == *shift_start
+                                && !bumped.contains(&o.id)
+                                && officer_base_rotation_working(o, ord, base_ordinal, schedule)
+                        })
+                        .count() as i32
+                };
 
                 let mut repl = 0;
                 let mut seen: HashSet<i64> = HashSet::new();
@@ -64,7 +97,7 @@ pub fn compute_shift_coverage_counts(
                             continue;
                         }
                         let effective = covered.as_deref().unwrap_or(off.shift_start.as_str());
-                        if effective == shift_start.as_str() {
+                        if normalize_shift_band(effective, shift_starts) == *shift_start {
                             seen.insert(*rid);
                             repl += 1;
                         }

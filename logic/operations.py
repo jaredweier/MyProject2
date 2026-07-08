@@ -59,9 +59,9 @@ def set_department_setting(key: str, value: str, user_id: Optional[int] = None) 
 
 def get_position_pay_rates() -> Dict:
     """Return compensation config keyed by roster title."""
-    from config import DEFAULT_POSITION_PAY_RATES, OFFICER_TITLE_OPTIONS, POSITION_PAY_SETTINGS_KEY
-    from logic.roster_titles import get_officer_title_options
+    from config import DEFAULT_POSITION_PAY_RATES, POSITION_PAY_SETTINGS_KEY
     from logic.payroll import count_pay_periods_in_year, monthly_pay_to_per_pay_period
+    from logic.roster_titles import get_officer_title_options
     from validators import (
         default_annual_hours_for_title,
         position_amount_to_hourly,
@@ -92,9 +92,7 @@ def get_position_pay_rates() -> Dict:
         entry["amount"] = float(entry.get("amount") or 0)
         entry["is_salary"] = bool(entry.get("is_salary"))
         try:
-            entry["annual_hours"] = float(
-                entry.get("annual_hours") or default_annual_hours_for_title(title)
-            )
+            entry["annual_hours"] = float(entry.get("annual_hours") or default_annual_hours_for_title(title))
         except (TypeError, ValueError):
             entry["annual_hours"] = default_annual_hours_for_title(title)
         entry["monthly_equivalent"] = position_amount_to_monthly(
@@ -122,8 +120,8 @@ def get_position_pay_rates() -> Dict:
 def save_position_pay_rates(rates: Dict, user_id: Optional[int] = None) -> Dict:
     """Persist position compensation (amount, basis, salary flag per title)."""
     from config import OFFICER_TITLE_OPTIONS, POSITION_PAY_SETTINGS_KEY
-    from logic.roster_titles import get_officer_title_options
     from logic.payroll import monthly_pay_to_per_pay_period
+    from logic.roster_titles import get_officer_title_options
     from validators import (
         default_annual_hours_for_title,
         normalize_position_pay_basis,
@@ -151,9 +149,7 @@ def save_position_pay_rates(rates: Dict, user_id: Optional[int] = None) -> Dict:
         pay_basis = normalize_position_pay_basis(entry.get("pay_basis"))
         is_salary = bool(entry.get("is_salary"))
         try:
-            annual_hours = float(
-                entry.get("annual_hours") or default_annual_hours_for_title(title)
-            )
+            annual_hours = float(entry.get("annual_hours") or default_annual_hours_for_title(title))
         except (TypeError, ValueError):
             return {"success": False, "message": f"{title}: annual hours must be numeric"}
         if amount <= 0:
@@ -161,9 +157,7 @@ def save_position_pay_rates(rates: Dict, user_id: Optional[int] = None) -> Dict:
                 return {"success": False, "message": f"{title}: amount must be greater than zero"}
             payload.pop(title, None)
             continue
-        validation = validate_position_pay_entry(
-            title, amount, pay_basis, is_salary, annual_hours=annual_hours
-        )
+        validation = validate_position_pay_entry(title, amount, pay_basis, is_salary, annual_hours=annual_hours)
         if not validation.ok:
             return {"success": False, "message": validation.message}
         monthly = position_amount_to_monthly(amount, pay_basis, annual_hours)
@@ -302,7 +296,9 @@ def create_open_shift(
 
 
 def fill_open_shift(shift_id: int, officer_id: int, user_id: Optional[int] = None) -> Dict:
+    from logic.certifications import officer_meets_shift_cert_requirements
     from logic.requests import _notify_open_shift_filled
+    from validators import parse_date
 
     officer = get_officer_by_id(officer_id)
     if not officer:
@@ -315,6 +311,14 @@ def fill_open_shift(shift_id: int, officer_id: int, user_id: Optional[int] = Non
         row = cursor.fetchone()
         if not row:
             return {"success": False, "message": "Open shift not found"}
+        shift = dict(row)
+        cert_ok, cert_msg = officer_meets_shift_cert_requirements(
+            officer_id,
+            shift["shift_start"],
+            parse_date(shift["shift_date"]),
+        )
+        if not cert_ok:
+            return {"success": False, "message": cert_msg}
         cursor.execute(
             """
             UPDATE open_shifts
@@ -630,6 +634,67 @@ def is_officer_unavailable_on_date(officer_id: int, target_date: date) -> bool:
     from validators import _officer_unavailable_on_date
 
     return _officer_unavailable_on_date(officer_id, target_date)
+
+
+def get_backup_status(*, max_age_days: int = 7) -> Dict:
+    """Latest backup age for dashboard reminders and admin UI."""
+    from database import list_backup_files
+    from paths import data_path
+
+    today = date.today()
+    last_setting = get_department_setting("last_auto_backup") or ""
+    last_manual = get_department_setting("last_manual_backup") or ""
+    files = list_backup_files()
+    latest_path = files[0] if files else None
+    latest_mtime_days: Optional[int] = None
+    if latest_path:
+        import os
+        from datetime import datetime
+
+        mtime = datetime.fromtimestamp(os.path.getmtime(latest_path))
+        latest_mtime_days = (today - mtime.date()).days
+
+    days_since = latest_mtime_days
+    if last_setting:
+        try:
+            days_setting = (today - parse_date(last_setting)).days
+            days_since = days_since if days_since is not None else days_setting
+            if days_since is not None:
+                days_since = min(days_since, days_setting)
+            else:
+                days_since = days_setting
+        except ValueError:
+            pass
+
+    needs_backup = days_since is None or days_since >= max_age_days
+    return {
+        "success": True,
+        "backup_dir": data_path("backups"),
+        "latest_path": latest_path,
+        "latest_age_days": days_since,
+        "needs_backup": needs_backup,
+        "max_age_days": max_age_days,
+        "last_auto_backup": last_setting or None,
+        "last_manual_backup": last_manual or None,
+        "backup_count": len(files),
+    }
+
+
+def restore_database_from_backup(backup_path: str, *, user_id: Optional[int] = None) -> Dict:
+    from database import restore_database
+
+    try:
+        safety_path = restore_database(backup_path)
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        return {"success": False, "message": str(exc)}
+    set_department_setting("last_manual_backup", date.today().isoformat())
+    _log_audit("database.restore", "database", None, user_id, f"{backup_path} -> safety:{safety_path}")
+    return {
+        "success": True,
+        "message": "Database restored from backup. Restart recommended if data looks stale.",
+        "safety_backup": safety_path,
+        "restored_from": backup_path,
+    }
 
 
 def maybe_run_auto_backup(max_age_days: int = 7) -> Optional[str]:

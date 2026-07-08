@@ -7,18 +7,21 @@ import argparse
 from datetime import date
 
 from config import DAY_OFF_REQUEST_TYPES
-from database import backup_database
+from database import backup_database, list_backup_files, restore_database
 from logic import (
     add_holiday,
     add_officer_availability,
     admin_reset_user_password,
     bulk_approve_auto_ok_requests,
     bulk_reject_pending_requests,
+    cancel_shift_bid_event,
     compare_base_updated_schedule,
     create_app_user,
     create_day_off_request,
     create_manual_coverage_override,
     create_open_shift,
+    create_shift_bid_event,
+    create_shift_bid_from_simulation,
     create_shift_swap_request,
     delete_holiday,
     delete_officer_availability,
@@ -37,14 +40,20 @@ from logic import (
     export_shift_swaps_pdf,
     export_timecard_csv,
     fill_open_shift,
+    finalize_shift_bid_event,
+    format_bid_event_summary,
     get_audit_log,
+    get_callback_events,
+    get_callback_rotation,
     get_coverage_report,
     get_current_cycle_window,
     get_dashboard_insights,
     get_day_off_requests,
     get_department_setting,
+    get_fatigue_scoreboard,
     get_holidays,
     get_labor_compliance_report,
+    get_next_callback_candidate,
     get_notifications,
     get_officer_availability,
     get_officers_by_seniority,
@@ -54,21 +63,33 @@ from logic import (
     get_pending_day_off_requests,
     get_pending_shift_swap_requests,
     get_schedule_conflicts,
+    get_shift_bid_event,
+    get_shift_bid_events,
+    get_shift_bid_participation_report,
+    get_shift_bid_rankings_for_event,
     get_shift_swap_requests,
     get_unread_notification_count,
     import_roster_from_csv,
     is_pay_period_locked,
     list_all_users,
+    load_simulator_scenario_for_bid,
     lock_pay_period,
     mark_all_notifications_read,
     mark_notification_read,
+    preview_shift_bid_awards,
     process_day_off_request,
     process_shift_swap,
+    publish_shift_bid_event,
+    reassign_shift_bid_option,
+    record_callback_event,
     resolve_notification_navigation,
     set_app_user_active,
     set_department_setting,
+    submit_shift_bid_rankings,
+    sync_callback_rotation_from_roster,
     unlock_pay_period,
     update_app_user,
+    update_shift_bid_assignments,
 )
 from logic import (
     add_officer as logic_add_officer,
@@ -352,9 +373,29 @@ def rotation_settings_cmd(args):
             print(f"Error: {result.get('message')}")
 
 
-def backup():
+def backup_create():
     path = backup_database()
     print(f"Database backed up to: {path}")
+
+
+def backup_list_cmd():
+    files = list_backup_files()
+    if not files:
+        print("No backup files found.")
+        return
+    for path in files:
+        print(path)
+
+
+def backup_restore_cmd(path: str):
+    from logic import restore_database_from_backup
+
+    result = restore_database_from_backup(path)
+    if result.get("success"):
+        print(result.get("message", "Restored."))
+        print(f"Safety copy: {result.get('safety_backup')}")
+    else:
+        print(f"Failed: {result.get('message')}")
 
 
 def _print_swaps_table(swaps, empty_msg: str = "No shift swaps."):
@@ -754,6 +795,211 @@ def post_open_shift(args):
         print(f"Open shift posted (ID: {result['shift_id']})")
     else:
         print(f"Error: {result.get('message')}")
+
+
+def list_shift_bids_cmd(args):
+    if args.officer_id:
+        events = get_shift_bid_events(officer_id=args.officer_id)
+    else:
+        events = get_shift_bid_events(include_drafts=True)
+    if not events:
+        print("No shift bid events.")
+        return
+    for ev in events:
+        squad = f"Squad {ev['squad']} " if ev.get("squad") else ""
+        print(
+            f"{ev['id']:<4} [{ev['status']:<10}] {ev.get('title') or 'Shift Bid':<24} {squad}"
+            f"due {ev.get('bids_due_by') or '—'}  ({ev.get('respondent_count', 0)} responses)"
+        )
+
+
+def post_shift_bid_event_cmd(args):
+    result = create_shift_bid_event(
+        title=args.title or "Shift Bid",
+        number_of_shifts=args.number_of_shifts or "",
+        shift_length=args.shift_length or "",
+        rotation=args.rotation or "",
+        shift_start_times=args.shift_start_times or "",
+        shifts_begin=args.shifts_begin or "",
+        bids_due_by=args.bids_due_by or "",
+        squad=args.squad,
+        notes=args.notes or "",
+    )
+    if not result.get("success"):
+        print(f"Error: {result.get('message')}")
+        return
+    event_id = result["event_id"]
+    if args.publish:
+        pub = publish_shift_bid_event(event_id)
+        if not pub.get("success"):
+            print(f"Created draft {event_id} but publish failed: {pub.get('message')}")
+            return
+        print(f"Shift bid published (ID: {event_id}, {pub.get('option_count', 0)} shifts)")
+    else:
+        print(f"Shift bid draft created (ID: {event_id})")
+
+
+def submit_shift_bid_cmd(args):
+    rankings = []
+    for rank_str in args.rankings:
+        if ":" not in rank_str:
+            print(f"Invalid ranking '{rank_str}' — use option_id:rank")
+            return
+        opt_s, rank_s = rank_str.split(":", 1)
+        rankings.append({"option_id": int(opt_s), "preference_rank": int(rank_s)})
+    result = submit_shift_bid_rankings(args.event_id, args.officer_id, rankings)
+    if result.get("success"):
+        print(f"Rankings submitted ({result.get('ranked_count', 0)} preferences)")
+    else:
+        print(f"Error: {result.get('message')}")
+
+
+def reassign_shift_bid_cmd(args):
+    officer_id = None if args.clear else args.officer_id
+    if not args.clear and officer_id is None:
+        print("Error: provide --officer-id or --clear")
+        return
+    result = reassign_shift_bid_option(args.event_id, args.option_id, officer_id)
+    if result.get("success"):
+        print(f"Updated {result.get('changed', 0)} assignment(s)")
+    else:
+        print(f"Error: {result.get('message')}")
+
+
+def finalize_shift_bid_cmd(args):
+    result = finalize_shift_bid_event(args.event_id)
+    if result.get("success"):
+        for award in result.get("awards", []):
+            print(f"  {award['officer_name']} -> {award['option_label']}")
+        print(f"Finalized ({result.get('award_count', 0)} awards)")
+    else:
+        print(f"Error: {result.get('message')}")
+
+
+def show_shift_bid_cmd(args):
+    print(format_bid_event_summary(args.event_id))
+    event = get_shift_bid_event(args.event_id)
+    if event and event.get("options"):
+        print("\nShifts:")
+        for opt in event["options"]:
+            awarded = f" -> {opt.get('awarded_officer_name')}" if opt.get("awarded_officer_id") else ""
+            print(f"  {opt['id']}: {opt['label']} [{opt['status']}]{awarded}")
+    rankings = get_shift_bid_rankings_for_event(args.event_id)
+    if rankings:
+        print("\nRankings:")
+        for row in rankings:
+            print(
+                f"  {row['officer_name']:<22} {row['option_label']:<10} "
+                f"pref #{row['preference_rank']}  seniority {row['seniority_rank']}"
+            )
+
+
+def preview_shift_bid_cmd(args):
+    result = preview_shift_bid_awards(args.event_id)
+    if not result.get("success"):
+        print(f"Error: {result.get('message')}")
+        return
+    for award in result.get("awards", []):
+        print(f"  {award['officer_name']} -> {award['option_label']} (pref #{award['preference_rank']})")
+    for opt in result.get("unassigned_options", []):
+        print(f"  Unassigned: {opt.get('label')}")
+    print(f"Preview: {result.get('award_count', 0)} award(s)")
+
+
+def participation_shift_bid_cmd(args):
+    report = get_shift_bid_participation_report(args.event_id)
+    if not report.get("success"):
+        print(f"Error: {report.get('message')}")
+        return
+    print(f"{report.get('title') or 'Shift Bid'} [{report.get('status')}]")
+    print(f"Eligible: {report.get('eligible_count', 0)}  Responded: {report.get('respondent_count', 0)}")
+    missing = report.get("missing_officers") or []
+    if missing:
+        print("No response:")
+        for row in missing:
+            print(f"  {row['name']}")
+
+
+def assignments_shift_bid_cmd(args):
+    assignments = []
+    for spec in args.assignments:
+        if ":" not in spec:
+            print(f"Invalid assignment '{spec}' — use option_id:officer_id or option_id:none")
+            return
+        opt_s, off_s = spec.split(":", 1)
+        officer_id = None if off_s.lower() in ("none", "clear", "0") else int(off_s)
+        assignments.append({"option_id": int(opt_s), "officer_id": officer_id})
+    result = update_shift_bid_assignments(args.event_id, assignments)
+    if result.get("success"):
+        print(f"Updated {result.get('changed', 0)} assignment(s)")
+    else:
+        print(f"Error: {result.get('message')}")
+
+
+def import_sim_shift_bid_cmd(args):
+    if args.scenario_id:
+        sim = load_simulator_scenario_for_bid(args.scenario_id)
+    else:
+        from logic import run_schedule_simulation
+
+        sim = run_schedule_simulation(
+            args.rotation or "4-on-4-off",
+            args.officers or 8,
+            args.shift_length or 10.0,
+            args.annual_hours or 2080.0,
+            [s.strip() for s in (args.shift_starts or "06:00,16:00").split(",") if s.strip()],
+            apply_department_rules=False,
+            min_per_shift=1,
+        )
+    if not sim.get("success"):
+        print(f"Error: {sim.get('message', 'Simulation failed')}")
+        return
+    result = create_shift_bid_from_simulation(
+        sim,
+        publish=args.publish,
+        title=args.title,
+        squad=args.squad,
+        bids_due_by=args.bids_due_by or "",
+        shifts_begin=args.shifts_begin or "",
+    )
+    if result.get("success"):
+        print(f"Shift bid created (ID: {result['event_id']})" + (" and published" if args.publish else ""))
+    else:
+        print(f"Error: {result.get('message')}")
+
+
+def list_callbacks_cmd(_args):
+    rotation = get_callback_rotation()
+    if not rotation:
+        print("Callback rotation empty. Run: python cli.py callbacks sync")
+        return
+    for row in rotation:
+        print(f"#{row['sort_order']:<3} {row['officer_name']:<22} Squad {row.get('squad') or '—'}")
+
+
+def next_callback_cmd(_args):
+    result = get_next_callback_candidate()
+    cand = result.get("candidate")
+    if not cand:
+        print("No callback candidate (sync rotation first).")
+        return
+    print(f"Next: {cand['officer_name']} (ID {cand['officer_id']})")
+
+
+def record_callback_cmd(args):
+    result = record_callback_event(args.officer_id, args.date, args.hours, notes=args.notes or "")
+    if result.get("success"):
+        print(f"Callback recorded (ID: {result['event_id']})")
+    else:
+        print(f"Error: {result.get('message')}")
+
+
+def fatigue_report_cmd(_args):
+    board = get_fatigue_scoreboard(limit=15)
+    print(f"Fatigue threshold: {board.get('threshold', 70):.0f}")
+    for row in board.get("officers", []):
+        flag = row.get("severity") or "ok"
+        print(f"{row['officer_name']:<22} {row['score']:5.1f}  [{flag}]")
 
 
 def list_availability(args):
@@ -1216,6 +1462,76 @@ def main():
     os_fill.add_argument("shift_id", type=int)
     os_fill.add_argument("--officer-id", type=int, required=True)
 
+    shift_bids = subparsers.add_parser("shift-bids", help="Shift bid events")
+    sb_sub = shift_bids.add_subparsers(dest="action")
+    sb_list = sb_sub.add_parser("list", help="List bid events")
+    sb_list.add_argument("--officer-id", type=int)
+    sb_post = sb_sub.add_parser("post", help="Create a bid event (draft)")
+    sb_post.add_argument("--title", default="Shift Bid")
+    sb_post.add_argument("--number-of-shifts", default="")
+    sb_post.add_argument("--shift-length", default="")
+    sb_post.add_argument("--rotation", default="")
+    sb_post.add_argument("--shift-start-times", default="")
+    sb_post.add_argument("--shifts-begin", default="")
+    sb_post.add_argument("--bids-due-by", default="")
+    sb_post.add_argument("--squad", choices=["A", "B"])
+    sb_post.add_argument("--notes", default="")
+    sb_post.add_argument("--publish", action="store_true", help="Publish immediately to officers")
+    sb_submit = sb_sub.add_parser("submit", help="Submit ranked preferences")
+    sb_submit.add_argument("event_id", type=int)
+    sb_submit.add_argument("--officer-id", type=int, required=True)
+    sb_submit.add_argument(
+        "--rankings",
+        nargs="+",
+        required=True,
+        help="Preference list as option_id:rank (e.g. 3:1 5:2)",
+    )
+    sb_finalize = sb_sub.add_parser("finalize", help="Finalize awards by seniority")
+    sb_finalize.add_argument("event_id", type=int)
+    sb_show = sb_sub.add_parser("show", help="Show bid event details")
+    sb_show.add_argument("event_id", type=int)
+    sb_reassign = sb_sub.add_parser("reassign", help="Manually change assignment on a finalized event")
+    sb_reassign.add_argument("event_id", type=int)
+    sb_reassign.add_argument("option_id", type=int)
+    sb_reassign.add_argument("--officer-id", type=int, help="Officer to assign (omit with --clear)")
+    sb_reassign.add_argument("--clear", action="store_true", help="Remove assignment from this shift")
+    sb_preview = sb_sub.add_parser("preview", help="Preview seniority awards without finalizing")
+    sb_preview.add_argument("event_id", type=int)
+    sb_part = sb_sub.add_parser("participation", help="Participation report for a bid event")
+    sb_part.add_argument("event_id", type=int)
+    sb_assign = sb_sub.add_parser("assignments", help="Bulk update finalized assignments")
+    sb_assign.add_argument("event_id", type=int)
+    sb_assign.add_argument(
+        "assignments",
+        nargs="+",
+        help="option_id:officer_id pairs (use none to unassign)",
+    )
+    sb_import = sb_sub.add_parser("import-sim", help="Create bid from simulator or saved scenario")
+    sb_import.add_argument("--scenario-id", type=int, help="Saved simulator scenario ID")
+    sb_import.add_argument("--rotation", default="4-on-4-off")
+    sb_import.add_argument("--officers", type=int, default=8)
+    sb_import.add_argument("--shift-length", type=float, default=10.0)
+    sb_import.add_argument("--annual-hours", type=float, default=2080.0)
+    sb_import.add_argument("--shift-starts", default="06:00,16:00")
+    sb_import.add_argument("--title", default="")
+    sb_import.add_argument("--squad", choices=["A", "B"])
+    sb_import.add_argument("--shifts-begin", default="")
+    sb_import.add_argument("--bids-due-by", default="")
+    sb_import.add_argument("--publish", action="store_true")
+
+    callbacks = subparsers.add_parser("callbacks", help="Call-back rotation and events")
+    cb_sub = callbacks.add_subparsers(dest="action")
+    cb_sub.add_parser("list", help="List callback rotation")
+    cb_sub.add_parser("sync", help="Sync rotation from active roster")
+    cb_sub.add_parser("next", help="Show next callback candidate")
+    cb_record = cb_sub.add_parser("record", help="Record a callback event")
+    cb_record.add_argument("--officer-id", type=int, required=True)
+    cb_record.add_argument("--date", required=True)
+    cb_record.add_argument("--hours", type=float, required=True)
+    cb_record.add_argument("--notes", default="")
+
+    subparsers.add_parser("fatigue", help="Fatigue scoreboard report")
+
     # Audit
     audit = subparsers.add_parser("audit-log", help="View or export audit log")
     audit_sub = audit.add_subparsers(dest="action")
@@ -1228,7 +1544,12 @@ def main():
     audit_export.add_argument("--action", help="Filter by action substring")
 
     # Backup
-    subparsers.add_parser("backup", help="Backup the database")
+    backup = subparsers.add_parser("backup", help="Backup, list, or restore the database")
+    backup_sub = backup.add_subparsers(dest="action")
+    backup_sub.add_parser("create", help="Create a new backup (default)")
+    backup_sub.add_parser("list", help="List backup files (newest first)")
+    backup_restore = backup_sub.add_parser("restore", help="Restore from a backup file")
+    backup_restore.add_argument("path", help="Path to a .db backup file")
 
     args = parser.parse_args()
 
@@ -1394,6 +1715,39 @@ def main():
             post_open_shift(args)
         elif args.action == "fill":
             fill_open_shift_cmd(args)
+    elif args.command == "shift-bids":
+        if args.action == "list":
+            list_shift_bids_cmd(args)
+        elif args.action == "post":
+            post_shift_bid_event_cmd(args)
+        elif args.action == "submit":
+            submit_shift_bid_cmd(args)
+        elif args.action == "finalize":
+            finalize_shift_bid_cmd(args)
+        elif args.action == "show":
+            show_shift_bid_cmd(args)
+        elif args.action == "reassign":
+            reassign_shift_bid_cmd(args)
+        elif args.action == "preview":
+            preview_shift_bid_cmd(args)
+        elif args.action == "participation":
+            participation_shift_bid_cmd(args)
+        elif args.action == "assignments":
+            assignments_shift_bid_cmd(args)
+        elif args.action == "import-sim":
+            import_sim_shift_bid_cmd(args)
+    elif args.command == "callbacks":
+        if args.action == "list":
+            list_callbacks_cmd(args)
+        elif args.action == "sync":
+            result = sync_callback_rotation_from_roster()
+            print(result.get("message", "Done"))
+        elif args.action == "next":
+            next_callback_cmd(args)
+        elif args.action == "record":
+            record_callback_cmd(args)
+    elif args.command == "fatigue":
+        fatigue_report_cmd(args)
     elif args.command == "audit-log":
         if args.action == "list":
             for row in get_audit_log(args.limit, action_filter=args.action):
@@ -1407,7 +1761,13 @@ def main():
             else:
                 print(f"Failed: {result.get('message')}")
     elif args.command == "backup":
-        backup()
+        action = args.action or "create"
+        if action == "list":
+            backup_list_cmd()
+        elif action == "restore":
+            backup_restore_cmd(args.path)
+        else:
+            backup_create()
     else:
         parser.print_help()
 

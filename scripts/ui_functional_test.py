@@ -12,6 +12,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+os.environ["SCHEDULER_UI_TEST"] = "1"
+
 
 def _step(name: str, fn, results: list) -> None:
     try:
@@ -22,17 +24,12 @@ def _step(name: str, fn, results: list) -> None:
 
 
 def _login_admin(app):
-    from logic import authenticate_user
+    from scripts.ui_test_helpers import authenticate_role, headless_login
 
-    auth = authenticate_user("admin", "admin")
-    if not auth.get("success"):
-        raise RuntimeError(auth.get("message", "admin login failed"))
-    user = auth["user"]
-    user["must_change_password"] = 0
-    app.current_user = user
-    if hasattr(app, "login_frame"):
-        app.login_frame.destroy()
-    app._build_shell()
+    user = authenticate_role("admin", "admin")
+    if not user:
+        raise RuntimeError("admin login failed")
+    headless_login(app, user)
     app._refresh_department_branding()
     app._apply_dashboard_role_layout()
     app.root.update_idletasks()

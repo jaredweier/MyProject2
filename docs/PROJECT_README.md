@@ -15,6 +15,8 @@ Desktop scheduler for the Dodgeville Police Department: 14-day rotation, day-off
 
 ## Quick start
 
+**One-click (Windows):** double-click [`START HERE.bat`](../START%20HERE.bat) at the project root. First run builds the app automatically; later runs open the scheduler immediately.
+
 ```bash
 pip install -r requirements.txt
 python main.py

@@ -1,0 +1,41 @@
+Dodgeville PD Scheduler — Supervisor Quick Start
+=================================================
+
+LOG IN
+------
+  Username: supervisor   Password: supervisor
+  (Change via Admin → User Accounts in production.)
+
+DAILY WORKFLOW
+--------------
+1. Command Post (dashboard) — review alerts, pending requests, coverage gaps.
+2. Leave & Swaps — approve or reject time-off; use bulk approve for auto-OK queue.
+3. Live Schedule — confirm bumps and replacements for the current cycle.
+4. Payroll — review timecards; lock the pay period when entries are final.
+
+APPROVING TIME OFF
+------------------
+  Open Leave & Swaps → Pending queue → Approve.
+  The dialog shows the proposed bump chain before you confirm.
+  If no on-duty replacement exists, the request goes to Manual Review —
+  approve again from the queue to override.
+
+BACKUP (WEEKLY)
+---------------
+  Sidebar → Backup Database.
+  Dashboard warns if no backup in 7+ days.
+  Restore: sidebar → Restore Backup (safety copy created automatically).
+
+PAY PERIOD LOCK
+---------------
+  Payroll tab → Lock Period when the biweekly window closes.
+  Dashboard and Timecard show reminders in the last 3 days of a period.
+
+SCENARIO TRAINER
+----------------
+  Operations → Scenario Trainer — load S-04..S-11 presets to model staffing.
+  Run scenarios: python dev.py scenarios (developer verification).
+
+KEYBOARD SHORTCUTS
+------------------
+  Ctrl+0  Command Post    Ctrl+1..9  sidebar tabs (top to bottom)

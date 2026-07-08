@@ -1,27 +1,27 @@
-"""Rotation, coverage, bumping, and schedule matrix."""
+"""Rotation, coverage, bumping, and schedule matrix.
+
+Scheduling *math* runs in scheduler_core (Rust) via logic/rust_bridge.py.
+This module loads DB state, calls the bridge, and applies results to workflows.
+Emergency Python math lives in logic/rust_fallback.py when Rust is not built.
+"""
 
 from datetime import date, datetime, timedelta
 from typing import Dict, List, Optional, Set, Tuple
 
-from config import (
-    BUMP_ASSIGNMENTS_BEFORE_BUSY,
-    MIN_REST_HOURS_BETWEEN_SHIFTS,
-    NIGHT_MINIMUM_OFFICERS,
-    is_high_risk_night,
+import config
+from config import is_high_risk_night
+from database import get_connection
+from logic import rust_bridge, rust_fallback
+from logic.officers import get_officer_by_id, get_officers_by_seniority
+from logic.rotation_config import (
+    get_active_rotation_base_date,
+    get_active_rotation_cycle_length,
 )
 from logic.staffing_config import (
     can_officer_cover_shift,
     get_active_bump_rules_by_start,
     get_active_shift_times,
 )
-from database import get_connection
-from logic import rust_bridge
-from logic.rotation_config import (
-    get_active_rotation_base_date,
-    get_active_rotation_cycle_length,
-    get_squad_on_duty as _rotation_squad_on_duty,
-)
-from logic.officers import get_officer_by_id, get_officers_by_seniority
 from models import BumpChainStep, BumpChainSuggestion, BumpSimulationResult
 from validators import (
     applies_night_minimum,
@@ -33,39 +33,68 @@ _OFFICER_WORKING_STATUSES = frozenset({"working", "covering", "swapped", "traini
 
 
 def _get_generated_schedule_day_context(target_date: date) -> Dict[int, Dict[str, str]]:
-    """Per-officer status and assigned shift band from monthly schedule when available."""
-    from logic.snapshots import get_schedule_snapshot
+    """Per-officer status and shift band for bump decisions (rotation + overrides, not stale snapshots)."""
+    date_key = target_date.strftime("%Y-%m-%d")
+    active = [o for o in get_officers_by_seniority() if o.get("active") == 1]
+    statuses = batch_officer_day_status([(o["id"], target_date) for o in active])
 
     context: Dict[int, Dict[str, str]] = {}
+    for officer in active:
+        oid = officer["id"]
+        context[oid] = {
+            "status": statuses.get((oid, date_key), "off"),
+            "shift_start": officer.get("shift_start") or "",
+            "shift_end": officer.get("shift_end") or "",
+        }
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT replacement_officer_id, covered_shift_start
+        FROM schedule_overrides
+        WHERE override_date = ? AND replacement_officer_id IS NOT NULL
+        """,
+        (date_key,),
+    )
+    for row in cursor.fetchall():
+        rid = row["replacement_officer_id"]
+        if rid not in context or context[rid]["status"] != "covering":
+            continue
+        covered = row["covered_shift_start"]
+        if covered:
+            context[rid]["shift_start"] = covered
+            context[rid]["shift_end"] = _shift_end_for_start(covered)
+    conn.close()
+
+    from logic.snapshots import get_schedule_snapshot
+
     for schedule_type in ("updated", "base"):
         snapshot = get_schedule_snapshot(target_date.year, target_date.month, schedule_type)
         if not snapshot:
             continue
+        touched = False
         for row in snapshot.get("rows", []):
-            if row.get("assignment_date") != target_date.isoformat():
+            if row.get("assignment_date") != date_key:
                 continue
-            officer_id = row["officer_id"]
-            if officer_id in context:
+            oid = row["officer_id"]
+            if oid not in context:
                 continue
-            context[officer_id] = {
-                "status": row.get("status") or "off",
-                "shift_start": row.get("assigned_shift_start")
-                or row.get("home_shift_start")
-                or "",
-                "shift_end": row.get("assigned_shift_end") or row.get("home_shift_end") or "",
-            }
-        if context:
+            row_status = row.get("status") or "off"
+            if row_status not in _OFFICER_WORKING_STATUSES:
+                continue
+            touched = True
+            if row_status in ("covering", "swapped", "training"):
+                context[oid]["status"] = row_status
+                assigned_start = row.get("assigned_shift_start") or row.get("home_shift_start") or ""
+                assigned_end = row.get("assigned_shift_end") or row.get("home_shift_end") or ""
+                if assigned_start:
+                    context[oid]["shift_start"] = assigned_start
+                if assigned_end:
+                    context[oid]["shift_end"] = assigned_end
+        if touched:
             break
 
-    for officer in get_officers_by_seniority():
-        if officer.get("active") != 1 or officer["id"] in context:
-            continue
-        status = get_officer_day_status(officer["id"], target_date)
-        context[officer["id"]] = {
-            "status": status,
-            "shift_start": officer.get("shift_start") or "",
-            "shift_end": officer.get("shift_end") or "",
-        }
     return context
 
 
@@ -73,14 +102,36 @@ def _officer_schedule_working(day_context: Dict[str, str]) -> bool:
     return day_context.get("status") in _OFFICER_WORKING_STATUSES
 
 
-def _replacement_shift_start_for_rules(officer: Dict, day_context: Dict[str, str]) -> str:
+def _normalize_shift_band(shift_start: str) -> str:
     from logic.staffing_config import normalize_shift_start_to_active
 
+    return normalize_shift_start_to_active(shift_start or "")
+
+
+def _officer_scheduled_shift_start(officer: Dict, day_context: Dict[str, str]) -> str:
+    return day_context.get("shift_start") or officer.get("shift_start") or ""
+
+
+def _replacement_shift_start_for_rules(officer: Dict, day_context: Dict[str, str]) -> str:
     if _officer_schedule_working(day_context):
-        raw = day_context.get("shift_start") or officer.get("shift_start") or ""
+        raw = _officer_scheduled_shift_start(officer, day_context)
     else:
         raw = officer.get("shift_start") or ""
-    return normalize_shift_start_to_active(raw)
+    return _normalize_shift_band(raw)
+
+
+def _chain_excluded_officer_ids(
+    steps: List[BumpChainStep],
+    requesting_officer_id: Optional[int] = None,
+) -> Set[int]:
+    """Officers already bumped or assigned in the planned chain — not available as peers/replacements."""
+    excluded: Set[int] = set()
+    if requesting_officer_id is not None:
+        excluded.add(requesting_officer_id)
+    for step in steps:
+        excluded.add(step.original_officer_id)
+        excluded.add(step.replacement_officer_id)
+    return excluded
 
 
 def _bump_assignment_counts_for_date(
@@ -107,7 +158,41 @@ def _bump_assignment_counts_for_date(
 
 
 def _bump_capacity_exhausted(officer_id: int, assignment_counts: Dict[int, int]) -> bool:
-    return assignment_counts.get(officer_id, 0) >= BUMP_ASSIGNMENTS_BEFORE_BUSY
+    return assignment_counts.get(officer_id, 0) >= config.BUMP_ASSIGNMENTS_BEFORE_BUSY
+
+
+def _shift_retains_coverage_after_bump(
+    vacating_officer_id: int,
+    vacated_shift_start: str,
+    squad: str,
+    schedule_context: Dict[int, Dict[str, str]],
+    excluded_officer_ids: Set[int],
+) -> bool:
+    """True when another on-duty same-squad officer remains on the vacated shift band.
+
+    Multiple officers may share the same start time (e.g. two 06:00 slots); each is
+    counted separately. Only one needs to remain for the band to stay staffed.
+    """
+    from validators import officer_uses_command_staff_schedule
+
+    vacated_band = _normalize_shift_band(vacated_shift_start)
+    if not vacated_band:
+        return False
+    for officer in get_officers_by_seniority():
+        if officer.get("active") != 1 or officer.get("squad") != squad:
+            continue
+        if officer_uses_command_staff_schedule(officer):
+            continue
+        oid = officer["id"]
+        if oid == vacating_officer_id or oid in excluded_officer_ids:
+            continue
+        day_context = schedule_context.get(oid, {})
+        if not _officer_schedule_working(day_context):
+            continue
+        home_band = _normalize_shift_band(_officer_scheduled_shift_start(officer, day_context))
+        if home_band == vacated_band:
+            return True
+    return False
 
 
 def _night_minimum_uncovered_failure(
@@ -126,10 +211,7 @@ def _night_minimum_uncovered_failure(
     return BumpChainSuggestion(
         success=False,
         steps=steps,
-        message=(
-            "Cannot cover shift — would drop night coverage below minimum "
-            "on a high-risk night"
-        ),
+        message=("Cannot cover shift — would drop night coverage below minimum on a high-risk night"),
         requires_manual=True,
         failure_reason="night_minimum",
         blocked_officer_name=blocked_officer_name,
@@ -156,21 +238,43 @@ def get_cycle_day(target_date: date) -> int:
 
 
 def get_squad_on_duty(cycle_day: int) -> str:
-    return _rotation_squad_on_duty(cycle_day)
+    return rust_bridge.get_squad_on_duty(cycle_day)
+
+
+def officer_base_rotation_working(officer: Dict, target_date: date) -> bool:
+    """Rotation schedule before overrides: patrol A/B cycle or command staff Mon–Fri."""
+    from validators import officer_has_assignment
+
+    if not officer_has_assignment(officer):
+        return False
+    rust_working = rust_bridge.officer_rotation_working(
+        officer.get("squad") or "",
+        officer.get("shift_start") or "",
+        officer.get("active") == 1,
+        officer.get("job_title") or "",
+        target_date,
+        get_active_rotation_base_date(),
+        get_active_rotation_cycle_length(),
+    )
+    if rust_working is not None:
+        return rust_working
+    from validators import officer_uses_command_staff_schedule
+
+    if officer_uses_command_staff_schedule(officer):
+        return target_date.weekday() < 5
+    squad = officer.get("squad")
+    if not squad:
+        return False
+    return squad == get_squad_on_duty(get_cycle_day(target_date))
 
 
 def is_officer_working_on_day(officer_id: int, target_date: date, squad: str = None) -> bool:
     officer = get_officer_by_id(officer_id)
     if not officer:
         return False
-    from validators import officer_has_assignment
-
-    if not officer_has_assignment(officer):
+    if squad and officer.get("squad") != squad:
         return False
-    effective_squad = squad or officer["squad"]
-    cycle_day = get_cycle_day(target_date)
-    squad_on_duty = get_squad_on_duty(cycle_day)
-    return effective_squad == squad_on_duty
+    return officer_base_rotation_working(officer, target_date)
 
 
 def count_officers_on_shift_on_date(target_date: date, squad: str, shift_start: str) -> int:
@@ -184,8 +288,6 @@ def get_shift_coverage_counts_for_range(
     end_date: date,
 ) -> Dict[Tuple[str, str, str], int]:
     """Batch shift headcount: key (YYYY-MM-DD, squad, shift_start) -> count."""
-    from validators import is_officer_active
-
     start_str = start_date.strftime("%Y-%m-%d")
     end_str = end_date.strftime("%Y-%m-%d")
     shift_starts = [start for start, _ in get_active_shift_times().values()]
@@ -193,7 +295,7 @@ def get_shift_coverage_counts_for_range(
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, squad, shift_start, active FROM officers WHERE active = 1
+        SELECT id, squad, shift_start, active, job_title FROM officers WHERE active = 1
     """)
     officers = [dict(row) for row in cursor.fetchall()]
     cursor.execute(
@@ -211,12 +313,12 @@ def get_shift_coverage_counts_for_range(
         (
             row["override_date"],
             row["original_officer_id"],
-            row.get("replacement_officer_id"),
-            row.get("covered_shift_start"),
+            row["replacement_officer_id"],
+            row["covered_shift_start"],
         )
         for row in overrides
     ]
-    rust_counts = rust_bridge.compute_coverage_counts_rust(
+    rust_counts = rust_bridge.compute_coverage_counts(
         officers,
         override_rows,
         start_date,
@@ -228,47 +330,17 @@ def get_shift_coverage_counts_for_range(
     if rust_counts is not None:
         return rust_counts
 
-    bumped_by_date: Dict[str, Set[int]] = {}
-    replacements_by_date: Dict[str, List[Dict]] = {}
-    for row in overrides:
-        day = row["override_date"]
-        bumped_by_date.setdefault(day, set()).add(row["original_officer_id"])
-        if row["replacement_officer_id"]:
-            replacements_by_date.setdefault(day, []).append(row)
-
-    counts: Dict[Tuple[str, str, str], int] = {}
-    current = start_date
-    while current <= end_date:
-        day_str = current.strftime("%Y-%m-%d")
-        bumped = bumped_by_date.get(day_str, set())
-        for squad in ("A", "B"):
-            for shift_start in shift_starts:
-                base = sum(
-                    1
-                    for o in officers
-                    if is_officer_active(o)
-                    and o.get("squad")
-                    and o.get("shift_start")
-                    and o["squad"] == squad
-                    and o["shift_start"] == shift_start
-                    and o["id"] not in bumped
-                )
-                repl = 0
-                seen: Set[int] = set()
-                for row in replacements_by_date.get(day_str, []):
-                    rid = row["replacement_officer_id"]
-                    if not rid or rid in seen:
-                        continue
-                    off = next((o for o in officers if o["id"] == rid), None)
-                    if not off or not is_officer_active(off) or off["squad"] != squad:
-                        continue
-                    effective = row.get("covered_shift_start") or off["shift_start"]
-                    if effective == shift_start:
-                        seen.add(rid)
-                        repl += 1
-                counts[(day_str, squad, shift_start)] = base + repl
-        current += timedelta(days=1)
-    return counts
+    return rust_fallback.python_compute_coverage_counts(
+        officers,
+        override_rows,
+        start_date,
+        end_date,
+        shift_starts,
+        get_cycle_day_fn=get_cycle_day,
+        get_squad_on_duty_fn=get_squad_on_duty,
+        normalize_shift_band_fn=_normalize_shift_band,
+        officer_base_rotation_working_fn=officer_base_rotation_working,
+    )
 
 
 def get_shift_number(shift_start: str) -> int:
@@ -308,7 +380,9 @@ def resolve_officer_shift_band(
         normalized = normalize_shift_start_to_active(start)
         for band_start, band_end in active_values:
             if band_start == normalized:
-                return band_start, band_end if band_end else shift_end_from_length(band_start, get_active_shift_length_hours())
+                return band_start, band_end if band_end else shift_end_from_length(
+                    band_start, get_active_shift_length_hours()
+                )
     if start and not end:
         end = shift_end_from_length(normalize_shift_start_to_active(start), get_active_shift_length_hours())
     return normalize_shift_start_to_active(start), end
@@ -363,12 +437,66 @@ def get_officer_effective_shift_band(officer_id: int, target_date: date) -> Opti
     return shift_start, shift_end
 
 
+def _load_covering_shift_starts_for_range(start_date: date, end_date: date) -> Dict[str, Dict[int, str]]:
+    """Date -> replacement_officer_id -> covered_shift_start for rest/compliance math."""
+    start_str = start_date.strftime("%Y-%m-%d")
+    end_str = end_date.strftime("%Y-%m-%d")
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT override_date, replacement_officer_id, covered_shift_start
+        FROM schedule_overrides
+        WHERE override_date >= ? AND override_date <= ?
+          AND replacement_officer_id IS NOT NULL
+          AND covered_shift_start IS NOT NULL
+        """,
+        (start_str, end_str),
+    )
+    out: Dict[str, Dict[int, str]] = {}
+    for row in cursor.fetchall():
+        day_key = row["override_date"]
+        repl_id = row["replacement_officer_id"]
+        covered = row["covered_shift_start"]
+        if repl_id is not None and covered:
+            out.setdefault(day_key, {})[repl_id] = covered
+    conn.close()
+    return out
+
+
 def compute_minimum_rest_gap(
     officer_id: int,
     assignment_date: date,
     new_shift_start: str,
     new_shift_end: str,
 ) -> Optional[float]:
+    officer = get_officer_by_id(officer_id)
+    if officer:
+        window_start = assignment_date - timedelta(days=1)
+        window_end = assignment_date + timedelta(days=1)
+        bumped_by_date, covering_by_date, swapped_by_date, bumped_status_by_date = _load_override_maps_for_range(
+            window_start, window_end
+        )
+        covering_starts = _load_covering_shift_starts_for_range(window_start, window_end)
+        rust_gap = rust_bridge.minimum_rest_gap(
+            officer_id,
+            assignment_date,
+            new_shift_start,
+            new_shift_end,
+            officer.get("shift_start") or "",
+            officer.get("shift_end") or "",
+            bumped_by_date,
+            covering_by_date,
+            swapped_by_date,
+            bumped_status_by_date,
+            covering_starts,
+            list(get_active_shift_times().values()),
+            get_active_rotation_base_date(),
+            get_active_rotation_cycle_length(),
+        )
+        if rust_gap is not None:
+            return rust_gap
+
     new_start_dt, new_end_dt = _shift_bounds(assignment_date, new_shift_start, new_shift_end)
     min_gap = None
     for delta in (-1, 1):
@@ -392,11 +520,10 @@ def officer_meets_minimum_rest(
     shift_start: str,
     shift_end: str,
 ) -> bool:
-    from config import MIN_REST_HOURS_BETWEEN_SHIFTS
     from validators import validate_minimum_rest_gap
 
     gap = compute_minimum_rest_gap(officer_id, assignment_date, shift_start, shift_end)
-    return validate_minimum_rest_gap(gap, MIN_REST_HOURS_BETWEEN_SHIFTS).ok
+    return validate_minimum_rest_gap(gap, config.MIN_REST_HOURS_BETWEEN_SHIFTS).ok
 
 
 def describe_minimum_rest_violation(
@@ -407,8 +534,6 @@ def describe_minimum_rest_violation(
     officer_name: Optional[str] = None,
 ) -> Optional[str]:
     """Return a user-facing rest violation message, or None if rest is satisfied."""
-    from config import MIN_REST_HOURS_BETWEEN_SHIFTS
-
     if officer_meets_minimum_rest(officer_id, assignment_date, shift_start, shift_end):
         return None
     gap = compute_minimum_rest_gap(officer_id, assignment_date, shift_start, shift_end)
@@ -416,57 +541,67 @@ def describe_minimum_rest_violation(
     gap_text = f"{gap:.1f}h" if gap is not None else "insufficient rest"
     return (
         f"Minimum rest violation: {label} has {gap_text} between shifts "
-        f"(minimum {MIN_REST_HOURS_BETWEEN_SHIFTS:.0f}h) — supervisor override required"
+        f"(minimum {config.MIN_REST_HOURS_BETWEEN_SHIFTS:.0f}h) — supervisor override required"
     )
 
 
 def find_replacement_officer(
     original_officer_id: int,
     request_date: str,
+    squad: str,
     shift_start: str,
     schedule_context: Dict[int, Dict[str, str]],
     assignment_counts: Optional[Dict[int, int]] = None,
-    chain_replacements: Optional[Set[int]] = None,
+    chain_excluded_ids: Optional[Set[int]] = None,
+    *,
+    enforce_minimum_rest: bool = True,
+    enforce_consecutive_work: bool = True,
 ) -> Optional[Dict]:
-    coverage_end = _shift_end_for_start(shift_start)
+    """Pick an on-duty same-squad patrol replacement (command staff and off-rotation excluded)."""
+    from validators import officer_uses_command_staff_schedule
+
     coverage_date = parse_date(request_date)
     counts = assignment_counts or {}
-    used_in_chain = chain_replacements or set()
+    excluded = chain_excluded_ids or set()
+    excluded.add(original_officer_id)
+    covered_band = _normalize_shift_band(shift_start)
     on_duty_pick = None
-    off_duty_rest_ok = None
-    off_duty_rest_bad = None
 
     for officer in get_officers_by_seniority():
-        if officer.get("active") != 1 or officer["id"] == original_officer_id:
+        if officer.get("active") != 1:
             continue
-        if officer["id"] in used_in_chain:
+        if officer.get("squad") != squad:
+            continue
+        if officer_uses_command_staff_schedule(officer):
+            continue
+        if officer["id"] in excluded:
             continue
         if _bump_capacity_exhausted(officer["id"], counts):
             continue
         day_context = schedule_context.get(officer["id"], {})
-        rule_shift = _replacement_shift_start_for_rules(officer, day_context)
-        if not can_officer_cover_shift(rule_shift, shift_start):
+        if not _officer_schedule_working(day_context):
             continue
-        on_duty = _officer_schedule_working(day_context)
-        from logic.labor_compliance import would_exceed_consecutive_work_limit
+        rule_shift = _replacement_shift_start_for_rules(officer, day_context)
+        if not can_officer_cover_shift(rule_shift, covered_band):
+            continue
+        current_band = _replacement_shift_start_for_rules(officer, day_context)
+        if current_band != covered_band and enforce_minimum_rest:
+            covered_end = _shift_end_for_start(covered_band)
+            if not officer_meets_minimum_rest(officer["id"], coverage_date, covered_band, covered_end):
+                continue
+        if enforce_consecutive_work:
+            from logic.labor_compliance import would_exceed_consecutive_work_limit
 
-        if on_duty:
             if would_exceed_consecutive_work_limit(officer["id"], coverage_date, adding_work_day=False):
                 continue
-            on_duty_pick = on_duty_pick or officer
-        elif would_exceed_consecutive_work_limit(officer["id"], coverage_date, adding_work_day=True):
-            continue
-        elif officer_meets_minimum_rest(
-            officer["id"],
-            coverage_date,
-            shift_start,
-            coverage_end,
-        ):
-            off_duty_rest_ok = off_duty_rest_ok or officer
-        else:
-            off_duty_rest_bad = off_duty_rest_bad or officer
+        from logic.certifications import officer_meets_shift_cert_requirements
 
-    return off_duty_rest_ok or off_duty_rest_bad or on_duty_pick
+        cert_ok, _ = officer_meets_shift_cert_requirements(officer["id"], covered_band, coverage_date)
+        if not cert_ok:
+            continue
+        on_duty_pick = on_duty_pick or officer
+
+    return on_duty_pick
 
 
 def _bump_suggestion_from_rust(data: Dict) -> BumpChainSuggestion:
@@ -501,6 +636,8 @@ def suggest_bump_chain(
     squad: str,
     shift_start: str,
     max_depth: int = 8,
+    *,
+    supervisor_override: bool = False,
 ) -> BumpChainSuggestion:
     """Suggest a complete bump chain with step-by-step coverage detail."""
     req_date = parse_date(request_date)
@@ -531,7 +668,13 @@ def suggest_bump_chain(
 
     schedule_context = _get_generated_schedule_day_context(req_date)
     shift_times = list(get_active_shift_times().values())
-    rust_data = rust_bridge.suggest_bump_chain_rust(
+    enforce_compliance = not supervisor_override
+    rest_window_start = req_date - timedelta(days=1)
+    rest_window_end = req_date + timedelta(days=1)
+    covering_shift_starts = _load_covering_shift_starts_for_range(rest_window_start, rest_window_end)
+    from logic.labor_compliance import get_max_consecutive_work_days
+
+    rust_data = rust_bridge.suggest_bump_chain(
         officers,
         overrides_on_date,
         original_officer_id,
@@ -541,15 +684,133 @@ def suggest_bump_chain(
         get_active_bump_rules_by_start(),
         shift_times,
         schedule_context,
-        NIGHT_MINIMUM_OFFICERS,
-        MIN_REST_HOURS_BETWEEN_SHIFTS,
+        config.NIGHT_MINIMUM_OFFICERS,
+        config.MIN_REST_HOURS_BETWEEN_SHIFTS,
         get_active_rotation_base_date(),
         get_active_rotation_cycle_length(),
-        BUMP_ASSIGNMENTS_BEFORE_BUSY,
+        config.BUMP_ASSIGNMENTS_BEFORE_BUSY,
         max_depth,
+        enforce_minimum_rest=enforce_compliance,
+        enforce_consecutive_work=enforce_compliance,
+        max_consecutive_work_days=get_max_consecutive_work_days(),
+        covering_shift_starts=covering_shift_starts,
     )
     if rust_data is not None:
         return _bump_suggestion_from_rust(rust_data)
+
+    return _suggest_bump_chain_python(
+        original_officer_id,
+        request_date,
+        squad,
+        shift_start,
+        schedule_context,
+        max_depth,
+        enforce_minimum_rest=enforce_compliance,
+        enforce_consecutive_work=enforce_compliance,
+    )
+
+
+def _minimum_rest_manual_failure(
+    request_date: str,
+    shift_start: str,
+    schedule_context: Dict[int, Dict[str, str]],
+    assignment_counts: Dict[int, int],
+    chain_excluded: Set[int],
+    original_officer_id: int,
+    squad: str,
+    blocked_officer_name: str,
+    blocked_shift: str,
+) -> Optional[BumpChainSuggestion]:
+    """When cover exists but only if rest were ignored, route to supervisor override."""
+    rest_pick = find_replacement_officer(
+        original_officer_id,
+        request_date,
+        squad,
+        _normalize_shift_band(shift_start),
+        schedule_context,
+        assignment_counts,
+        chain_excluded,
+        enforce_minimum_rest=False,
+    )
+    if not rest_pick:
+        return None
+    covered_end = _shift_end_for_start(_normalize_shift_band(shift_start))
+    msg = describe_minimum_rest_violation(
+        rest_pick["id"],
+        parse_date(request_date),
+        _normalize_shift_band(shift_start),
+        covered_end,
+        rest_pick.get("name"),
+    )
+    if not msg:
+        return None
+    return BumpChainSuggestion(
+        success=False,
+        message=msg,
+        requires_manual=True,
+        failure_reason="minimum_rest",
+        blocked_officer_name=blocked_officer_name,
+        blocked_shift=blocked_shift,
+    )
+
+
+def _consecutive_days_manual_failure(
+    request_date: str,
+    shift_start: str,
+    schedule_context: Dict[int, Dict[str, str]],
+    assignment_counts: Dict[int, int],
+    chain_excluded: Set[int],
+    original_officer_id: int,
+    squad: str,
+    blocked_officer_name: str,
+    blocked_shift: str,
+) -> Optional[BumpChainSuggestion]:
+    """When cover exists but only if consecutive-day cap were ignored, route to supervisor."""
+    from logic.labor_compliance import describe_consecutive_work_violation
+
+    consecutive_pick = find_replacement_officer(
+        original_officer_id,
+        request_date,
+        squad,
+        _normalize_shift_band(shift_start),
+        schedule_context,
+        assignment_counts,
+        chain_excluded,
+        enforce_consecutive_work=False,
+    )
+    if not consecutive_pick:
+        return None
+    msg = describe_consecutive_work_violation(
+        consecutive_pick["id"],
+        parse_date(request_date),
+        adding_work_day=False,
+        officer_name=consecutive_pick.get("name"),
+    )
+    if not msg:
+        return None
+    return BumpChainSuggestion(
+        success=False,
+        message=msg,
+        requires_manual=True,
+        failure_reason="consecutive_days",
+        blocked_officer_name=blocked_officer_name,
+        blocked_shift=blocked_shift,
+    )
+
+
+def _suggest_bump_chain_python(
+    original_officer_id: int,
+    request_date: str,
+    squad: str,
+    shift_start: str,
+    schedule_context: Dict[int, Dict[str, str]],
+    max_depth: int,
+    *,
+    enforce_minimum_rest: bool = True,
+    enforce_consecutive_work: bool = True,
+) -> BumpChainSuggestion:
+    """Emergency fallback — prefer scheduler_core via rust_bridge.suggest_bump_chain."""
+    req_date = parse_date(request_date)
 
     chain: List[Tuple[int, int]] = []
     steps: List[BumpChainStep] = []
@@ -567,14 +828,17 @@ def suggest_bump_chain(
                 failure_reason="officer_missing",
             )
 
-        chain_replacements = {step.replacement_officer_id for step in steps}
+        chain_excluded = _chain_excluded_officer_ids(steps, requesting_officer_id=original_officer_id)
         replacement = find_replacement_officer(
             current_id,
             request_date,
-            current_shift,
+            squad,
+            _normalize_shift_band(current_shift),
             schedule_context,
             assignment_counts,
-            chain_replacements,
+            chain_excluded,
+            enforce_minimum_rest=enforce_minimum_rest,
+            enforce_consecutive_work=enforce_consecutive_work,
         )
         if not replacement:
             night_fail = _night_minimum_uncovered_failure(
@@ -588,6 +852,34 @@ def suggest_bump_chain(
             if night_fail:
                 return night_fail
             if not chain:
+                if enforce_minimum_rest:
+                    rest_fail = _minimum_rest_manual_failure(
+                        request_date,
+                        current_shift,
+                        schedule_context,
+                        assignment_counts,
+                        chain_excluded,
+                        current_id,
+                        squad,
+                        current["name"],
+                        current_shift,
+                    )
+                    if rest_fail:
+                        return rest_fail
+                if enforce_consecutive_work:
+                    consecutive_fail = _consecutive_days_manual_failure(
+                        request_date,
+                        current_shift,
+                        schedule_context,
+                        assignment_counts,
+                        chain_excluded,
+                        current_id,
+                        squad,
+                        current["name"],
+                        current_shift,
+                    )
+                    if consecutive_fail:
+                        return consecutive_fail
                 return BumpChainSuggestion(
                     success=False,
                     message="No replacement available on an allowed shift",
@@ -627,48 +919,16 @@ def suggest_bump_chain(
         chain.append((current_id, replacement["id"]))
         assignment_counts[replacement["id"]] = assignment_counts.get(replacement["id"], 0) + 1
 
-        if not on_duty:
-            coverage_end = _shift_end_for_start(current_shift)
-            rest_msg = describe_minimum_rest_violation(
-                replacement["id"],
-                req_date,
-                current_shift,
-                coverage_end,
-                officer_name=replacement["name"],
-            )
+        vacated_shift = repl_shift or replacement.get("shift_start") or ""
+        coverage_excluded = _chain_excluded_officer_ids(steps, requesting_officer_id=original_officer_id)
+        if _shift_retains_coverage_after_bump(
+            replacement["id"],
+            vacated_shift,
+            squad,
+            schedule_context,
+            coverage_excluded,
+        ):
             primary = get_officer_by_id(chain[0][1])
-            if rest_msg:
-                return BumpChainSuggestion(
-                    success=False,
-                    chain=chain,
-                    steps=steps,
-                    primary_replacement_name=primary["name"] if primary else None,
-                    requires_manual=True,
-                    failure_reason="minimum_rest",
-                    message=rest_msg,
-                    blocked_officer_name=replacement["name"],
-                    blocked_shift=current_shift,
-                )
-            from logic.labor_compliance import describe_consecutive_work_violation
-
-            streak_msg = describe_consecutive_work_violation(
-                replacement["id"],
-                req_date,
-                adding_work_day=True,
-                officer_name=replacement["name"],
-            )
-            if streak_msg:
-                return BumpChainSuggestion(
-                    success=False,
-                    chain=chain,
-                    steps=steps,
-                    primary_replacement_name=primary["name"] if primary else None,
-                    requires_manual=True,
-                    failure_reason="consecutive_days",
-                    message=streak_msg,
-                    blocked_officer_name=replacement["name"],
-                    blocked_shift=current_shift,
-                )
             return BumpChainSuggestion(
                 success=True,
                 chain=chain,
@@ -750,7 +1010,7 @@ def build_schedule_matrix(start_date: date, end_date: date) -> Tuple[List[Dict],
     bumped_by_date, covering_by_date, swapped_by_date, bumped_status_by_date = _load_override_maps_for_range(
         start_date, end_date
     )
-    rust_matrix = rust_bridge.build_schedule_matrix_rust(
+    rust_matrix = rust_bridge.build_schedule_matrix(
         officers,
         bumped_by_date,
         covering_by_date,
@@ -764,28 +1024,16 @@ def build_schedule_matrix(start_date: date, end_date: date) -> Tuple[List[Dict],
     if rust_matrix is not None:
         return rust_matrix
 
-    days: List[date] = []
-    current = start_date
-    while current <= end_date:
-        days.append(current)
-        current += timedelta(days=1)
-
-    matrix = []
-    for officer in officers:
-        day_status = {
-            d: _officer_day_status(
-                officer,
-                d,
-                bumped_by_date,
-                covering_by_date,
-                swapped_by_date,
-                bumped_status_by_date,
-            )
-            for d in days
-        }
-        matrix.append({"officer": officer, "days": day_status})
-
-    return matrix, days
+    return rust_fallback.python_build_schedule_matrix(
+        officers,
+        bumped_by_date,
+        covering_by_date,
+        swapped_by_date,
+        bumped_status_by_date,
+        start_date,
+        end_date,
+        _officer_day_status,
+    )
 
 
 def get_officer_day_status(officer_id: int, target_date: date) -> str:
@@ -799,27 +1047,35 @@ def batch_officer_day_status(
     """Resolve schedule status for many (officer_id, date) pairs with one override load."""
     if not pairs:
         return {}
-    officers_by_id = {o["id"]: o for o in get_officers_by_seniority()}
     min_d = min(d for _, d in pairs)
     max_d = max(d for _, d in pairs)
+    officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
     bumped_by_date, covering_by_date, swapped_by_date, bumped_status_by_date = _load_override_maps_for_range(
         min_d, max_d
     )
-    result: Dict[Tuple[int, str], str] = {}
-    for officer_id, target in pairs:
-        officer = officers_by_id.get(officer_id)
-        if not officer:
-            result[(officer_id, target.strftime("%Y-%m-%d"))] = "off"
-            continue
-        result[(officer_id, target.strftime("%Y-%m-%d"))] = _officer_day_status(
-            officer,
-            target,
-            bumped_by_date,
-            covering_by_date,
-            swapped_by_date,
-            bumped_status_by_date,
-        )
-    return result
+    pair_keys = [(officer_id, target.strftime("%Y-%m-%d")) for officer_id, target in pairs]
+    rust_statuses = rust_bridge.batch_day_status(
+        officers,
+        bumped_by_date,
+        covering_by_date,
+        swapped_by_date,
+        bumped_status_by_date,
+        pair_keys,
+        get_active_rotation_base_date(),
+        get_active_rotation_cycle_length(),
+    )
+    if rust_statuses is not None:
+        return {key: rust_statuses.get(key, "off") for key in pair_keys}
+
+    return rust_fallback.python_batch_day_status(
+        officers,
+        bumped_by_date,
+        covering_by_date,
+        swapped_by_date,
+        bumped_status_by_date,
+        pair_keys,
+        _officer_day_status,
+    )
 
 
 def _get_monthly_rotation_base_only(year: int, month: int) -> List[Dict]:
@@ -880,6 +1136,10 @@ def _load_override_maps_for_range(
             if replacement_id:
                 swapped_by_date.setdefault(day_key, set()).add(replacement_id)
             continue
+        if row["reason"] == "Shift Bid Award":
+            if replacement_id:
+                covering_by_date.setdefault(day_key, set()).add(replacement_id)
+            continue
         bumped_by_date.setdefault(day_key, set()).add(original_id)
         bumped_status_by_date.setdefault(day_key, {})[original_id] = _schedule_status_for_override_reason(row["reason"])
         if replacement_id:
@@ -915,8 +1175,7 @@ def _officer_day_status(
         return "bumped"
     if officer_id in covering_by_date.get(date_str, ()):
         return "covering"
-    cycle_day = get_cycle_day(target_date)
-    if officer["squad"] == get_squad_on_duty(cycle_day):
+    if officer_base_rotation_working(officer, target_date):
         return "working"
     return "off"
 
@@ -964,8 +1223,7 @@ def _officer_work_days_per_cycle(officer: Dict) -> int:
 
 
 def _rotation_only_status(officer: Dict, target_date: date) -> str:
-    cycle_day = get_cycle_day(target_date)
-    if officer["squad"] == get_squad_on_duty(cycle_day):
+    if officer_base_rotation_working(officer, target_date):
         return "working"
     return "off"
 
@@ -1026,7 +1284,9 @@ def run_schedule_simulation(
     apply_department_rules: bool = True,
     min_per_shift: int = 1,
     simulation_days: int = 28,
+    night_minimum: int | None = None,
 ) -> Dict:
+    from config import NIGHT_MINIMUM_OFFICERS
     from simulator import SimulatorConfig, simulate_schedule
 
     config = SimulatorConfig(
@@ -1038,19 +1298,35 @@ def run_schedule_simulation(
         apply_department_rules=apply_department_rules,
         min_per_shift=min_per_shift,
         simulation_days=simulation_days,
+        night_minimum=night_minimum if night_minimum is not None else NIGHT_MINIMUM_OFFICERS,
     )
     result = simulate_schedule(config)
     if not result.success:
         return {"success": False, "message": result.message or "Simulation failed"}
+    coverage = result.coverage_by_day
+    start_label = coverage[0]["date"] if coverage else None
     return {
         "success": True,
+        "compute_backend": result.compute_backend,
         "metrics": result.metrics,
         "officer_slots": [slot.__dict__ for slot in result.officer_slots],
+        "coverage_by_day": coverage,
         "suggestions": [
             {"severity": s.severity, "title": s.title, "message": s.message, "recommendation": s.recommendation}
             for s in result.suggestions
         ],
         "shift_templates": result.shift_templates,
+        "simulation_start_date": start_label,
+        "simulation_config": {
+            "rotation_type": rotation_type,
+            "num_officers": num_officers,
+            "shift_length_hours": shift_length_hours,
+            "annual_hours_target": annual_hours_target,
+            "shift_starts": shift_starts,
+            "apply_department_rules": apply_department_rules,
+            "min_per_shift": min_per_shift,
+            "simulation_days": simulation_days,
+        },
     }
 
 

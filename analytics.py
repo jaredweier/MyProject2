@@ -883,6 +883,7 @@ def get_dashboard_insights(officer_id: Optional[int] = None) -> Dict:
         get_pending_day_off_requests,
         get_pending_manual_review_count,
         get_pending_shift_swap_requests,
+        officer_has_active_shift_bid,
     )
 
     today = date.today()
@@ -912,6 +913,13 @@ def get_dashboard_insights(officer_id: Optional[int] = None) -> Dict:
             ]
         )
         top_ot = overtime.get("alerts", [{}])[0] if overtime.get("alerts") else {}
+        bid_awards = 0
+        try:
+            from logic import get_officer_shift_bid_awards
+
+            bid_awards = len(get_officer_shift_bid_awards(officer_id))
+        except Exception:
+            pass
         return {
             "success": True,
             "officer_scoped": True,
@@ -933,6 +941,8 @@ def get_dashboard_insights(officer_id: Optional[int] = None) -> Dict:
             "pending_swaps": len(pending_swaps),
             "pending_manual_review": manual_review,
             "claimable_open_shifts": len(get_open_shifts(officer_id=officer_id)),
+            "claimable_bid_slots": 1 if officer_has_active_shift_bid(officer_id) else 0,
+            "shift_bid_award_count": bid_awards,
             "open_shifts": 0,
             "upcoming_holidays": holidays,
             "monthly_labor_cost": 0,
@@ -948,9 +958,17 @@ def get_dashboard_insights(officer_id: Optional[int] = None) -> Dict:
     conflicts = get_schedule_conflicts(start, end)
     labor = get_labor_cost_forecast(1)
     budget = get_labor_budget_status()
+    from logic import get_backup_status, get_fatigue_scoreboard, get_pay_period_lock_reminder
+
+    fatigue_board = get_fatigue_scoreboard(limit=5)
+    from logic import get_shift_bid_events
+
+    open_bids = [e for e in get_shift_bid_events(status="open", limit=50)]
     return {
         "success": True,
         "officer_scoped": False,
+        "open_shift_bid_count": len(open_bids),
+        "open_shift_bids": open_bids[:5],
         "coverage_issues": coverage.get("issue_count", 0),
         "coverage_gap_count": gap_board.get("gap_count", 0),
         "coverage_gap_critical": gap_board.get("critical_count", 0),
@@ -977,6 +995,11 @@ def get_dashboard_insights(officer_id: Optional[int] = None) -> Dict:
         "monthly_labor_cost": labor.get("monthly_average", 0),
         "annual_labor_projection": labor.get("annual_projection", 0),
         "labor_budget": budget,
+        "backup_status": get_backup_status(),
+        "pay_period_lock_reminder": get_pay_period_lock_reminder(),
+        "fatigue_scoreboard": fatigue_board,
+        "fatigue_elevated_count": fatigue_board.get("elevated_count", 0),
+        "fatigue_top": fatigue_board.get("top"),
     }
 
 

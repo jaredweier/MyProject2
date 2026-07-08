@@ -1,35 +1,12 @@
-"""Ultra-fast gate (~5s): imports + audit only — zero LLM cost."""
+"""Ultra-fast gate — delegates to unified verify tier 'fast'."""
 
 from __future__ import annotations
 
-import os
-import subprocess
-import sys
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+from scripts.verify import run_fast
 
 
 def run_cheap_check() -> int:
-    dev_py = os.path.join(ROOT, "dev.py")
-    print("Dodgeville PD Scheduler — cheap-check (free)")
-    print("=" * 60)
-    failed: list[str] = []
-    for name in ("imports", "audit"):
-        print(f"\n>>> {name}", flush=True)
-        result = subprocess.run(
-            [sys.executable, dev_py, name],
-            cwd=ROOT,
-            stderr=subprocess.STDOUT,
-        )
-        if result.returncode != 0:
-            failed.append(name)
-    print("\n" + "=" * 60)
-    if failed:
-        print(f"cheap-check: FAILED — {', '.join(failed)}")
-        print("Next: python dev.py fix-hint")
-        return 1
-    print("cheap-check: ALL PASSED")
-    return 0
+    return run_fast(source="cheap-check")
 
 
 if __name__ == "__main__":

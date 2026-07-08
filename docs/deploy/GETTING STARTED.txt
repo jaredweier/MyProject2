@@ -1,0 +1,56 @@
+Dodgeville PD Scheduler — Getting Started
+=========================================
+
+NO INSTALL NEEDED
+-----------------
+This is a portable app. Python is NOT required on the test computer.
+
+ONE-CLICK START
+---------------
+1. Copy this whole folder to the computer (Desktop, USB, or network share).
+2. Double-click:  START HERE.bat
+3. Log in when prompted (demo accounts below).
+
+FIRST LAUNCH
+------------
+The app creates these files next to the program (safe to keep):
+  dodgeville_scheduler.db   — demo roster and schedules
+  photos\  logs\  backups\  exports\
+
+DEMO LOGINS
+-----------
+  admin      / admin       (full access)
+  supervisor / supervisor  (approve requests, reports)
+  officer    / officer     (own schedule and time-off)
+
+To customize officer names BEFORE first launch:
+  Edit roster_seed.json in this folder, then start the app.
+  (Only applies when dodgeville_scheduler.db does not exist yet.)
+
+RESET DEMO DATA
+---------------
+Close the app, delete dodgeville_scheduler.db, run START HERE.bat again.
+
+ROLE GUIDES
+-----------
+  Supervisor_Quick_Start.txt  — approve requests, lock pay periods, backups
+  Officer_Quick_Start.txt     — time off, timecard, your schedule
+  IT_INSTALL.txt              — deploy, upgrade, and recovery for IT staff
+
+QUICK TEST CHECKLIST
+--------------------
+  Command Post     — dashboard stats load
+  Leave & Swaps    — submit and approve a day-off
+  Schedules        — monthly calendar shows officers
+  Roster           — search and open an officer
+  Payroll          — preview a pay period
+
+More detail: EVALUATE.txt
+
+HELP
+----
+If START HERE.bat says the .exe is missing, copy the entire folder again.
+Windows may block downloads from the internet — right-click the .zip,
+choose Properties, check Unblock, then Extract All.
+
+Build info is in BUILD_INFO.txt (if present).

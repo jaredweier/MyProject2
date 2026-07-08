@@ -48,9 +48,11 @@ class TestRotationLogic(unittest.TestCase):
         self.assertFalse(self.logic.is_high_risk_night(date(2026, 7, 6)))  # Monday
 
     def test_officer_working_follows_squad_rotation(self):
+        from validators import officer_uses_command_staff_schedule
+
         officers = self.logic.get_officers_by_seniority()
-        squad_a = next(o for o in officers if o["squad"] == "A")
-        squad_b = next(o for o in officers if o["squad"] == "B")
+        squad_a = next(o for o in officers if o["squad"] == "A" and not officer_uses_command_staff_schedule(o))
+        squad_b = next(o for o in officers if o["squad"] == "B" and not officer_uses_command_staff_schedule(o))
 
         # Day 1: Squad A on duty
         self.assertTrue(self.logic.is_officer_working_on_day(squad_a["id"], date(2026, 6, 28)))
@@ -68,10 +70,11 @@ class TestRotationLogic(unittest.TestCase):
         self.assertEqual(rules.get("19:00"), ("15:00",))
 
     def test_validate_bump_finds_replacement(self):
+        from tests.helpers import working_date_for_squad
+
         officers = self.logic.get_officers_by_seniority()
-        # Squad A day 1 — shift 1 officer requests off; shift 2/3 can bump
         original = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "06:00")
-        request_date = "2026-06-30"  # Squad B day — cascade completes without extra coverage
+        request_date = working_date_for_squad("A").strftime("%Y-%m-%d")
 
         result = self.logic.validate_bump_feasibility(
             original["id"], request_date, original["squad"], original["shift_start"]
@@ -79,7 +82,7 @@ class TestRotationLogic(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertIsNotNone(result.replacement_name)
 
-    def test_night_minimum_blocks_bump_on_high_risk_night(self):
+    def test_night_minimum_auto_approves_when_replacement_found(self):
         officers = self.logic.get_officers_by_seniority()
         night_shift = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "19:00")
         friday = "2026-07-03"
@@ -95,34 +98,38 @@ class TestRotationLogic(unittest.TestCase):
         officers = self.logic.get_officers_by_seniority()
         original = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "06:00")
         work_day = "2026-06-28"
-        with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
+        with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 18.0):
             suggestion = self.logic.suggest_bump_chain(
                 original["id"], work_day, original["squad"], original["shift_start"]
             )
         self.assertFalse(suggestion.success)
         self.assertTrue(suggestion.requires_manual)
-        self.assertTrue(suggestion.steps)
+        self.assertEqual(suggestion.failure_reason, "minimum_rest")
+        self.assertIn("Minimum rest", suggestion.message)
         self.assertIn("Supervisor required", self.logic.format_bump_suggestion(suggestion))
 
-    def test_suggest_bump_chain_off_rotation_auto(self):
+    def test_off_rotation_bump_routes_manual(self):
+        from tests.helpers import off_date_for_squad
+
         officers = self.logic.get_officers_by_seniority()
         original = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "06:00")
-        suggestion = self.logic.suggest_bump_chain(
-            original["id"], "2026-06-30", original["squad"], original["shift_start"]
-        )
-        self.assertTrue(suggestion.success)
-        self.assertEqual(len(suggestion.steps), 1)
-        self.assertFalse(suggestion.steps[0].replacement_on_duty)
+        off_day = off_date_for_squad("A").strftime("%Y-%m-%d")
+        suggestion = self.logic.suggest_bump_chain(original["id"], off_day, original["squad"], original["shift_start"])
+        self.assertFalse(suggestion.success)
+        self.assertTrue(suggestion.requires_manual)
+        self.assertEqual(suggestion.failure_reason, "no_replacement")
 
     def test_cascade_completes_without_manual_review(self):
+        from tests.helpers import working_date_for_squad
+
         officers = self.logic.get_officers_by_seniority()
-        original = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "06:00")
-        request_date = "2026-06-30"  # Squad off duty — replacement needs no cascade
+        original = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "15:00")
+        request_date = working_date_for_squad("A").strftime("%Y-%m-%d")
         chain, err = self.logic.plan_bump_chain(
             original["id"], request_date, original["squad"], original["shift_start"]
         )
         self.assertIsNone(err)
-        self.assertEqual(len(chain), 1)
+        self.assertGreaterEqual(len(chain), 1)
 
         create_result = self.logic.create_day_off_request(original["id"], request_date, "Vacation", "Cascade test")
         self.assertTrue(create_result["success"])
@@ -135,7 +142,7 @@ class TestRotationLogic(unittest.TestCase):
                 "SELECT COUNT(*) FROM schedule_overrides WHERE override_date = ?",
                 (request_date,),
             )
-            self.assertEqual(cursor.fetchone()[0], 1)
+            self.assertGreaterEqual(cursor.fetchone()[0], 1)
 
     def test_incomplete_cascade_routes_to_manual_review(self):
         from unittest.mock import patch
@@ -143,7 +150,7 @@ class TestRotationLogic(unittest.TestCase):
         officers = self.logic.get_officers_by_seniority()
         original = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "06:00")
         request_date = "2026-07-02"
-        with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
+        with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 18.0):
             chain, err = self.logic.plan_bump_chain(
                 original["id"], request_date, original["squad"], original["shift_start"]
             )
@@ -186,10 +193,10 @@ class TestRotationLogic(unittest.TestCase):
         self.assertTrue(any(r["id"] == created["request_id"] for r in reqs))
 
     def test_approved_training_maps_to_training_status(self):
-        from tests.helpers import get_any_officer, off_date_for_squad
+        from tests.helpers import get_any_officer, working_date_for_squad
 
         original = get_any_officer("B", "06:00")
-        target = off_date_for_squad("B")
+        target = working_date_for_squad("B")
         create_result = self.logic.create_day_off_request(
             original["id"],
             target.isoformat(),
@@ -221,12 +228,18 @@ class TestRotationLogic(unittest.TestCase):
         self.assertEqual(result.overtime_pay, 600.0)
 
     def test_schedule_matrix_matches_rotation(self):
+        from validators import officer_uses_command_staff_schedule
+
         start = date(2026, 7, 12)
         end = start + timedelta(days=13)
         matrix, days = self.logic.build_schedule_matrix(start, end)
         self.assertEqual(len(days), 14)
-        squad_a = next(e for e in matrix if e["officer"]["squad"] == "A")
-        squad_b = next(e for e in matrix if e["officer"]["squad"] == "B")
+        squad_a = next(
+            e for e in matrix if e["officer"]["squad"] == "A" and not officer_uses_command_staff_schedule(e["officer"])
+        )
+        squad_b = next(
+            e for e in matrix if e["officer"]["squad"] == "B" and not officer_uses_command_staff_schedule(e["officer"])
+        )
         self.assertEqual(squad_a["days"][start], "working")
         self.assertEqual(squad_b["days"][start], "off")
         self.assertEqual(squad_a["days"][date(2026, 7, 14)], "off")

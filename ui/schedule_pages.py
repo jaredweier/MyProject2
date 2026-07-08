@@ -169,6 +169,8 @@ class SchedulePageMixin:
         )
 
     def _refresh_gantt_export_officers(self):
+        if getattr(self, "_shell_building", False):
+            return
         if not hasattr(self, "_gantt_export_officer"):
             return
         officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
@@ -1206,7 +1208,7 @@ class SchedulePageMixin:
             return
         roster = get_snapshot_day_roster(snapshot, today) if snapshot else []
         card = Card(state["scroll"])
-        header = f"Today · {today.strftime('%A, %B %d')}"
+        header = f"Today · {today.strftime('%A')}, {format_date(today)}"
         if not roster:
             SectionHeader(
                 card.body,

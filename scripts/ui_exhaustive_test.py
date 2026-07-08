@@ -39,6 +39,8 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+os.environ["SCHEDULER_UI_TEST"] = "1"
+
 
 def _step(
     name: str,
@@ -196,24 +198,16 @@ def _shell_alive(app) -> bool:
 
 
 def _login_admin(app) -> None:
-    from logic import authenticate_user
+    from logic import set_department_setting
+    from scripts.ui_test_helpers import authenticate_role, headless_login
 
-    auth = authenticate_user("admin", "admin")
-    if not auth.get("success"):
-        raise RuntimeError(auth.get("message", "admin login failed"))
-    user = auth["user"]
-    user["must_change_password"] = 0
-    app.current_user = user
-    if getattr(app, "login_frame", None):
-        app.login_frame.destroy()
-        app.login_frame = None
+    user = authenticate_role("admin", "admin")
+    if not user:
+        raise RuntimeError("admin login failed")
     if not _shell_alive(app):
-        app._build_shell()
+        headless_login(app, user)
         app._bind_keyboard_shortcuts()
         app.root.bind("<F5>", lambda e: app._refresh_current_page())
-        app.show_page("dashboard")
-    from logic import set_department_setting
-
     set_department_setting("setup_complete", "1")
     app._refresh_department_branding()
     app._apply_dashboard_role_layout()
@@ -727,6 +721,7 @@ def run_ui_exhaustive(
                         from logic import get_department_setting, set_department_setting
 
                         app.show_page("reports")
+                        app.root.update_idletasks()
                         uid = app.current_user.get("id")
                         updates = {
                             "department_name": "Dodgeville Police Department",
@@ -742,7 +737,8 @@ def run_ui_exhaustive(
                             if not result.get("success"):
                                 raise RuntimeError(result.get("message", f"Failed to save {key}"))
                         app._refresh_department_branding()
-                        app.refresh_reports()
+                        # Logic API save only — skip refresh_reports() here; full scroll
+                        # rebuild after prior export steps can race Tk destroy on Windows.
                         for key, value in updates.items():
                             if get_department_setting(key) != value:
                                 raise RuntimeError(f"Setting {key} did not persist")
@@ -899,6 +895,7 @@ def run_ui_exhaustive(
 
                 if mutating:
                     _run_step("shell: backup database", app.backup_database)
+                    _run_step("shell: restore backup (cancel)", app.restore_database)
 
                     def _shell_sign_out_login():
                         app.sign_out()

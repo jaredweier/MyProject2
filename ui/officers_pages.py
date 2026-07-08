@@ -373,6 +373,8 @@ class OfficersPageMixin:
         self.off_active = ctk.CTkCheckBox(form_scroll, text="Active on roster", font=font("body"))
         self.off_active.select()
         self.off_active.pack(anchor="w", pady=12)
+        if self.can("certifications.manage") or self.can("certifications.view_own"):
+            self._build_officer_certifications_panel(form_scroll)
 
         btns = ctk.CTkFrame(right.body, fg_color="transparent")
         btns.grid(row=3, column=0, sticky="ew", padx=CARD_PAD, pady=(0, CARD_PAD))
@@ -871,6 +873,8 @@ class OfficersPageMixin:
             )
         else:
             self.off_banks.configure(text="Time banks: not set")
+        if hasattr(self, "_refresh_officer_certifications"):
+            self._refresh_officer_certifications(officer_id)
         self._configure_squad_combo(officer.get("squad"))
         self._configure_shift_combo(officer.get("shift_start"), officer.get("shift_end"))
         if officer.get("active") == 1:

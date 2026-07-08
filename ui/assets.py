@@ -1,7 +1,7 @@
 """Brand image loading for Dodgeville PD UI."""
 
 import os
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from PIL import Image, ImageDraw
 
@@ -10,8 +10,28 @@ from paths import resource_path
 LOGO_FILE = "logo.png"
 TEAM_PHOTO_FILE = "team_photo.jpg"
 
-# Keep both CTkImage and backing PIL data alive (Tk GC + CTkImage requirements)
+# Strong references — Tk/CTk GC will drop images otherwise.
 _cache: Dict[Tuple, Tuple[object, Image.Image]] = {}
+_image_registry: List[object] = []
+_processed_cache: Dict[Tuple, str] = {}
+
+
+def register_ui_image(image) -> None:
+    if image is not None and image not in _image_registry:
+        _image_registry.append(image)
+
+
+def reset_brand_image_cache() -> None:
+    """Drop CTk/PIL references when tearing down a Tk root (headless UI tests)."""
+    _cache.clear()
+    _image_registry.clear()
+    _processed_cache.clear()
+    try:
+        from ui.icons import clear_icon_cache
+
+        clear_icon_cache()
+    except ImportError:
+        pass
 
 
 def _cover_crop(img: Image.Image, size: Tuple[int, int]) -> Image.Image:
@@ -131,25 +151,62 @@ def _prepare_image(
         return None
 
 
-def _to_ctk_image(pil: Image.Image, size: Tuple[int, int]):
+def _to_ctk_image(pil: Image.Image, size: Tuple[int, int], *, cache_key: Tuple = ()) -> Optional[object]:
     import customtkinter as ctk
 
-    display_size = pil.size
-    ctk_img = ctk.CTkImage(light_image=pil, dark_image=pil, size=display_size)
-    return ctk_img
+    if pil is None:
+        return None
+    display_size = pil.size if pil.size[0] > 0 and pil.size[1] > 0 else size
+    # In-memory PIL is the most reliable path on Windows (file-path CTkImage often fails silently).
+    try:
+        img = ctk.CTkImage(light_image=pil, dark_image=pil, size=display_size)
+        register_ui_image(img)
+        register_ui_image(pil)
+        return img
+    except Exception:
+        pass
+    if cache_key:
+        try:
+            import hashlib
+
+            from paths import data_path, ensure_data_dirs
+
+            cached = _processed_cache.get(cache_key)
+            if cached and os.path.isfile(cached):
+                path = cached
+            else:
+                ensure_data_dirs()
+                cache_dir = data_path(os.path.join("logs", "img_cache"))
+                os.makedirs(cache_dir, exist_ok=True)
+                digest = hashlib.sha256(repr(cache_key).encode()).hexdigest()[:16]
+                path = os.path.join(cache_dir, f"ui_{digest}.png")
+                pil.save(path, format="PNG")
+                _processed_cache[cache_key] = path
+            img = ctk.CTkImage(light_image=path, dark_image=path, size=display_size)
+            register_ui_image(img)
+            return img
+        except Exception:
+            return None
+    return None
 
 
 def load_logo(size: Tuple[int, int], bg: Tuple[int, int, int] = (5, 10, 18)):
     """Department shield logo — trimmed and centered on dark background."""
+    import os
+
     key = ("logo", size[0], size[1], bg)
-    cached = _cache.get(key)
-    if cached is not None:
-        return cached[0]
+    if os.environ.get("SCHEDULER_UI_TEST", "").strip() != "1":
+        cached = _cache.get(key)
+        if cached is not None:
+            return cached[0]
     pil = _prepare_image(LOGO_FILE, size, logo=True, bg=bg)
     if pil is None:
         return None
-    ctk_img = _to_ctk_image(pil, size)
-    _cache[key] = (ctk_img, pil)
+    ctk_img = _to_ctk_image(pil, size, cache_key=key)
+    if ctk_img is None:
+        return None
+    if os.environ.get("SCHEDULER_UI_TEST", "").strip() != "1":
+        _cache[key] = (ctk_img, pil)
     return ctk_img
 
 
@@ -161,10 +218,13 @@ def load_team_photo(
     border: bool = True,
 ):
     """Department team photo — cover-cropped with optional gold border frame."""
+    import os
+
     key = ("team", size[0], size[1], cover, rounded, border)
-    cached = _cache.get(key)
-    if cached is not None:
-        return cached[0]
+    if os.environ.get("SCHEDULER_UI_TEST", "").strip() != "1":
+        cached = _cache.get(key)
+        if cached is not None:
+            return cached[0]
     pil = _prepare_image(
         TEAM_PHOTO_FILE,
         size,
@@ -174,8 +234,11 @@ def load_team_photo(
     )
     if pil is None:
         return None
-    ctk_img = _to_ctk_image(pil, pil.size)
-    _cache[key] = (ctk_img, pil)
+    ctk_img = _to_ctk_image(pil, pil.size, cache_key=key)
+    if ctk_img is None:
+        return None
+    if os.environ.get("SCHEDULER_UI_TEST", "").strip() != "1":
+        _cache[key] = (ctk_img, pil)
     return ctk_img
 
 
@@ -192,6 +255,8 @@ def load_brand_image(filename: str, size: Tuple[int, int], cover: bool = False):
     pil = _prepare_image(filename, size, cover=cover)
     if pil is None:
         return None
-    ctk_img = _to_ctk_image(pil, size)
+    ctk_img = _to_ctk_image(pil, size, cache_key=key)
+    if ctk_img is None:
+        return None
     _cache[key] = (ctk_img, pil)
     return ctk_img

@@ -106,14 +106,21 @@ def run_doctor(verbose: bool = False) -> int:
                 True,
                 scheduler_core.backend_info(),
             )
+            all_ok &= ok
         else:
+            detail = "MISSING — scheduling math uses python-fallback (run: python dev.py build-rust)"
+            err = rust_bridge.load_error()
+            if err:
+                detail = f"{detail} — {err}"
             ok, line = _check(
                 "rust scheduler_core",
-                True,
-                "python fallback (run: python dev.py build-rust)",
+                False,
+                detail,
             )
+            all_ok &= ok
     except Exception as exc:
         ok, line = _check("rust scheduler_core", False, str(exc))
+        all_ok &= ok
     lines.append(line)
 
     for folder in ("photos", "logs", "backups", "exports"):

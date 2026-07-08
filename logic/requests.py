@@ -13,12 +13,11 @@ from logic.officers import (
     get_request_reviewer_officer_ids,
 )
 from logic.scheduling import (
+    _rotation_only_status,
     get_shift_coverage_counts_for_range,
-    is_officer_working_on_day,
     officer_meets_minimum_rest,
     resolve_officer_shift_band,
     suggest_bump_chain,
-    _rotation_only_status,
 )
 from logic.snapshots import _insert_override_record
 from models import ProcessRequestResult, ProcessSwapResult, SwapValidationResult
@@ -81,10 +80,7 @@ def validate_swap_feasibility(officer1_id: int, officer2_id: int, swap_date: str
             message="Double-booking conflict",
         )
 
-    if (
-        _rotation_only_status(officer1, req_date) != "working"
-        or _rotation_only_status(officer2, req_date) != "working"
-    ):
+    if _rotation_only_status(officer1, req_date) != "working" or _rotation_only_status(officer2, req_date) != "working":
         conn.close()
         return SwapValidationResult(
             success=False,
@@ -492,6 +488,13 @@ def resolve_notification_navigation(notification: Dict) -> Optional[Dict]:
             "related_id": related_id,
             "refresh": "availability",
         }
+    if related_type in ("shift_bid_slot", "shift_bid_event") or ntype == "Shift Bid":
+        return {
+            "page": "availability",
+            "highlight": "shift_bid",
+            "related_id": related_id,
+            "refresh": "availability",
+        }
     if related_type == "availability" or ntype == "availability":
         return {
             "page": "availability",
@@ -560,6 +563,7 @@ def process_day_off_request(
             request["request_date"],
             request["squad"],
             covered_start,
+            supervisor_override=manual_override,
         )
         if not manual_override and (not suggestion.success or suggestion.requires_manual):
             cursor.execute(
@@ -598,13 +602,18 @@ def process_day_off_request(
 
         cascade_note = f" ({len(steps)} overrides)" if len(steps) > 1 else ""
         if manual_override:
+            override_reason = suggestion.failure_reason
+            if not override_reason:
+                notes = (request.get("admin_notes") or "").lower()
+                if "minimum rest" in notes:
+                    override_reason = "minimum_rest"
+                elif "consecutive" in notes:
+                    override_reason = "consecutive_days"
             message = f"Approved (supervisor override). Replacement: {replacement_name}{cascade_note}"
-            if suggestion.failure_reason == "minimum_rest":
+            if override_reason == "minimum_rest":
                 message = f"Approved (minimum rest override). Replacement: {replacement_name}{cascade_note}"
-            elif suggestion.failure_reason == "consecutive_days":
-                message = (
-                    f"Approved (consecutive day override). Replacement: {replacement_name}{cascade_note}"
-                )
+            elif override_reason == "consecutive_days":
+                message = f"Approved (consecutive day override). Replacement: {replacement_name}{cascade_note}"
         else:
             message = f"Approved. Replacement: {replacement_name}{cascade_note}"
 
@@ -1019,6 +1028,73 @@ def _notify_open_shift_posted(
             related_id=shift_id,
             related_type="open_shift",
         )
+
+
+def _notify_shift_bid_event_published(event_id: int, event: Dict) -> None:
+    squad = event.get("squad")
+    squad_note = f" (Squad {squad})" if squad else ""
+    title = event.get("title") or "Shift bid"
+    due = event.get("bids_due_by") or "see details"
+    message = f"{title}{squad_note} — rank your shift preferences in Blackout Dates. Due by: {due}"
+    for officer in get_officers_by_seniority():
+        if officer.get("active") != 1:
+            continue
+        if squad and officer["squad"] != squad:
+            continue
+        create_notification(
+            officer["id"],
+            "Shift Bid",
+            "Shift bid open",
+            message,
+            related_id=event_id,
+            related_type="shift_bid_event",
+        )
+
+
+def _notify_shift_bid_event_finalized(
+    event_id: int,
+    event: Dict,
+    awards: List[Dict],
+) -> None:
+    title = event.get("title") or "Shift bid"
+    award_by_officer = {a["officer_id"]: a for a in awards}
+    cursor_conn = get_connection()
+    cursor = cursor_conn.cursor()
+    cursor.execute(
+        "SELECT DISTINCT officer_id FROM shift_bid_rankings WHERE event_id = ?",
+        (event_id,),
+    )
+    respondents = [row["officer_id"] for row in cursor.fetchall()]
+    cursor_conn.close()
+
+    for officer_id in respondents:
+        award = award_by_officer.get(officer_id)
+        if award:
+            create_notification(
+                officer_id,
+                "Shift Bid",
+                "Shift bid results",
+                f"You were awarded {award['option_label']} in {title}",
+                related_id=event_id,
+                related_type="shift_bid_event",
+            )
+        else:
+            create_notification(
+                officer_id,
+                "Shift Bid",
+                "Shift bid results",
+                f"Results posted for {title} — check your assignment",
+                related_id=event_id,
+                related_type="shift_bid_event",
+            )
+    summary = ", ".join(f"{a['officer_name']}→{a['option_label']}" for a in awards[:5])
+    _notify_supervisors(
+        "Shift Bid",
+        "Shift bid finalized",
+        f"{title}: {summary or 'no awards'}",
+        event_id,
+        "shift_bid_event",
+    )
 
 
 def _notify_shift_swap_processed(swap_id: int, officer1: Dict, officer2: Dict, swap_date: str, status: str) -> None:

@@ -109,6 +109,16 @@ def run_startup_gates(
     if os.environ.get("SCHEDULER_SKIP_STARTUP_GATES", "").strip().lower() in ("1", "true", "yes"):
         return 0
 
+    # Frozen .exe cannot subprocess dev.py (sys.executable is the bundle, not Python).
+    try:
+        from paths import is_frozen
+
+        if is_frozen():
+            return 0
+    except ImportError:
+        if getattr(sys, "frozen", False):
+            return 0
+
     if _should_debounce(debounce_sec):
         return 0
 
@@ -126,16 +136,15 @@ def run_startup_gates(
         print("Dodgeville PD — startup gates (automatic)")
         print("-" * 40)
 
-    if full:
-        from scripts.preflight import run_preflight
+    from scripts.verify import run_fast
+    from scripts.verify import run_preflight as verify_preflight
 
-        code = run_preflight(with_refactor=False)
+    if full:
+        code = verify_preflight(source=source or "startup-gates", with_refactor=False)
         mode = "preflight"
     else:
-        from scripts.cheap_check import run_cheap_check
-
-        code = run_cheap_check()
-        mode = "cheap-check"
+        code = run_fast(source=source or "startup-gates")
+        mode = "fast"
 
     passed = code == 0
     _write_state(passed=passed, mode=mode, source=source, command=command)
@@ -153,6 +162,8 @@ DEV_SKIP_AUTO_GATES = frozenset(
         "startup-gates",
         "cheap-check",
         "preflight",
+        "verify",
+        "readiness-check",
         "fix-hint",
         "usage-brief",
         "route-task",
@@ -225,7 +236,7 @@ def gui_gate_warning_if_failed(parent=None) -> None:
             "Automatic health check failed before launch.\n\n"
             "Run in project folder:\n"
             "  python dev.py fix-hint\n"
-            "  python dev.py preflight\n\n"
+            "  python dev.py verify --tier check\n\n"
             "Set SCHEDULER_SKIP_STARTUP_GATES=1 to skip auto checks."
         )
         if parent is not None:

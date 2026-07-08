@@ -1,7 +1,7 @@
-# Dodgeville PD — Scheduling Rules (Draft)
+# Dodgeville PD — Scheduling Rules
 
 **Purpose:** Department source of truth for how the scheduler *should* behave.
-**Status:** Auto-generated from current code (`config.py`, `validators.py`, `logic.py`). **Correct anything that does not match real policy.**
+**Status:** Aligned with department policy (2026-07-07). Code: `config.py`, `validators.py`, `logic/scheduling.py`.
 
 When you change a rule here, tell the dev/agent to update `config.py` / `validators.py` / `logic.py` and add a regression test.
 
@@ -16,12 +16,16 @@ When you change a rule here, tell the dev/agent to update `config.py` / `validat
 | Dates before anchor | **Rejected** for day-off requests | ☐ |
 | Squad A works cycle days | **1, 2, 5, 6, 7, 10, 11** | ☐ |
 | Squad B works cycle days | All other days (3, 4, 8, 9, 12, 13, 14) | ☐ |
-| Officer “working” | Officer’s squad matches squad on duty that day (rotation only; overrides handled separately) | ☐ |
+| Patrol officer “working” | Officer’s squad matches squad on duty that day (rotation; overrides handled separately) | ☑ |
+| **Command staff** (Chief, Lieutenant) | **Monday–Friday** by default; not on the A/B patrol rotation | ☑ |
+| Command staff exceptions | Manual schedule rows, manual coverage overrides, or roster edits may change any day | ☑ |
 
-**Your notes / exceptions:**
+**Notes:**
 
 ```
-(e.g. holidays, training days, modified cycles, command staff schedules)
+Patrol squads A/B follow the 14-day rotation.
+Command staff (Chief, Lieutenant) appear as Working Mon–Fri in base schedules.
+Supervisors may adjust command staff days via manual monthly schedule edits or coverage overrides.
 ```
 
 ---
@@ -47,10 +51,10 @@ When you change a rule here, tell the dev/agent to update `config.py` / `validat
 | Rule | Current implementation | Confirm? |
 |------|------------------------|----------|
 | Active officers only | Yes | ☐ |
-| Must be scheduled **working** that day | **No at submit** — officers may request any date; supervisor approves/denies | ☐ |
-| Blackout / availability dates | **Advisory only** — submission allowed; flagged for supervisor review | ☐ |
-| One open request per officer per date | **Yes** — blocks if status is `Pending` **or** `Pending Manual Review` | ☐ |
-| Request types | Vacation, Sick, Personal, Comp Time, Bereavement, Training — **validated in logic** | ☐ |
+| Must be scheduled **working** that day | **No at submit** — off-rotation requests allowed; supervisor approves/denies | ☑ |
+| Blackout dates | **Advisory only** — submission allowed; flagged for supervisor review | ☑ |
+| One open request per officer per date | **Yes** — blocks if status is `Pending` **or** `Pending Manual Review` | ☑ |
+| Request types | Vacation, Sick, Personal, Comp Time, Bereavement, **Training**, **Court** | ☑ |
 
 **CONFIRM:** Officers submit freely; supervisors use **Bulk Approve Auto-OK**, individual approve, or reject.
 
@@ -88,7 +92,9 @@ Supervisor Reject (from Pending or Pending Manual Review) → Rejected (terminal
 
 | Rule | Current implementation | Confirm? |
 |------|------------------------|----------|
-| Same squad only | Yes | ☐ |
+| Same squad only | Yes | ☑ |
+| **On-duty only** — scheduled working that day | Yes — off-rotation and off-day officers excluded | ☑ |
+| **Command staff excluded** (Chief, Lieutenant) | Yes — not in auto bump/coverage pool | ☑ |
 | Junior bumps first | `ORDER BY seniority_rank DESC` (higher rank number = more junior) | ☐ |
 | Replacement must be on an **allowed shift** per bump table | Yes (`config.BUMP_RULES`) | ☐ |
 | Already bumped/covering that day | Excluded | ☐ |
@@ -111,7 +117,8 @@ Supervisor Reject (from Pending or Pending Manual Review) → Rejected (terminal
 | High-risk nights | **Friday and Saturday** only | ☐ |
 | Applies to | **Night shifts only** (15:00, 19:00 start) | ☐ |
 | Minimum officers on shift | **2** (`NIGHT_MINIMUM_OFFICERS`) | ☐ |
-| If approve would drop below minimum | Auto route to **Pending Manual Review** | ☐ |
+| If approve would drop below minimum **and no replacement is found** | Route to **Pending Manual Review** | ☑ |
+| If a valid **on-duty** replacement is found and cascade completes | **Auto-approve** — supervisor review not required | ☑ |
 
 Day shifts on Fri/Sat are **not** subject to night minimum.
 
@@ -232,13 +239,13 @@ Use these when validating changes. Dates assume rotation base **2026-06-28**.
 | S-02 | Squad A officer requests off on **2026-06-28** | Accepted as `Pending` |
 | S-03 | Approve same request twice | Second approve fails; one override only |
 | S-04 | Day shift (06:00) bump on **Friday 2026-07-03** | Not blocked by night minimum |
-| S-05 | Night shift (19:00) approve on **Friday 2026-07-03** with 2 on shift | → Pending Manual Review |
-| S-06 | Supervisor approves **Pending Manual Review** | → Approved with override |
-| S-07 | Second request same date while manual review pending | **Rejected** (duplicate blocked) |
+| S-05 | Night shift (19:00) approve on **Friday 2026-07-03** when replacement found | → **Approved** (auto) |
+| S-06 | Squad off day — no on-duty replacement on approve | → **Pending Manual Review**, then supervisor override → **Approved** |
+| S-07 | Second request same date while manual review pending | **Blocked** at submit (duplicate) |
 | S-08 | Date before **2026-06-28** | Rejected |
-| S-09 | Junior replacement for Squad A day shift bump on **2026-07-05** | Most junior eligible same-squad officer on allowed shift |
+| S-09 | On-duty replacement for Squad A day shift bump on a **working day** | Eligible same-squad officer on allowed shift, scheduled working |
 
-| S-10 | Squad A day shift (06:00) requests off **2026-07-01** (squad off duty) | Auto-approve → `Approved` with **1** override (off-rotation replacement needs no cascade) |
+| S-10 | Squad A day shift (06:00) requests off on **squad off day** | → **Pending Manual Review** (no on-duty replacement; **0** overrides) |
 | S-11 | Two Squad A officers swap on a working day (**2026-06-28**) | Approve swap → **2** `Shift Swap` overrides on that date |
 
 Run all scenarios: `python dev.py scenarios`
@@ -246,8 +253,8 @@ Run all scenarios: `python dev.py scenarios`
 **Department notes:**
 
 ```
-Command staff not on rotation by default; may be added manually to schedule.
-Patrol follows the 14-day A/B rotation above.
+Command staff (Chief, Lieutenant): Monday–Friday in base schedule; manual edits/overrides allowed.
+Patrol squads follow the 14-day A/B rotation above.
 ```
 
 ---

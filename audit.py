@@ -36,30 +36,35 @@ def run_audit() -> List[AuditFinding]:
             )
         )
 
-        # AUD-002: Re-approve does not create duplicate overrides
         squad_a = get_any_officer("A", "06:00")
-        work_day = off_date_for_squad("A").strftime("%Y-%m-%d")
-        cr = logic.create_day_off_request(squad_a["id"], work_day, "Vacation")
-        logic.process_day_off_request(cr["request_id"], "approve")
+
+        # AUD-002: Re-approve does not create duplicate overrides (Squad B working day → real bump)
+        squad_b_dup = get_any_officer("B", "06:00")
+        dup_work_day = working_date_for_squad("B").strftime("%Y-%m-%d")
+        cr = logic.create_day_off_request(squad_b_dup["id"], dup_work_day, "Vacation")
+        first_approve = logic.process_day_off_request(cr["request_id"], "approve")
         conn = get_connection()
         c = conn.cursor()
         c.execute(
             "SELECT COUNT(*) FROM schedule_overrides WHERE original_officer_id = ?",
-            (squad_a["id"],),
+            (squad_b_dup["id"],),
         )
         overrides_after_first = c.fetchone()[0]
         logic.process_day_off_request(cr["request_id"], "approve")
         c.execute(
             "SELECT COUNT(*) FROM schedule_overrides WHERE original_officer_id = ?",
-            (squad_a["id"],),
+            (squad_b_dup["id"],),
         )
         overrides_after_second = c.fetchone()[0]
         conn.close()
+        aud002_ok = (
+            first_approve.success and overrides_after_first >= 1 and overrides_after_second == overrides_after_first
+        )
         findings.append(
             AuditFinding(
                 "AUD-002-no-duplicate-override",
-                overrides_after_second == overrides_after_first,
-                f"overrides after first={overrides_after_first}, second={overrides_after_second}",
+                aud002_ok,
+                f"first_approve={first_approve.success}, overrides after first={overrides_after_first}, second={overrides_after_second}",
             )
         )
 
@@ -100,17 +105,21 @@ def run_audit() -> List[AuditFinding]:
             )
         )
 
-        # AUD-006: Bump auto-resolves when cascade completes (off-rotation replacements)
-        bump_test_day = off_date_for_squad("A").strftime("%Y-%m-%d")
+        # AUD-006: Bump auto-resolves when on-duty cascade completes
+        bump_test_day = working_date_for_squad("A").strftime("%Y-%m-%d")
         bump_ok = logic.validate_bump_feasibility(
             squad_a["id"], bump_test_day, squad_a["squad"], squad_a["shift_start"]
         )
         if bump_ok.replacement_name:
-            from logic.staffing_config import can_officer_cover_shift
+            from validators import officer_uses_command_staff_schedule
 
             officers = logic.get_officers_by_seniority()
             replacement = next(o for o in officers if o["name"] == bump_ok.replacement_name)
-            allowed = can_officer_cover_shift(replacement["shift_start"], squad_a["shift_start"])
+            allowed = (
+                bump_ok.success
+                and replacement.get("squad") == squad_a["squad"]
+                and not officer_uses_command_staff_schedule(replacement)
+            )
             findings.append(
                 AuditFinding(
                     "AUD-006-bump-finds-eligible-replacement",
@@ -128,17 +137,18 @@ def run_audit() -> List[AuditFinding]:
             )
 
         # AUD-007: Supervisor can approve/reject Pending Manual Review
-        from unittest.mock import patch
+        from validators import officer_uses_command_staff_schedule
 
         officers_a6 = [
-            o for o in logic.get_officers_by_seniority() if o["squad"] == "A" and o["shift_start"] == "06:00"
+            o
+            for o in logic.get_officers_by_seniority()
+            if o["squad"] == "A" and o["shift_start"] == "06:00" and not officer_uses_command_staff_schedule(o)
         ]
-        manual_officer = officers_a6[1] if len(officers_a6) > 1 else get_any_officer("A", "06:00")
-        manual_day = "2026-07-02"
-        with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
-            cr_mr = logic.create_day_off_request(manual_officer["id"], manual_day, "Vacation")
-            logic.process_day_off_request(cr_mr["request_id"], "approve")
-            forced = logic.process_day_off_request(cr_mr["request_id"], "approve")
+        manual_officer = officers_a6[0] if officers_a6 else get_any_officer("A", "06:00")
+        manual_day = off_date_for_squad("A").strftime("%Y-%m-%d")
+        cr_mr = logic.create_day_off_request(manual_officer["id"], manual_day, "Vacation")
+        logic.process_day_off_request(cr_mr["request_id"], "approve")
+        forced = logic.process_day_off_request(cr_mr["request_id"], "approve")
         findings.append(
             AuditFinding(
                 "AUD-007-manual-review-approve",
@@ -148,12 +158,11 @@ def run_audit() -> List[AuditFinding]:
         )
 
         # AUD-008 / S-07: Duplicate blocked while manual review pending
-        dup_officer = officers_a6[0] if len(officers_a6) > 1 else get_any_officer("A", "06:00")
-        dup_day = "2026-07-09"
-        with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
-            cr_dup = logic.create_day_off_request(dup_officer["id"], dup_day, "Vacation")
-            logic.process_day_off_request(cr_dup["request_id"], "approve")
-            dup = logic.create_day_off_request(dup_officer["id"], dup_day, "Personal")
+        dup_officer = get_any_officer("B", "10:00")
+        dup_day = off_date_for_squad("B").strftime("%Y-%m-%d")
+        cr_dup = logic.create_day_off_request(dup_officer["id"], dup_day, "Vacation")
+        logic.process_day_off_request(cr_dup["request_id"], "approve")
+        dup = logic.create_day_off_request(dup_officer["id"], dup_day, "Personal")
         findings.append(
             AuditFinding(
                 "AUD-008-duplicate-during-manual-review",
@@ -162,14 +171,9 @@ def run_audit() -> List[AuditFinding]:
             )
         )
 
-        # AUD-009 / S-10: Off-rotation cascade auto-approves
+        # AUD-009 / S-10: Off-rotation day routes to manual review (no on-duty replacement)
         s10_officer = get_any_officer("A", "06:00")
-        if s10_officer["id"] == squad_a["id"]:
-            officers_a6 = [
-                o for o in logic.get_officers_by_seniority() if o["squad"] == "A" and o["shift_start"] == "06:00"
-            ]
-            s10_officer = officers_a6[1] if len(officers_a6) > 1 else s10_officer
-        s10_date = "2026-07-01"
+        s10_date = off_date_for_squad("A").strftime("%Y-%m-%d")
         cr_s10 = logic.create_day_off_request(s10_officer["id"], s10_date, "Vacation")
         pr_s10 = logic.process_day_off_request(cr_s10["request_id"], "approve")
         conn = get_connection()
@@ -182,8 +186,8 @@ def run_audit() -> List[AuditFinding]:
         conn.close()
         findings.append(
             AuditFinding(
-                "AUD-009-s10-cascade-auto-approve",
-                pr_s10.success and pr_s10.status == "Approved" and s10_overrides >= 1,
+                "AUD-009-s10-off-rotation-manual-review",
+                pr_s10.requires_manual and pr_s10.status == "Pending Manual Review" and s10_overrides == 0,
                 f"status={pr_s10.status}, overrides={s10_overrides}",
             )
         )
@@ -193,22 +197,31 @@ def run_audit() -> List[AuditFinding]:
         swap_o2 = get_any_officer("A", "10:00")
         swap_day = working_date_for_squad("A").strftime("%Y-%m-%d")
         cr_swap = logic.create_shift_swap_request(swap_o1["id"], swap_o2["id"], swap_day)
-        pr_swap = logic.process_shift_swap(cr_swap["swap_id"], "approve")
-        conn = get_connection()
-        c = conn.cursor()
-        c.execute(
-            "SELECT COUNT(*) FROM schedule_overrides WHERE override_date = ? AND reason = 'Shift Swap'",
-            (swap_day,),
-        )
-        swap_count = c.fetchone()[0]
-        conn.close()
-        findings.append(
-            AuditFinding(
-                "AUD-010-s11-shift-swap-overrides",
-                pr_swap.success and swap_count == 2,
-                f"swap={pr_swap.success}, overrides={swap_count}",
+        if not cr_swap.get("success"):
+            findings.append(
+                AuditFinding(
+                    "AUD-010-s11-shift-swap-overrides",
+                    False,
+                    cr_swap.get("message", "swap create failed"),
+                )
             )
-        )
+        else:
+            pr_swap = logic.process_shift_swap(cr_swap["swap_id"], "approve")
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute(
+                "SELECT COUNT(*) FROM schedule_overrides WHERE override_date = ? AND reason = 'Shift Swap'",
+                (swap_day,),
+            )
+            swap_count = c.fetchone()[0]
+            conn.close()
+            findings.append(
+                AuditFinding(
+                    "AUD-010-s11-shift-swap-overrides",
+                    pr_swap.success and swap_count == 2,
+                    f"swap={pr_swap.success}, overrides={swap_count}",
+                )
+            )
 
     return findings
 

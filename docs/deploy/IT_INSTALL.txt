@@ -1,0 +1,61 @@
+Dodgeville PD Scheduler — IT / Portable Install
+==============================================
+
+PACKAGE CONTENTS
+----------------
+  START HERE.bat              — end-user launcher (recommended)
+  Dodgeville_PD_Scheduler\    — application folder (do not rename exe)
+  GETTING STARTED.txt         — quick start for testers
+  BUILD_INFO.txt              — build date and verification stamp
+  roster_seed.json            — optional pre-launch roster template
+
+REQUIREMENTS
+------------
+  Windows 10 or 11 (64-bit)
+  No Python or separate database install required
+  ~100 MB disk space (app + data folders)
+
+DEPLOYMENT (ONE FOLDER)
+-----------------------
+1. Copy the entire Dodgeville_PD_Portable folder to the target PC
+   (Desktop, C:\Program Files\DodgevillePD, or a network share).
+2. Users double-click START HERE.bat — not the .exe directly.
+3. On first run the app creates next to the package:
+     dodgeville_scheduler.db
+     backups\  exports\  logs\  photos\
+
+ZIP DISTRIBUTION
+----------------
+Unzip Dodgeville_PD_Portable_YYYYMMDD.zip, then follow step 2 above.
+Windows may block downloaded zips: right-click zip → Properties → Unblock.
+
+UPGRADES
+--------
+1. Ask users to close the app.
+2. Back up dodgeville_scheduler.db and backups\ (or use in-app Backup).
+3. Replace the Dodgeville_PD_Scheduler folder and START HERE.bat with the new build.
+4. Keep the existing dodgeville_scheduler.db unless intentionally resetting demo data.
+
+BACKUP & RECOVERY
+-----------------
+  In-app: sidebar → Backup Database / Restore Backup (Supervisor or Admin)
+  CLI:    python cli.py backup create | list | restore <path>
+  Files:  backups\dodgeville_scheduler_backup_*.db (newest first)
+
+NETWORK / MULTI-USER
+--------------------
+This build is single-workstation SQLite. For shared use, place the folder on
+a network drive only if one person uses it at a time, or deploy separate copies
+per workstation and sync via your department process.
+
+SECURITY NOTES
+--------------
+  Change default demo passwords before production use (Admin → User Accounts).
+  Code signing: unsigned builds may trigger SmartScreen — use internal trust
+  policies or sign the exe with your department certificate.
+
+SUPPORT
+-------
+  Version: see BUILD_INFO.txt and in-app status bar.
+  Logs:    logs\ folder next to the database.
+  Verify:  python dev.py doctor (developer machine with source tree)

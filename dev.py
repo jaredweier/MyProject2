@@ -57,25 +57,28 @@ def cmd_imports(_args):
 
 
 def cmd_check(args):
-    from scripts.preflight import run_preflight
+    from scripts.verify import run_check
 
-    if run_preflight(with_refactor=getattr(args, "with_refactor", False)) != 0:
-        print("\ncheck: FAILED (preflight)")
-        return 1
-    codes = [cmd_test(args), cmd_audit(args)]
-    if getattr(args, "with_refactor", False):
-        codes.append(cmd_refactor_check(args))
-    if any(c != 0 for c in codes):
-        print("\ncheck: FAILED")
-        return 1
-    print("\ncheck: ALL PASSED")
-    return 0
+    return run_check(
+        with_refactor=getattr(args, "with_refactor", False),
+        source="check",
+    )
 
 
 def cmd_preflight(args):
     from scripts.preflight import run_preflight
 
     return run_preflight(with_refactor=getattr(args, "with_refactor", False))
+
+
+def cmd_verify(args):
+    from scripts.verify import run_tier
+
+    return run_tier(
+        getattr(args, "tier", "check"),
+        with_refactor=getattr(args, "with_refactor", False),
+        source="verify",
+    )
 
 
 def cmd_session_start(_args):
@@ -106,10 +109,25 @@ def cmd_build_rust(args):
     return run_build_rust(release=not getattr(args, "debug", False))
 
 
+def cmd_build_portable(args):
+    from scripts.build_portable import build_portable
+
+    return build_portable(
+        quick=getattr(args, "quick", False),
+        zip_package=not getattr(args, "no_zip", False),
+    )
+
+
 def cmd_cheap_check(_args):
     from scripts.cheap_check import run_cheap_check
 
     return run_cheap_check()
+
+
+def cmd_readiness_check(_args):
+    from scripts.readiness_check import run_readiness_check
+
+    return run_readiness_check()
 
 
 def cmd_lint(args):
@@ -423,35 +441,10 @@ def cmd_logic_imports(args):
 
 
 def cmd_verify_features(_args):
-    """Run per-slice and full-stack verification: logic, smoke, scenarios, UI."""
-    root = os.path.dirname(os.path.abspath(__file__))
-    dev_py = os.path.join(root, "dev.py")
-    steps = [
-        "slice-check",
-        "check",
-        "smoke",
-        "scenarios",
-        "ui-smoke",
-        "ui-exhaustive",
-    ]
-    print("Dodgeville PD Scheduler — feature verification")
-    print("=" * 60)
-    failed = []
-    for name in steps:
-        print(f"\n>>> {name}", flush=True)
-        result = subprocess.run(
-            [sys.executable, dev_py, name],
-            cwd=root,
-            stderr=subprocess.STDOUT,
-        )
-        if result.returncode != 0:
-            failed.append(name)
-    print("\n" + "=" * 60)
-    if failed:
-        print(f"verify-features: FAILED — {', '.join(failed)}")
-        return 1
-    print("verify-features: ALL PASSED")
-    return 0
+    """Full-stack verification — unified release tier (no duplicate subprocess gates)."""
+    from scripts.verify import run_release
+
+    return run_release(source="verify-features")
 
 
 def main():
@@ -462,15 +455,33 @@ def main():
     sub.add_parser("audit", help="Run regression audit")
     sub.add_parser("reset-db", help="Delete DB and reinitialize")
     sub.add_parser("imports", help="Verify all modules import")
-    check = sub.add_parser("check", help="imports + test + audit")
+    check = sub.add_parser(
+        "check",
+        help="Ship gate: preflight + unittest + scenarios (~3m) — see verify --tier",
+    )
     check.add_argument(
         "--with-refactor",
         action="store_true",
         help="Also run refactor-check (layer boundaries, modularity)",
     )
+    verify = sub.add_parser(
+        "verify",
+        help="Unified verification (fast|preflight|check|full|release)",
+    )
+    verify.add_argument(
+        "--tier",
+        default="check",
+        choices=["fast", "preflight", "check", "full", "release"],
+        help="Verification depth (default: check = ship gate)",
+    )
+    verify.add_argument(
+        "--with-refactor",
+        action="store_true",
+        help="Also run refactor-check",
+    )
     preflight = sub.add_parser(
         "preflight",
-        help="Fast gate: imports + slice-check + audit (~15s)",
+        help="Pre-commit gate: verify --tier preflight (~35s)",
     )
     preflight.add_argument(
         "--with-refactor",
@@ -490,7 +501,20 @@ def main():
         help="Build scheduler_core Rust extension (requires Rust + maturin)",
     )
     build_rust.add_argument("--debug", action="store_true", help="Debug build (faster compile)")
-    sub.add_parser("cheap-check", help="Ultra-fast free gate: imports + audit (~5s)")
+    build_portable = sub.add_parser(
+        "build-portable",
+        help="Portable Windows package (no Python on test PC) — dist/Dodgeville_PD_Portable",
+    )
+    build_portable.add_argument("--quick", action="store_true", help="Skip dev.py check (doctor only)")
+    build_portable.add_argument("--no-zip", action="store_true", help="Do not create dist/*.zip")
+    sub.add_parser(
+        "cheap-check",
+        help="After-edit gate: verify --tier fast (~25s, includes readiness)",
+    )
+    sub.add_parser(
+        "readiness-check",
+        help="UI login probe + seed security + bid datetime (included in fast tier)",
+    )
     lint = sub.add_parser("lint", help="Ruff lint/format (pip install -r requirements-dev.txt)")
     lint.add_argument("--fix", action="store_true", help="Auto-fix safe ruff issues")
     lint.add_argument("--format", action="store_true", help="Also run ruff format")
@@ -732,12 +756,15 @@ def main():
         "reset-db": cmd_reset_db,
         "imports": cmd_imports,
         "check": cmd_check,
+        "verify": cmd_verify,
         "preflight": cmd_preflight,
         "session-start": cmd_session_start,
         "verify-slice": cmd_verify_slice,
         "doctor": cmd_doctor,
         "build-rust": cmd_build_rust,
+        "build-portable": cmd_build_portable,
         "cheap-check": cmd_cheap_check,
+        "readiness-check": cmd_readiness_check,
         "lint": cmd_lint,
         "deps-audit": cmd_deps_audit,
         "token-audit": cmd_token_audit,

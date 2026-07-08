@@ -9,6 +9,7 @@ import customtkinter as ctk
 from ui.admin_pages import AdminPageMixin
 from ui.banked_time_pages import BankedTimePageMixin
 from ui.dashboard_pages import DashboardPageMixin
+from ui.display import configure_ctk_scaling
 from ui.feature_pages import AvailabilityPageMixin, ReportsPageMixin
 from ui.notifications_pages import NotificationsPageMixin
 from ui.officers_pages import OfficersPageMixin
@@ -19,11 +20,11 @@ from ui.session_pages import SessionPageMixin
 from ui.shell_pages import ShellPageMixin
 from ui.simulator_pages import SimulatorPageMixin
 from ui.theme import UI_BG
+from ui.tier2_pages import Tier2PageMixin
 
 ctk.set_appearance_mode("dark")
 ctk.set_default_color_theme("blue")
-ctk.set_widget_scaling(1.15)
-ctk.set_window_scaling(1.0)
+configure_ctk_scaling()
 
 
 class DodgevilleSchedulerApp(
@@ -40,11 +41,11 @@ class DodgevilleSchedulerApp(
     NotificationsPageMixin,
     OfficersPageMixin,
     DashboardPageMixin,
+    Tier2PageMixin,
 ):
     def __init__(self):
         self.root = ctk.CTk()
         self.root.title("Dodgeville Police Department Scheduler")
-        self.root.minsize(1100, 700)
         self.root.configure(fg_color=UI_BG)
 
         self.current_user = None
@@ -77,8 +78,10 @@ class DodgevilleSchedulerApp(
         self._highlight_swap_id = None
         self._highlight_availability_id = None
         self._highlight_open_shift_id = None
+        self._highlight_shift_bid_id = None
         self._availability_row_widgets = {}
         self._open_shift_row_widgets = {}
+        self._shift_bid_row_widgets = {}
         self._gantt_cycle_start: Optional[date] = None
         self._last_simulation_result = None
         self._brand_images = []
@@ -86,14 +89,34 @@ class DodgevilleSchedulerApp(
         self._bootstrap_session()
 
 
+def _install_tk_error_handler(root) -> None:
+    """Log Tk callback errors instead of spamming modal error dialogs."""
+    import logging
+    import traceback
+
+    log = logging.getLogger("DodgevilleScheduler")
+
+    def _report(exc, val, tb):
+        log.error("UI callback error:\n%s", "".join(traceback.format_exception(exc, val, tb)))
+
+    try:
+        root.report_callback_exception = _report
+    except Exception:
+        pass
+
+
 def run():
     from config import configure_logging
-    from scripts.startup_gates import gui_gate_warning_if_failed
+    from paths import is_frozen
 
     configure_logging()
     try:
         app = DodgevilleSchedulerApp()
-        app.root.after(400, lambda: gui_gate_warning_if_failed(app.root))
+        _install_tk_error_handler(app.root)
+        if not is_frozen():
+            from scripts.startup_gates import gui_gate_warning_if_failed
+
+            app.root.after(400, lambda: gui_gate_warning_if_failed(app.root))
         app.root.mainloop()
     except Exception:
         import traceback

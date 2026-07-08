@@ -1,0 +1,39 @@
+# Verification policy (mandatory — prevents test theater)
+
+> State: `logs/last_verify.json` · Ship gate: `python dev.py verify --tier check`
+
+## One ladder — strict supersets
+
+| Tier | Command | When | Honest for ship? |
+|------|---------|------|------------------|
+| fast | `python dev.py verify --tier fast` | After every edit | No |
+| preflight | `python dev.py verify --tier preflight` | Pre-commit, handoff | No |
+| **check** | `python dev.py verify --tier check` | Before claiming done | **Yes** |
+| full | `python dev.py verify --tier full` | Release candidate | Yes |
+| release | `python dev.py verify --tier release` | Full regression | Yes |
+
+Aliases `cheap-check` and `preflight` delegate to the same tiers — they cannot diverge.
+
+## Never (test theater)
+
+1. **Claim success on fast/preflight alone** when UI, security, or scheduling logic changed.
+2. **Patch a test to match broken behavior** without fixing the root cause in production code.
+3. **Add a gate step that subprocesses a weaker gate** — all tiers use `scripts/verify.py`.
+4. **Skip `check` before handoff** when the task touched `logic/*`, `validators.py`, `ui/*`, or `database.py`.
+5. **Report "audit 10/10" as product health** — audit covers 10 historical regressions only.
+
+## Always
+
+1. **Reproduce the real failure** (manual steps or failing gate) before writing a fix.
+2. **Run tier ≥ change scope:**
+   - copy/theme only → fast
+   - logic/validators → preflight minimum; check before done
+   - UI pages/login → check (includes readiness + full unittest)
+3. **Read `logs/last_verify.json`** after any gate — `honest_gate: false` means not ship-ready.
+4. **Fix root cause** — no workarounds, env hacks, or probe-only patches.
+
+## Agent churn prevention
+
+- Do not re-read whole repo after a passing fast tier.
+- Do not spawn subagents for `verify --tier fast|preflight|check`.
+- One verification run per edit batch; escalate tier only when fast fails or scope demands check.

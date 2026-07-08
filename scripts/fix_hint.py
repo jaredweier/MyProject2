@@ -33,11 +33,25 @@ def run_fix_hint(run_audit: bool = True) -> int:
     print("Dodgeville PD — fix-hint (free)")
     print("=" * 60)
 
+    from scripts.verify import read_verify_state
+
+    state = read_verify_state()
+    if state:
+        print("Last verify run:")
+        print(f"  tier:    {state.get('tier', '?')}")
+        print(f"  passed:  {state.get('passed', '?')}")
+        print(f"  honest:  {state.get('honest_gate', False)} (ship-ready only when check+ passes)")
+        failed = state.get("failed_steps") or []
+        if failed:
+            print(f"  failed:  {', '.join(failed)}")
+            print("\nEscalate: python dev.py verify --tier check")
+        print("  state:   logs/last_verify.json")
+
     log_path = os.path.join(ROOT, "check_result.log")
     if os.path.isfile(log_path):
         with open(log_path, encoding="utf-8", errors="replace") as fh:
             tail = fh.readlines()[-40:]
-        print("From check_result.log (last lines):")
+        print("\nFrom check_result.log (last lines):")
         for line in tail:
             print(" ", line.rstrip())
 
@@ -61,8 +75,8 @@ def run_fix_hint(run_audit: bool = True) -> int:
                         print(f"  → python dev.py usage-brief {sid}")
                         print(f"  → python dev.py verify-slice {sid}")
 
-    print("\nContext: @logs/agent_pack/latest.md + @docs/AGENT_STABLE.md")
-    print("Ladder + blocked paths: docs/AGENT_STABLE.md")
+    print("\nPolicy: .grok/rules/verify-policy.md")
+    print("Context: @logs/agent_pack/latest.md + @docs/AGENT_STABLE.md")
     print("=" * 60)
     return 0
 

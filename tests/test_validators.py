@@ -25,11 +25,12 @@ from validators import (
 
 class TestValidators(unittest.TestCase):
     def test_parse_date(self):
+        self.assertEqual(parse_date("01/07/2026"), date(2026, 7, 1))
         self.assertEqual(parse_date("01-07-2026"), date(2026, 7, 1))
         self.assertEqual(parse_date("2026-07-01"), date(2026, 7, 1))
 
     def test_format_datetime(self):
-        self.assertEqual(format_datetime("2026-07-01 14:30:00"), "01-07-2026 14:30")
+        self.assertEqual(format_datetime("2026-07-01 14:30:00"), "01/07/2026 14:30")
         self.assertEqual(format_datetime(""), "")
 
     def test_is_officer_active(self):

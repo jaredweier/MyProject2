@@ -40,6 +40,7 @@ from logic import (
     get_pay_period,
     get_pay_period_history,
     get_pay_period_hours_summary,
+    get_pay_period_lock_reminder,
     get_pay_stub_preview,
     get_payroll_entries,
     get_payroll_period_timesheets,
@@ -55,7 +56,6 @@ from logic import (
     list_timecard_approvals_for_period,
     lock_pay_period,
     prefill_timecard_from_schedule,
-    project_officer_annual_pay,
     reject_timecard_period,
     resolve_time_scope,
     save_flsa_settings,
@@ -527,6 +527,17 @@ class PayrollPageMixin:
                 "Pay period is locked. Timecard edits and payroll import are disabled.",
                 "warning",
             ).pack(fill="x")
+        elif (
+            viewing_current and self.can("payroll.lock_period") and get_pay_period_lock_reminder().get("needs_reminder")
+        ):
+            rem = get_pay_period_lock_reminder()
+            days_left = rem.get("days_until_end", 0)
+            day_word = "day" if days_left == 1 else "days"
+            AlertBanner(
+                self.tc_lock_banner,
+                f"Pay period ends in {days_left} {day_word}. Lock on Payroll when entries are final.",
+                "info",
+            ).pack(fill="x")
         elif approved and not self._timecard_can_override_approval():
             AlertBanner(
                 self.tc_lock_banner,
@@ -706,7 +717,7 @@ class PayrollPageMixin:
         else:
             ctk.CTkLabel(
                 date_cell,
-                text="  + line",
+                text="+ line",
                 anchor="w",
                 text_color=UI_TEXT_MUTED,
             ).pack(side="left")
@@ -1199,6 +1210,8 @@ class PayrollPageMixin:
             command=self._pick_payroll_period,
         )
         self.pay_period_picker.pack(side="left", padx=(6, 0))
+        self.pay_lock_banner = ctk.CTkFrame(period_hdr.body, fg_color="transparent")
+        self.pay_lock_banner.pack(fill="x", padx=CARD_PAD, pady=(0, 6))
         self.pay_period_scroll = ctk.CTkScrollableFrame(period_hdr.body, fg_color="transparent", height=220)
         self.pay_period_scroll.pack(fill="x", padx=8, pady=(0, 8))
 
@@ -1338,7 +1351,6 @@ class PayrollPageMixin:
             body.grid_columnconfigure(0, weight=0)
         if self._is_officer_role():
             self.pay_filter.pack_forget()
-        self.refresh_payroll_period()
 
     def _build_flsa_settings_card(self, page):
         from config import DATE_INPUT_HINT
@@ -1394,6 +1406,8 @@ class PayrollPageMixin:
         self.refresh_flsa_settings()
 
     def refresh_flsa_settings(self):
+        if getattr(self, "_shell_building", False):
+            return
         if not hasattr(self, "flsa_days_entry"):
             return
         data = get_flsa_settings()
@@ -1588,6 +1602,8 @@ class PayrollPageMixin:
         self.set_status(f"Title added: {result.get('title')}")
 
     def refresh_position_pay_rates(self):
+        if getattr(self, "_shell_building", False):
+            return
         if not hasattr(self, "_position_pay_rows"):
             return
         data = get_position_pay_rates()
@@ -1649,7 +1665,7 @@ class PayrollPageMixin:
         try:
             annual_hours = float(hours_text) if hours_text else default_annual_hours_for_title(title)
         except ValueError:
-            widgets["equiv"].configure(text="Invalid hrs")
+            widgets["equiv"].configure(text="Invalid hours")
             widgets["per_period"].configure(text="—")
             return
         basis = normalize_position_pay_basis(widgets["basis"].get())
@@ -1807,6 +1823,8 @@ class PayrollPageMixin:
         self.refresh_pay_code_rules()
 
     def refresh_pay_code_rules(self):
+        if getattr(self, "_shell_building", False):
+            return
         if not hasattr(self, "_pay_code_rows"):
             return
         data = get_pay_code_rules()
@@ -2072,9 +2090,38 @@ class PayrollPageMixin:
         else:
             messagebox.showerror("Lock", result.get("message", "Failed"))
 
+    def _ensure_payroll_admin_data(self) -> None:
+        """Load FLSA/rates/rules once when payroll tab is first opened — not at login."""
+        if getattr(self, "_payroll_admin_data_loaded", False):
+            return
+        if not self.can("payroll.edit"):
+            return
+        self._payroll_admin_data_loaded = True
+        for refresher in (
+            getattr(self, "refresh_flsa_settings", None),
+            getattr(self, "refresh_position_pay_rates", None),
+            getattr(self, "refresh_pay_code_rules", None),
+        ):
+            if refresher:
+                try:
+                    refresher()
+                except Exception:
+                    pass
+
     def refresh_payroll_period(self):
+        if getattr(self, "_shell_building", False):
+            return
+        if getattr(self, "_payroll_period_refreshing", False):
+            return
         if not hasattr(self, "pay_period_scroll"):
             return
+        self._payroll_period_refreshing = True
+        try:
+            self._refresh_payroll_period_body()
+        finally:
+            self._payroll_period_refreshing = False
+
+    def _refresh_payroll_period_body(self) -> None:
         p_start, p_end = self._payroll_view_period()
         viewing_current = is_current_pay_period(p_start)
         locked = is_pay_period_locked(p_start)
@@ -2098,6 +2145,19 @@ class PayrollPageMixin:
                 )
             else:
                 self._pay_lock_btn.configure(state="disabled")
+        if hasattr(self, "pay_lock_banner"):
+            for w in self.pay_lock_banner.winfo_children():
+                w.destroy()
+            if viewing_current and self.can("payroll.lock_period"):
+                reminder = get_pay_period_lock_reminder()
+                if reminder.get("needs_reminder"):
+                    days_left = reminder.get("days_until_end", 0)
+                    day_word = "day" if days_left == 1 else "days"
+                    AlertBanner(
+                        self.pay_lock_banner,
+                        f"Pay period ends in {days_left} {day_word}. Lock when timecards and imports are final.",
+                        "warning",
+                    ).pack(fill="x")
         for w in self.pay_period_scroll.winfo_children():
             w.destroy()
         data = get_payroll_period_timesheets(p_start)
@@ -2149,7 +2209,7 @@ class PayrollPageMixin:
         details.pack(fill="x", pady=(8, 0))
         self._populate_pay_period_hours_details(details.body, hours_summary)
 
-        for sheet in data["sheets"]:
+        for idx, sheet in enumerate(data["sheets"]):
             card = ctk.CTkFrame(self.pay_period_scroll, fg_color=UI_SURFACE, corner_radius=8)
             card.pack(fill="x", pady=4)
             inner = ctk.CTkFrame(card, fg_color="transparent")
@@ -2162,13 +2222,6 @@ class PayrollPageMixin:
                 anchor="w",
             ).pack(fill="x")
             detail = f"Timecard: {sheet['total_hours']:.1f}h  ·  Payroll: ${sheet['total_pay']:,.2f}"
-            proj = project_officer_annual_pay(officer["id"])
-            if proj.get("success"):
-                detail += (
-                    f"  ·  ${proj['monthly_pay']:,.0f}/mo"
-                    f"  ·  ${proj['per_pay_period_salary']:,.0f}/period"
-                    f"  ·  ${proj['annual_salary']:,.0f}/yr"
-                )
             ctk.CTkLabel(
                 inner,
                 text=detail,
@@ -2176,6 +2229,11 @@ class PayrollPageMixin:
                 text_color=UI_TEXT_MUTED,
                 anchor="w",
             ).pack(fill="x")
+            if idx % 8 == 7:
+                try:
+                    self.pay_period_scroll.update_idletasks()
+                except Exception:
+                    pass
             if sheet["timecard_rows"]:
                 max_rows = 3
                 rows = sheet["timecard_rows"]
@@ -2204,7 +2262,7 @@ class PayrollPageMixin:
                     text_color=UI_TEXT_MUTED,
                     anchor="w",
                 ).pack(fill="x", padx=8)
-        if hasattr(self, "pay_stub_preview") and self._payroll_stub_officer_id():
+        if hasattr(self, "pay_stub_preview") and hasattr(self, "statusbar") and self._payroll_stub_officer_id():
             self._preview_payroll_stub()
         self._refresh_pay_period_history()
 
@@ -2258,6 +2316,8 @@ class PayrollPageMixin:
             ).pack(side="right")
 
     def _refresh_payroll_officer_dropdown(self):
+        if getattr(self, "_shell_building", False):
+            return
         officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
         if self._is_officer_role():
             oid = self._linked_officer_id()
@@ -2479,6 +2539,7 @@ class PayrollPageMixin:
             labels["notes"].pack_forget()
 
     def refresh_payroll(self):
+        self._ensure_payroll_admin_data()
         if hasattr(self, "pay_period_scroll"):
             self.refresh_payroll_period()
         if not hasattr(self, "payroll_list"):

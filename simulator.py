@@ -13,7 +13,6 @@ from typing import Dict, List, Optional, Tuple
 from config import (
     NIGHT_MINIMUM_OFFICERS,
     ROTATION_PRESETS,
-    SHIFT_TIMES,
     is_high_risk_night,
 )
 from validators import format_date
@@ -34,6 +33,7 @@ class SimulatorConfig:
     apply_department_rules: bool = True
     min_per_shift: int = 1
     simulation_days: int = 28
+    night_minimum: int = NIGHT_MINIMUM_OFFICERS
 
 
 @dataclass
@@ -59,6 +59,7 @@ class SimulatorOfficerSlot:
 class SimulatorResult:
     success: bool
     message: str = ""
+    compute_backend: str = "python"
     shift_templates: List[Tuple[str, str]] = field(default_factory=list)
     officer_slots: List[SimulatorOfficerSlot] = field(default_factory=list)
     coverage_by_day: List[Dict] = field(default_factory=list)
@@ -211,11 +212,19 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
 
         roster_officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
     slots = _assign_officers(config.num_officers, shift_templates, preset, roster_officers)
-    cycle_length = preset["cycle_length"]
+    if config.apply_department_rules:
+        from logic.rotation_config import get_active_rotation_cycle_length, get_active_squad_a_days
+
+        cycle_length = get_active_rotation_cycle_length()
+        squad_a_days = set(get_active_squad_a_days())
+    else:
+        cycle_length = preset["cycle_length"]
+        squad_a_days = set(preset.get("squad_a_days", {1, 2, 5, 6, 7, 10, 11}))
     sim_start = date.today()
 
+    compute_backend = rust_bridge.backend_name() if rust_bridge else "python"
+
     if rust_bridge and rust_bridge.available():
-        squad_a_days = list(preset.get("squad_a_days", {1, 2, 5, 6, 7, 10, 11}))
         rust_config = {
             "rotation_type": config.rotation_type,
             "num_officers": config.num_officers,
@@ -224,21 +233,29 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
             "min_per_shift": config.min_per_shift,
             "apply_department_rules": config.apply_department_rules,
             "annual_hours_target": config.annual_hours_target,
-            "night_minimum": NIGHT_MINIMUM_OFFICERS,
+            "night_minimum": config.night_minimum,
             "shift_templates": shift_templates,
             "squad_a_days": squad_a_days,
         }
         rust_out = rust_bridge.simulate_schedule_rust(rust_config, preset, sim_start)
         if rust_out and rust_out.get("success"):
-            metrics = rust_out.get("metrics", {})
+            coverage = rust_out.get("coverage_by_day", [])
+            metrics = _enrich_rust_sim_metrics(
+                config,
+                dict(rust_out.get("metrics", {})),
+                coverage,
+                slots,
+            )
+            metrics["compute_backend"] = "rust"
             gap_counter: Dict = {}
             suggestions = _build_suggestions(config, metrics, shift_templates, gap_counter)
             return SimulatorResult(
                 success=True,
                 message=rust_out.get("message", "Simulation complete"),
+                compute_backend="rust",
                 shift_templates=shift_templates,
                 officer_slots=slots,
-                coverage_by_day=rust_out.get("coverage_by_day", []),
+                coverage_by_day=coverage,
                 metrics=metrics,
                 suggestions=suggestions,
             )
@@ -257,7 +274,12 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
         working_officers = []
 
         for slot in slots:
-            if not _squad_working(config.rotation_type, slot.squad, cycle_day, preset):
+            if config.apply_department_rules:
+                from logic.rotation_config import is_squad_working
+
+                if not is_squad_working(slot.squad, cycle_day, preset):
+                    continue
+            elif not _squad_working(config.rotation_type, slot.squad, cycle_day, preset):
                 continue
             slot.work_days_in_sim += 1
             shift_counts[slot.shift_start] = shift_counts.get(slot.shift_start, 0) + 1
@@ -271,7 +293,7 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
         for shift_start, count in shift_counts.items():
             required = config.min_per_shift
             if config.apply_department_rules and _is_night_shift_start(shift_start) and is_high_risk_night(target):
-                required = max(required, NIGHT_MINIMUM_OFFICERS)
+                required = max(required, config.night_minimum)
             if count < required:
                 gap = required - count
                 gap_counter[(day_offset, shift_start)] = gap_counter.get((day_offset, shift_start), 0) + gap
@@ -312,7 +334,7 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
             for shift_start, count in shift_counts.items():
                 required = config.min_per_shift
                 if config.apply_department_rules and _is_night_shift_start(shift_start) and is_high_risk_night(target):
-                    required = max(required, NIGHT_MINIMUM_OFFICERS)
+                    required = max(required, config.night_minimum)
                 if count < required:
                     gap = required - count
                     gap_counter[(day_offset, shift_start)] = gap
@@ -353,6 +375,7 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
         "night_risk_gaps": night_risk_gaps,
         "total_gap_hours": round(total_gap_hours, 1),
         "shifts_per_day": slots_per_day,
+        "compute_backend": compute_backend,
     }
 
     suggestions = _build_suggestions(config, metrics, shift_templates, gap_counter)
@@ -360,12 +383,52 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
     return SimulatorResult(
         success=True,
         message="Simulation complete",
+        compute_backend=compute_backend,
         shift_templates=shift_templates,
         officer_slots=slots,
         coverage_by_day=coverage_by_day,
         metrics=metrics,
         suggestions=suggestions,
     )
+
+
+def _enrich_rust_sim_metrics(
+    config: SimulatorConfig,
+    metrics: Dict,
+    coverage_by_day: List[Dict],
+    slots: List[SimulatorOfficerSlot],
+) -> Dict:
+    """Fill presentation metrics Rust omits (gap hours, night risk, annual hours)."""
+    gap_events = int(metrics.get("gap_events", 0))
+    total_gap_hours = gap_events * config.shift_length_hours
+    night_risk_gaps = 0
+    for day in coverage_by_day:
+        if not day.get("high_risk_night"):
+            continue
+        shift_counts = day.get("shift_counts", {})
+        for shift_start, count in shift_counts.items():
+            required = config.min_per_shift
+            if config.apply_department_rules and _is_night_shift_start(shift_start):
+                required = max(required, config.night_minimum)
+            if count < required:
+                night_risk_gaps += 1
+
+    annual_factor = 365 / max(config.simulation_days, 1)
+    hours_list = []
+    for slot in slots:
+        slot.projected_annual_hours = round(slot.work_days_in_sim * config.shift_length_hours * annual_factor, 1)
+        hours_list.append(slot.projected_annual_hours)
+    avg_hours = sum(hours_list) / len(hours_list) if hours_list else 0.0
+    hours_variance = 0.0
+    if hours_list and avg_hours:
+        hours_variance = max(hours_list) / avg_hours - min(hours_list) / avg_hours
+
+    enriched = dict(metrics)
+    enriched.setdefault("total_gap_hours", round(total_gap_hours, 1))
+    enriched.setdefault("night_risk_gaps", night_risk_gaps)
+    enriched.setdefault("avg_annual_hours", round(avg_hours, 1))
+    enriched.setdefault("hours_variance_ratio", round(hours_variance, 3))
+    return enriched
 
 
 def _build_suggestions(
@@ -474,7 +537,6 @@ def config_from_current_roster() -> SimulatorConfig:
         get_active_annual_hours_target,
         get_active_shift_length_hours,
         get_active_shift_starts,
-        get_target_officer_count,
     )
 
     officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]

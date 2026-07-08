@@ -1,0 +1,47 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  release:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt pyinstaller
+
+      - name: Full verification
+        run: python dev.py check
+
+      - name: Build Rust core
+        run: python dev.py build-rust
+
+      - name: Build portable package
+        run: python scripts/build_portable.py --quick --no-zip
+
+      - name: Create release zip
+        shell: pwsh
+        run: |
+          $stamp = Get-Date -Format "yyyyMMdd"
+          $zip = "dist/Dodgeville_PD_Portable_$stamp.zip"
+          if (Test-Path $zip) { Remove-Item $zip }
+          Compress-Archive -Path "dist/Dodgeville_PD_Portable/*" -DestinationPath $zip
+          echo "ZIP_PATH=$zip" >> $env:GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dodgeville_PD_Portable_${{ github.ref_name }}
+          path: |
+            dist/Dodgeville_PD_Portable/
+            dist/Dodgeville_PD_Portable_*.zip
+          if-no-files-found: error

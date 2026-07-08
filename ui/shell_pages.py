@@ -1,40 +1,37 @@
 """Application shell — sidebar, topbar, navigation, and page refresh orchestration."""
 
+import os
 from datetime import date
 from tkinter import messagebox
 
 import customtkinter as ctk
 
-from database import backup_database
+from database import backup_database, list_backup_files
 from logic import get_cycle_day, get_squad_on_duty, get_unread_notification_count, log_audit_action
 from ui.assets import load_logo
 from ui.branding import get_department_branding
-from ui.helpers import handle_export_result, title_case_ui
+from ui.helpers import handle_export_result
 from ui.profile_dialog import open_my_profile_dialog
 from ui.theme import (
     CONTENT_PAD,
-    DODGEVILLE_ACCENT,
-    DODGEVILLE_DANGER,
-    DODGEVILLE_GOLD,
-    DODGEVILLE_SUCCESS,
     NAV_HUBS,
     NAV_ITEMS,
     NAV_PERMISSIONS,
     OFFICER_PAGE_SUBTITLES,
     PAGE_SUBTITLES,
     SIDEBAR_NAV,
+    SIDEBAR_WIDTH,
     TOPBAR_HEIGHT,
-    UI_ACCENT_GLOW,
     UI_BG,
     UI_BORDER,
     UI_SIDEBAR,
-    UI_SURFACE,
+    UI_SURFACE_LIGHT,
     UI_TEXT_MUTED,
+    UI_TEXT_PRIMARY,
     font,
     hub_for_page,
     page_title,
     resolve_nav_target,
-    tactical_stripe,
 )
 from ui.widgets import NavButton, NavSectionLabel, SubNavBar
 from validators import format_date
@@ -43,14 +40,124 @@ from validators import format_date
 class ShellPageMixin:
     """Main window chrome: nav, page routing, status bar, and global refresh."""
 
+    def _page_build_steps(self) -> list:
+        return [
+            self._build_dashboard,
+            self._build_base_schedule,
+            self._build_live_schedule,
+            self._build_timecard,
+            self._build_banked_time,
+            self._build_timeline,
+            self._build_requests,
+            self._build_swaps,
+            self._build_notifications,
+            self._build_officers,
+            self._build_payroll,
+            self._build_simulator,
+            self._build_reports,
+            self._build_availability,
+            self._build_users,
+        ]
+
     def _build_shell(self) -> None:
+        self._shell_building = True
         self.shell = ctk.CTkFrame(self.root, fg_color=UI_BG, corner_radius=0)
         self.shell.pack(fill="both", expand=True)
         self.shell.grid_columnconfigure(1, weight=1)
         self.shell.grid_rowconfigure(0, weight=1)
 
         self._build_sidebar()
-        self._build_main_area()
+        self._build_main_chrome()
+
+        if os.environ.get("SCHEDULER_UI_TEST", "").strip() == "1":
+            for step in self._page_build_steps():
+                step()
+            self._shell_building = False
+            self._complete_shell_build()
+            return
+
+        self._page_build_queue = list(self._page_build_steps())
+        self._page_build_total = len(self._page_build_queue)
+        self.root.after(1, self._build_next_page_batch)
+
+    def _build_next_page_batch(self, batch_size: int = 1) -> None:
+        loading = getattr(self, "_login_loading", None)
+        for _ in range(batch_size):
+            if not self._page_build_queue:
+                break
+            self._page_build_queue.pop(0)()
+            try:
+                self.root.update_idletasks()
+            except Exception:
+                pass
+        if loading is not None and loading.winfo_exists():
+            done = self._page_build_total - len(self._page_build_queue)
+            loading.configure(text=f"Loading workspace… {done}/{self._page_build_total}")
+        if self._page_build_queue:
+            self.root.after(8, lambda: self._build_next_page_batch(batch_size))
+            return
+        self._shell_building = False
+        self._complete_shell_build()
+
+    def _complete_shell_build(self) -> None:
+        if hasattr(self, "_finalize_login_shell"):
+            self._finalize_login_shell()
+        self._deferred_shell_refresh()
+
+    def _deferred_shell_refresh(self) -> None:
+        """Populate heavy payroll widgets after the shell exists (safe for headless tests)."""
+        import os
+
+        if os.environ.get("SCHEDULER_UI_TEST", "").strip() == "1":
+            if getattr(self, "_pending_initial_dashboard", False):
+                self._pending_initial_dashboard = False
+                self._show_initial_dashboard()
+            return
+        if getattr(self, "_pending_initial_dashboard", False):
+            self._pending_initial_dashboard = False
+            self._show_initial_dashboard()
+
+    def _cancel_deferred_refresh(self) -> None:
+        """Cancel background refresh callbacks (prevents piled-up Tk work after sign-out)."""
+        after_id = getattr(self, "_payroll_refresh_after_id", None)
+        if after_id is not None:
+            try:
+                self.root.after_cancel(after_id)
+            except Exception:
+                pass
+            self._payroll_refresh_after_id = None
+        self._payroll_period_refreshing = False
+
+    def _show_initial_dashboard(self) -> None:
+        """First dashboard paint after deferred payroll widgets (avoids CTk deadlock in tests)."""
+        if not self.current_user:
+            return
+        try:
+            self.show_page("dashboard", defer_refresh=True)
+            self.root.after(120, self._refresh_dashboard_safe)
+            user = self.current_user
+            name = user.get("officer_name") or user.get("username")
+            nav_count = len(self.nav_buttons) if hasattr(self, "nav_buttons") else 0
+            status = f"Signed in as {name}"
+            if nav_count > 1:
+                status += (
+                    f"  ·  Ctrl+0 dashboard  ·  Ctrl+1–{min(nav_count, 9)} pages"
+                    f"  ·  F5 refresh  ·  Ctrl+Shift+Q sign out"
+                )
+            self.set_status(status)
+        except Exception:
+            pass
+
+    def _refresh_dashboard_safe(self) -> None:
+        if getattr(self, "_shell_building", False):
+            self.root.after(100, self._refresh_dashboard_safe)
+            return
+        if self.current_page != "dashboard":
+            return
+        try:
+            self._refresh_dashboard()
+        except Exception:
+            pass
 
     def _sidebar_entry_visible(self, key: str) -> bool:
         if key in NAV_HUBS:
@@ -92,18 +199,16 @@ class ShellPageMixin:
             self.subnav.grid_remove()
 
     def _build_sidebar(self) -> None:
-        sidebar = ctk.CTkFrame(self.shell, width=268, fg_color=UI_SIDEBAR, corner_radius=0)
+        sidebar = ctk.CTkFrame(self.shell, width=SIDEBAR_WIDTH, fg_color=UI_SIDEBAR, corner_radius=0)
         sidebar.grid(row=0, column=0, sticky="nsew")
         sidebar.grid_propagate(False)
 
-        tactical_stripe(sidebar)
-
         brand = ctk.CTkFrame(sidebar, fg_color="transparent")
-        brand.pack(fill="x", padx=16, pady=(18, 14))
+        brand.pack(fill="x", padx=16, pady=(18, 12))
         branding = get_department_branding()
         brand_row = ctk.CTkFrame(brand, fg_color="transparent")
         brand_row.pack(fill="x")
-        logo_img = load_logo((64, 64))
+        logo_img = load_logo((32, 32))
         if logo_img:
             self._remember_brand_image(logo_img)
             ctk.CTkLabel(brand_row, text="", image=logo_img).pack(side="left", padx=(0, 10))
@@ -114,25 +219,18 @@ class ShellPageMixin:
             text_col,
             text=short_name,
             font=font("subheading"),
-            text_color=UI_ACCENT_GLOW,
+            text_color=UI_TEXT_PRIMARY,
         ).pack(anchor="w")
         ctk.CTkLabel(
             text_col,
-            text="Tactical Duty Scheduler",
-            font=font("body"),
-            text_color="#FFFFFF",
-        ).pack(anchor="w")
-        self._sidebar_mission_label = ctk.CTkLabel(
-            brand,
-            text=branding["tagline"],
+            text="Scheduler",
             font=font("small"),
-            text_color=DODGEVILLE_GOLD,
-            wraplength=200,
-        )
-        self._sidebar_mission_label.pack(anchor="w", pady=(6, 0))
+            text_color=UI_TEXT_MUTED,
+        ).pack(anchor="w", pady=(1, 0))
+        self._sidebar_mission_label = None
 
         nav_frame = ctk.CTkFrame(sidebar, fg_color="transparent")
-        nav_frame.pack(fill="x", padx=10, pady=4)
+        nav_frame.pack(fill="x", padx=6, pady=2)
         for entry in SIDEBAR_NAV:
             if entry[0] == "section":
                 NavSectionLabel(nav_frame, text=entry[1]).pack(anchor="w", padx=8, pady=(10, 4))
@@ -145,6 +243,7 @@ class ShellPageMixin:
                 label,
                 icon,
                 command=lambda k=key: self.show_page(resolve_nav_target(k)),
+                nav_key=key,
             )
             btn.pack(fill="x", pady=2)
             self.nav_buttons[key] = btn
@@ -152,30 +251,43 @@ class ShellPageMixin:
         ctk.CTkFrame(sidebar, fg_color=UI_BORDER, height=1).pack(fill="x", padx=16, pady=12)
         ctk.CTkButton(
             sidebar,
-            text="↻  Refresh All",
-            height=36,
+            text="Refresh all",
+            height=34,
             corner_radius=8,
-            fg_color=UI_SURFACE,
-            hover_color=DODGEVILLE_ACCENT,
+            fg_color=UI_SURFACE_LIGHT,
+            hover_color=UI_BORDER,
+            text_color=UI_TEXT_PRIMARY,
             command=self.refresh_all,
-        ).pack(fill="x", padx=16, pady=(0, 8))
+        ).pack(fill="x", padx=16, pady=(0, 6))
         if self.can("database.backup"):
             ctk.CTkButton(
                 sidebar,
-                text="💾  Backup Database",
-                height=36,
+                text="Backup database",
+                height=34,
                 corner_radius=8,
-                fg_color=UI_SURFACE,
-                hover_color=DODGEVILLE_SUCCESS,
+                fg_color=UI_SURFACE_LIGHT,
+                hover_color=UI_BORDER,
+                text_color=UI_TEXT_PRIMARY,
                 command=self.backup_database,
-            ).pack(fill="x", padx=16, pady=(0, 8))
+            ).pack(fill="x", padx=16, pady=(0, 4))
+            ctk.CTkButton(
+                sidebar,
+                text="Restore backup",
+                height=34,
+                corner_radius=8,
+                fg_color=UI_SURFACE_LIGHT,
+                hover_color=UI_BORDER,
+                text_color=UI_TEXT_PRIMARY,
+                command=self.restore_database,
+            ).pack(fill="x", padx=16, pady=(0, 6))
         ctk.CTkButton(
             sidebar,
-            text="⎋  Sign Out",
-            height=36,
+            text="Sign out",
+            height=34,
             corner_radius=8,
-            fg_color=UI_SURFACE,
-            hover_color=DODGEVILLE_DANGER,
+            fg_color="transparent",
+            hover_color=UI_SURFACE_LIGHT,
+            text_color=UI_TEXT_MUTED,
             command=self.sign_out,
         ).pack(fill="x", padx=16, pady=(0, 16))
 
@@ -187,7 +299,7 @@ class ShellPageMixin:
         )
         self.sidebar_date.pack(side="bottom", pady=16)
 
-    def _build_main_area(self) -> None:
+    def _build_main_chrome(self) -> None:
         main = ctk.CTkFrame(self.shell, fg_color=UI_BG, corner_radius=0)
         main.grid(row=0, column=1, sticky="nsew", padx=(0, 0), pady=0)
         main.grid_columnconfigure(0, weight=1)
@@ -198,19 +310,18 @@ class ShellPageMixin:
         topbar_wrap.grid_columnconfigure(0, weight=1)
         self.topbar = ctk.CTkFrame(
             topbar_wrap,
-            fg_color=UI_SURFACE,
+            fg_color=UI_BG,
             height=TOPBAR_HEIGHT,
             corner_radius=0,
-            border_width=1,
-            border_color=UI_BORDER,
+            border_width=0,
         )
+        ctk.CTkFrame(topbar_wrap, fg_color=UI_BORDER, height=1).grid(row=1, column=0, sticky="ew")
         self.topbar.grid(row=0, column=0, sticky="ew")
         self.topbar.grid_propagate(False)
-        tactical_stripe(self.topbar, side="bottom")
 
         title_block = ctk.CTkFrame(self.topbar, fg_color="transparent")
-        title_block.pack(side="left", fill="y", padx=24, pady=(12, 10))
-        self.page_title = ctk.CTkLabel(title_block, text="", font=font("heading"), anchor="w")
+        title_block.pack(side="left", fill="y", padx=CONTENT_PAD, pady=(12, 10))
+        self.page_title = ctk.CTkLabel(title_block, text="", font=font("title"), text_color=UI_TEXT_PRIMARY, anchor="w")
         self.page_title.pack(fill="x")
         self.topbar_subtitle = ctk.CTkLabel(
             title_block,
@@ -222,7 +333,20 @@ class ShellPageMixin:
         self.topbar_subtitle.pack(fill="x", pady=(2, 0))
 
         topbar_right = ctk.CTkFrame(self.topbar, fg_color="transparent")
-        topbar_right.pack(side="right", fill="y", padx=(0, 24), pady=12)
+        topbar_right.pack(side="right", fill="y", padx=(0, CONTENT_PAD), pady=10)
+        self._user_avatar = ctk.CTkLabel(
+            topbar_right,
+            text="",
+            width=32,
+            height=32,
+            corner_radius=16,
+            fg_color=UI_SURFACE_LIGHT,
+            text_color=UI_TEXT_PRIMARY,
+            font=font("small"),
+            cursor="hand2",
+        )
+        self._user_avatar.pack(side="right", padx=(10, 0))
+        self._user_avatar.bind("<Button-1>", lambda e: open_my_profile_dialog(self))
         self.user_badge = ctk.CTkLabel(
             topbar_right,
             text="",
@@ -230,12 +354,8 @@ class ShellPageMixin:
             text_color=UI_TEXT_MUTED,
             cursor="hand2",
         )
-        self.user_badge.pack(side="right", padx=(12, 0))
+        self.user_badge.pack(side="right")
         self.user_badge.bind("<Button-1>", lambda e: open_my_profile_dialog(self))
-        topbar_logo = load_logo((44, 44))
-        if topbar_logo:
-            self._remember_brand_image(topbar_logo)
-            ctk.CTkLabel(topbar_right, text="", image=topbar_logo).pack(side="right")
 
         self.subnav = SubNavBar(topbar_wrap, on_select=self.show_page)
         self.subnav.grid(row=1, column=0, sticky="ew")
@@ -246,37 +366,25 @@ class ShellPageMixin:
         self.content.grid_columnconfigure(0, weight=1)
         self.content.grid_rowconfigure(0, weight=1)
 
+        from config import APP_NAME, APP_VERSION
+        from logic import rust_bridge
+
+        engine = rust_bridge.backend_name()
         self.statusbar = ctk.CTkLabel(
             main,
-            text="SYS :: Ready",
+            text=f"{APP_NAME} v{APP_VERSION} · {engine} engine",
             font=font("mono"),
-            text_color=UI_ACCENT_GLOW,
+            text_color=UI_TEXT_MUTED,
             anchor="w",
             height=28,
         )
-        self.statusbar.grid(row=2, column=0, sticky="ew", padx=24, pady=(0, 8))
+        self.statusbar.grid(row=2, column=0, sticky="ew", padx=CONTENT_PAD, pady=(0, 10))
 
         for key, label, _ in NAV_ITEMS:
             frame = ctk.CTkFrame(self.content, fg_color=UI_BG)
             self.pages[key] = frame
 
-        self._build_dashboard()
-        self._build_base_schedule()
-        self._build_live_schedule()
-        self._build_timecard()
-        self._build_banked_time()
-        self._build_timeline()
-        self._build_requests()
-        self._build_swaps()
-        self._build_notifications()
-        self._build_officers()
-        self._build_payroll()
-        self._build_simulator()
-        self._build_reports()
-        self._build_availability()
-        self._build_users()
-
-    def show_page(self, key: str) -> None:
+    def show_page(self, key: str, *, defer_refresh: bool = False) -> None:
         if key == "notifications":
             key = "dashboard"
         if key == "updated_schedule":
@@ -289,9 +397,9 @@ class ShellPageMixin:
         self.pages[key].grid(row=0, column=0, sticky="nsew")
         self.page_title.configure(text=page_title(key))
         if self._is_officer_role():
-            subtitle = title_case_ui(OFFICER_PAGE_SUBTITLES.get(key, PAGE_SUBTITLES.get(key, "")))
+            subtitle = OFFICER_PAGE_SUBTITLES.get(key, PAGE_SUBTITLES.get(key, ""))
         else:
-            subtitle = title_case_ui(PAGE_SUBTITLES.get(key, ""))
+            subtitle = PAGE_SUBTITLES.get(key, "")
         self.topbar_subtitle.configure(text=subtitle)
         for k, btn in self.nav_buttons.items():
             if k in NAV_HUBS:
@@ -300,13 +408,21 @@ class ShellPageMixin:
                 btn.set_active(k == key)
         self._update_subnav(key)
         self.current_page = key
-        self._refresh_page(key)
+        if defer_refresh:
+            self.root.after(80, lambda k=key: self._refresh_page(k))
+        else:
+            self._refresh_page(key)
         self._update_sidebar_date()
         self._update_notification_badge()
         self._update_user_badge()
 
     def set_status(self, message: str) -> None:
-        self.statusbar.configure(text=message)
+        if not hasattr(self, "statusbar"):
+            return
+        text = message.strip()
+        if text and not text.startswith("✓") and not text.startswith("✗"):
+            text = f"✓ {text}"
+        self.statusbar.configure(text=text)
 
     def _export_pdf_result(self, result, label: str) -> None:
         handle_export_result(result, label=label, set_status=self.set_status)
@@ -323,6 +439,10 @@ class ShellPageMixin:
             return
         name = self.current_user.get("officer_name") or self.current_user.get("username")
         self.user_badge.configure(text=name)
+        if hasattr(self, "_user_avatar"):
+            parts = [p for p in str(name).split() if p]
+            initials = "".join(p[0].upper() for p in parts[:2]) or str(name)[:2].upper()
+            self._user_avatar.configure(text=initials)
 
     def _update_sidebar_date(self) -> None:
         today = date.today()
@@ -343,13 +463,56 @@ class ShellPageMixin:
             messagebox.showwarning("Permission", "Only Supervisor or Administration can backup.")
             return
         try:
+            from logic import set_department_setting
+
             path = backup_database()
             uid = self.current_user.get("id") if self.current_user else None
+            set_department_setting("last_manual_backup", date.today().isoformat(), user_id=uid)
             log_audit_action("database.backup", "database", None, uid, path)
             messagebox.showinfo("Backup Complete", f"Database saved to:\n{path}")
             self.set_status(f"Backup saved: {path}")
+            if self.current_page == "dashboard":
+                self._refresh_dashboard()
         except Exception as exc:
             messagebox.showerror("Backup Failed", str(exc))
+
+    def restore_database(self) -> None:
+        if not self.can("database.backup"):
+            messagebox.showwarning("Permission", "Only Supervisor or Administration can restore.")
+            return
+        from tkinter import filedialog
+
+        from logic import restore_database_from_backup
+
+        initial = list_backup_files()
+        initialdir = os.path.dirname(initial[0]) if initial else None
+        path = filedialog.askopenfilename(
+            title="Select backup to restore",
+            initialdir=initialdir,
+            filetypes=[("SQLite database", "*.db"), ("All files", "*.*")],
+        )
+        if not path:
+            return
+        if not messagebox.askyesno(
+            "Confirm Restore",
+            "This replaces the live database with the selected backup.\n\n"
+            "A safety copy of the current database is saved first.\n\n"
+            "Continue?",
+            icon="warning",
+        ):
+            return
+        uid = self.current_user.get("id") if self.current_user else None
+        result = restore_database_from_backup(path, user_id=uid)
+        if not result.get("success"):
+            messagebox.showerror("Restore Failed", result.get("message", "Unknown error"))
+            return
+        messagebox.showinfo(
+            "Restore Complete",
+            f"Restored from:\n{path}\n\nSafety copy:\n{result.get('safety_backup')}\n\n"
+            "Refresh open tabs if counts look stale.",
+        )
+        self.set_status("Database restored from backup")
+        self.refresh_all()
 
     def _refresh_current_page(self) -> None:
         if self.current_page:
@@ -374,6 +537,10 @@ class ShellPageMixin:
             )
 
     def _refresh_page(self, key: str) -> None:
+        import os
+
+        if os.environ.get("SCHEDULER_UI_TEST", "").strip() == "1":
+            return
         refreshers = {
             "dashboard": self._refresh_dashboard,
             "base_schedule": lambda: self.refresh_monthly("base"),

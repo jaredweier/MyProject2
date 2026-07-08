@@ -215,12 +215,55 @@ def title_case_ui(text: str) -> str:
             return word
         parts = re.split(r"([-'])", word)
         out = []
-        for part in parts:
+        for i, part in enumerate(parts):
             if part in ("-", "'"):
                 out.append(part)
+            elif part and i > 0 and parts[i - 1] == "'" and len(part) == 1:
+                out.append(part.lower())
             elif part:
                 out.append(part[:1].upper() + part[1:])
         return "".join(out)
 
     segments = text.split(" — ")
     return " — ".join(" ".join(_cap_word(w) for w in seg.split()) for seg in segments)
+
+
+def label_has_image(label) -> bool:
+    """True when a CTkLabel/Tk Label has an image configured (use cget, not .image)."""
+    try:
+        if not label.winfo_exists():
+            return False
+        return label.cget("image") is not None
+    except Exception:
+        return False
+
+
+def destroy_tk_root(root) -> None:
+    """Cancel pending callbacks, then destroy a Tk root without Tcl after() noise."""
+    from ui.assets import reset_brand_image_cache
+
+    cancel_pending_after(root)
+    try:
+        root.update()
+        root.quit()
+    except Exception:
+        pass
+    try:
+        root.destroy()
+    except Exception:
+        pass
+    reset_brand_image_cache()
+
+
+def cancel_pending_after(root) -> None:
+    """Cancel queued Tk after() callbacks — prevents piled-up work on sign-out."""
+    try:
+        pending = root.tk.call("after", "info")
+        if pending:
+            for after_id in pending:
+                try:
+                    root.after_cancel(after_id)
+                except Exception:
+                    pass
+    except Exception:
+        pass

@@ -35,8 +35,8 @@ repos:
         always_run: true
         verbose: true
       - id: dodgeville-preflight
-        name: Dodgeville preflight (imports + slice-check + audit)
-        entry: python dev.py preflight
+        name: Dodgeville verify preflight (unified tier)
+        entry: python dev.py verify --tier preflight
         language: system
         pass_filenames: false
         always_run: true

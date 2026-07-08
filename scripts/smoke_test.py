@@ -50,7 +50,7 @@ def run_smoke() -> int:
             lines.append(line)
             all_ok &= ok
 
-        work_day = off_date_for_squad("A").strftime("%Y-%m-%d")
+        work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
         cr = logic.create_day_off_request(squad_a["id"], work_day, "Vacation")
         ok, line = _result(
             "create day-off request",
@@ -106,6 +106,44 @@ def run_smoke() -> int:
         )
         lines.append(line)
         all_ok &= ok
+
+        sim = logic.run_schedule_simulation(
+            "4-on-4-off",
+            8,
+            10.0,
+            2080.0,
+            ["06:00", "16:00"],
+            apply_department_rules=False,
+            min_per_shift=1,
+        )
+        ok, line = _result("schedule simulation", sim.get("success"), sim.get("message", ""))
+        lines.append(line)
+        all_ok &= ok
+
+        if sim.get("success"):
+            bid = logic.create_shift_bid_from_simulation(sim, publish=True)
+            ok, line = _result(
+                "simulator to shift bid",
+                bid.get("success"),
+                bid.get("message", ""),
+            )
+            lines.append(line)
+            all_ok &= ok
+            if bid.get("success"):
+                event = logic.get_shift_bid_event(bid["event_id"])
+                opt_id = event["options"][0]["id"]
+                rank = logic.submit_shift_bid_rankings(
+                    bid["event_id"],
+                    squad_a["id"],
+                    [{"option_id": opt_id, "preference_rank": 1}],
+                )
+                ok, line = _result("shift bid ranking submit", rank.get("success"), rank.get("message", ""))
+                lines.append(line)
+                all_ok &= ok
+                preview = logic.preview_shift_bid_awards(bid["event_id"])
+                ok, line = _result("shift bid award preview", preview.get("success"), "")
+                lines.append(line)
+                all_ok &= ok
 
     print("Dodgeville PD Scheduler — smoke")
     print("-" * 40)

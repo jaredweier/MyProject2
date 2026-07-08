@@ -235,10 +235,10 @@ class TimecardScheduleTests(unittest.TestCase):
     def test_live_schedule_auto_updates_on_day_off_approve(self):
         with test_database():
             import logic
-            from tests.helpers import get_any_officer, off_date_for_squad
+            from tests.helpers import get_any_officer, working_date_for_squad
 
             officer = get_any_officer("A", "06:00")
-            off_day = off_date_for_squad("A")
+            off_day = working_date_for_squad("A")
             year, month = off_day.year, off_day.month
             request_date = off_day.strftime("%Y-%m-%d")
             logic.ensure_original_monthly_schedule(year, month)
@@ -447,10 +447,10 @@ class TimecardScheduleTests(unittest.TestCase):
     def test_timecard_prefill_from_live_schedule_after_day_off(self):
         with test_database():
             import logic
-            from tests.helpers import get_any_officer, off_date_for_squad
+            from tests.helpers import get_any_officer, working_date_for_squad
 
             officer = get_any_officer("A", "06:00")
-            off_day = off_date_for_squad("A")
+            off_day = working_date_for_squad("A")
             logic.ensure_original_monthly_schedule(off_day.year, off_day.month)
             request_date = off_day.strftime("%Y-%m-%d")
             created = logic.create_day_off_request(officer["id"], request_date, "Vacation")

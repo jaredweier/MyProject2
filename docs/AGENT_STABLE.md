@@ -11,8 +11,15 @@ Stop gathering when confident to answer. No extra reads/tools unless info is con
 ## Blocked
 `FULL_PROJECT_CODE.txt` · full `HANDOFF.md` · `.grok/skills/` tree · `tests/ui_snapshots/baseline/` · `logs/` · `.grok/sessions/` · whole-repo reads
 
-## Verify (terminal, no subagents)
-`cheap-check` → `preflight` → `verify-slice <id>` → `check` (handoff) · fail: `fix-hint`
+## Verify (unified — `scripts/verify.py`, policy: `.grok/rules/verify-policy.md`)
+| Tier | Command | Ship-ready? |
+|------|---------|-------------|
+| fast | `python dev.py verify --tier fast` | No (~25s, after edits) |
+| preflight | `python dev.py verify --tier preflight` | No (pre-commit) |
+| **check** | `python dev.py verify --tier check` | **Yes** (handoff / ship) |
+| full | `python dev.py verify --tier full` | Yes (release) |
+
+State: `logs/last_verify.json` · fail: `fix-hint` · slice: `verify-slice <id>`
 
 ## Before full file read
 `python dev.py outline <file>` · `python dev.py symbol <name> [--slice id]`
@@ -26,10 +33,10 @@ Terminal only — use every session, no LLM:
 | Before reads | `python dev.py usage-brief <slice>` |
 | Before full file | `python dev.py outline <file>` or `symbol <name>` |
 | Route once | `python dev.py route-task "<task>"` |
-| After each edit | `python dev.py cheap-check` |
-| Gate fail | `python dev.py fix-hint` |
+| After each edit | `python dev.py verify --tier fast` |
+| Gate fail | `python dev.py fix-hint` (reads `last_verify.json`) |
 | Slice done | `python dev.py verify-slice <id>` |
-| Handoff | `python dev.py preflight` (not full `check` every line) |
+| Handoff / ship | `python dev.py verify --tier check` |
 | Long thread | `python dev.py context-window status` — summarize @ 6000t |
 | Index/prompts | `python dev.py token-minimize` |
 

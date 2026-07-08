@@ -120,6 +120,8 @@ class AdminPageMixin:
         self._user_row_widgets = {}
 
     def _refresh_user_officer_dropdown(self):
+        if getattr(self, "_shell_building", False):
+            return
         if not hasattr(self, "_user_officer"):
             return
         officers = get_officers_by_seniority()
@@ -393,22 +395,6 @@ class AdminPageMixin:
             messagebox.showerror("User Update", result.get("message", "Failed"))
 
     def _run_post_login_flow(self):
-        if self.current_user.get("must_change_password"):
-            uname = (self.current_user.get("username") or "").strip().lower()
-            if uname in ("admin", "supervisor", "officer"):
-                from logic import clear_must_change_password
-
-                clear_must_change_password(
-                    self.current_user["id"],
-                    actor_user_id=self.current_user.get("id"),
-                )
-                self.current_user["must_change_password"] = 0
-            elif not self._prompt_forced_password_change():
-                self.sign_out()
-                return
-            else:
-                self.current_user["must_change_password"] = 0
-
         if self.can("admin.settings") and not is_setup_complete():
             if AUTO_LOGIN_ENABLED:
                 from logic import get_department_setting

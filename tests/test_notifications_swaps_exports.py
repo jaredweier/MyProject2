@@ -1,7 +1,7 @@
 import os
 import unittest
 
-from tests.helpers import get_any_officer, off_date_for_squad, test_database, working_date_for_squad
+from tests.helpers import get_any_officer, test_database, working_date_for_squad
 
 
 class TestNotificationsSwapsExports(unittest.TestCase):
@@ -23,7 +23,7 @@ class TestNotificationsSwapsExports(unittest.TestCase):
             import logic
 
             officer = get_any_officer("A", "06:00")
-            bump_day = off_date_for_squad("A").strftime("%Y-%m-%d")
+            bump_day = working_date_for_squad("A").strftime("%Y-%m-%d")
             cr = logic.create_day_off_request(officer["id"], bump_day, "Vacation")
             result = logic.process_day_off_request(cr["request_id"], "approve")
             self.assertTrue(result.success)

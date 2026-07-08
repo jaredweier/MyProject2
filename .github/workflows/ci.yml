@@ -16,8 +16,13 @@ jobs:
         with:
           python-version: "3.12"
 
+      - uses: dtolnay/rust-toolchain@stable
+
       - name: Install dependencies
         run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Build Rust core
+        run: python dev.py build-rust
 
       - name: Doctor
         run: python dev.py doctor
@@ -49,5 +54,27 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
       - run: pip install -r requirements.txt -r requirements-dev.txt
+      - run: python dev.py build-rust
       - run: python dev.py scenarios
+
+  build-portable:
+    runs-on: windows-latest
+    needs: check
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: dtolnay/rust-toolchain@stable
+      - run: pip install -r requirements.txt -r requirements-dev.txt pyinstaller
+      - run: python dev.py build-rust
+      - run: python scripts/build_portable.py --quick
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Dodgeville_PD_Portable
+          path: |
+            dist/Dodgeville_PD_Portable/
+            dist/Dodgeville_PD_Portable_*.zip
+          if-no-files-found: error

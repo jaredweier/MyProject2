@@ -19,11 +19,12 @@ description: >
 ## Invariants (never break)
 
 1. 14-day rotation; Squad A days 1,2,5,6,7,10,11
-2. Day-off only when officer's squad is on duty that day
-3. Night minimum only for **night** shifts on Fri/Sat
-4. Bump replacements: same squad, allowed shift numbers (seniority rank not used)
-5. Only `Pending` requests/swaps processed; no duplicate overrides
-6. Manual overrides use `create_manual_coverage_override` + `validate_manual_override`
+2. Off-rotation day-off requests allowed at submit; supervisor approves/denies
+3. Command staff (Chief, Lieutenant): Mon–Fri base schedule; manual overrides allowed
+4. Night minimum on Fri/Sat night shifts when **no replacement** found → manual review
+5. Bump replacements: same squad, **on-duty only** (scheduled working), exclude command staff; allowed shift bands from active `get_active_bump_rules_by_start()` (custom shift count/starts/lengths). Cascade stops when another on-duty officer remains on the vacated **shift band** (multiple officers may share the same start time — each counted separately).
+6. Only `Pending` requests/swaps processed; no duplicate overrides
+7. Manual overrides use `create_manual_coverage_override` + `validate_manual_override`
 
 ## Workflow
 

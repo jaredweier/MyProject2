@@ -90,8 +90,8 @@ class TestRegressions(unittest.TestCase):
             from tests.helpers import get_any_officer
 
             original = get_any_officer("A", "06:00")
-            request_date = "2026-06-30"
-            with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
+            request_date = working_date_for_squad("A").strftime("%Y-%m-%d")
+            with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 18.0):
                 create = logic.create_day_off_request(
                     original["id"],
                     request_date,
@@ -156,14 +156,16 @@ class TestRegressions(unittest.TestCase):
             from database import get_connection
 
             officer = get_any_officer("A", "06:00")
-            work_day = off_date_for_squad("A").strftime("%Y-%m-%d")
+            work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
             cr = logic.create_day_off_request(officer["id"], work_day, "Vacation")
-            logic.process_day_off_request(cr["request_id"], "approve")
+            first_approve = logic.process_day_off_request(cr["request_id"], "approve")
+            self.assertTrue(first_approve.success, first_approve.message)
 
             conn = get_connection()
             c = conn.cursor()
             c.execute("SELECT COUNT(*) FROM schedule_overrides WHERE original_officer_id = ?", (officer["id"],))
             first = c.fetchone()[0]
+            self.assertGreaterEqual(first, 1)
 
             second = logic.process_day_off_request(cr["request_id"], "approve")
             c.execute("SELECT COUNT(*) FROM schedule_overrides WHERE original_officer_id = ?", (officer["id"],))
@@ -192,9 +194,9 @@ class TestRegressions(unittest.TestCase):
             from database import get_connection
 
             officer = get_any_officer("A", "06:00")
-            work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
+            work_day = "2026-07-02"
 
-            with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
+            with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 18.0):
                 cr = logic.create_day_off_request(officer["id"], work_day, "Vacation")
                 self.assertTrue(cr["success"])
 
@@ -217,7 +219,7 @@ class TestRegressions(unittest.TestCase):
             conn.close()
 
             second_day = "2026-07-02"
-            with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
+            with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 18.0):
                 cr2 = logic.create_day_off_request(officer["id"], second_day, "Sick")
                 pending = logic.process_day_off_request(cr2["request_id"], "approve")
                 self.assertEqual(pending.status, "Pending Manual Review")
@@ -232,9 +234,9 @@ class TestRegressions(unittest.TestCase):
             import logic
 
             officer = get_any_officer("A", "06:00")
-            dup_day = working_date_for_squad("A").strftime("%Y-%m-%d")
+            dup_day = "2026-07-07"
 
-            with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 10.0):
+            with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 18.0):
                 cr = logic.create_day_off_request(officer["id"], dup_day, "Vacation")
                 logic.process_day_off_request(cr["request_id"], "approve")
 
@@ -242,18 +244,20 @@ class TestRegressions(unittest.TestCase):
                 self.assertFalse(duplicate["success"])
                 self.assertIn("pending", duplicate.get("message", "").lower())
 
-    def test_scenario_s10_cascade_auto_approve_off_rotation(self):
+    def test_scenario_s10_off_rotation_routes_manual_review(self):
         with test_database():
             import logic
             from database import get_connection
+            from tests.helpers import off_date_for_squad
 
             officer = get_any_officer("A", "06:00")
-            request_date = "2026-07-01"
+            request_date = off_date_for_squad("A").strftime("%Y-%m-%d")
             cr = logic.create_day_off_request(officer["id"], request_date, "Vacation")
             self.assertTrue(cr["success"])
             result = logic.process_day_off_request(cr["request_id"], "approve")
-            self.assertTrue(result.success)
-            self.assertEqual(result.status, "Approved")
+            self.assertFalse(result.success)
+            self.assertTrue(result.requires_manual)
+            self.assertEqual(result.status, "Pending Manual Review")
 
             conn = get_connection()
             c = conn.cursor()
@@ -261,7 +265,7 @@ class TestRegressions(unittest.TestCase):
                 "SELECT COUNT(*) FROM schedule_overrides WHERE override_date = ? AND original_officer_id = ?",
                 (request_date, officer["id"]),
             )
-            self.assertEqual(c.fetchone()[0], 1)
+            self.assertEqual(c.fetchone()[0], 0)
             conn.close()
 
     def test_scenario_s11_shift_swap_dual_overrides(self):
@@ -292,9 +296,10 @@ class TestRegressions(unittest.TestCase):
             from logic.staffing_config import can_officer_cover_shift
 
             officer = get_any_officer("A", "06:00")
+            work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
             result = logic.validate_bump_feasibility(
                 officer["id"],
-                "2026-06-30",
+                work_day,
                 officer["squad"],
                 officer["shift_start"],
             )
@@ -302,8 +307,7 @@ class TestRegressions(unittest.TestCase):
             eligible = [
                 o
                 for o in logic.get_officers_by_seniority()
-                if o["id"] != officer["id"]
-                and can_officer_cover_shift(o["shift_start"], officer["shift_start"])
+                if o["id"] != officer["id"] and can_officer_cover_shift(o["shift_start"], officer["shift_start"])
             ]
             eligible_names = {o["name"] for o in eligible}
             self.assertIn(result.replacement_name, eligible_names)
@@ -321,9 +325,7 @@ class TestRegressions(unittest.TestCase):
             logic.create_day_off_request(senior["id"], day, "Vacation")
             pending = logic.get_pending_day_off_requests()
             vacation_ids = [
-                r["officer_id"]
-                for r in pending
-                if r["request_type"] == "Vacation" and r["request_date"] == day
+                r["officer_id"] for r in pending if r["request_type"] == "Vacation" and r["request_date"] == day
             ]
             self.assertEqual(vacation_ids[0], senior["id"])
             self.assertEqual(vacation_ids[1], junior["id"])
@@ -334,7 +336,7 @@ class TestRegressions(unittest.TestCase):
             from database import get_connection
 
             officer = get_any_officer("A", "06:00")
-            work_day = off_date_for_squad("A").strftime("%Y-%m-%d")
+            work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
             cr = logic.create_day_off_request(officer["id"], work_day, "Vacation")
 
             with patch("logic.requests._insert_override_record", side_effect=RuntimeError("override failed")):
@@ -393,7 +395,7 @@ class TestRegressions(unittest.TestCase):
 
             original = get_any_officer("A", "06:00")
             replacement = get_any_officer("A", "10:00")
-            work_day = off_date_for_squad("A").strftime("%Y-%m-%d")
+            work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
             target = date.fromisoformat(work_day)
 
             before = logic.count_officers_on_shift_on_date(target, "A", "06:00")
@@ -430,6 +432,34 @@ class TestRegressions(unittest.TestCase):
 
             without_slot = logic.count_officers_on_shift_on_date(target, "A", "06:00")
             self.assertEqual(without_slot, before - 1)
+
+    def test_command_staff_monday_friday_schedule(self):
+        with test_database():
+            from datetime import date
+
+            import logic
+
+            chief = get_any_officer("A", "06:00", include_command_staff=True)
+            logic.update_officer(chief["id"], job_title="Chief")
+            monday = date(2026, 7, 6)
+            saturday = date(2026, 7, 11)
+            self.assertEqual(logic.get_officer_day_status(chief["id"], monday), "working")
+            self.assertEqual(logic.get_officer_day_status(chief["id"], saturday), "off")
+            self.assertTrue(logic.is_officer_working_on_day(chief["id"], monday))
+            self.assertFalse(logic.is_officer_working_on_day(chief["id"], saturday))
+
+    def test_court_and_training_request_types(self):
+        with test_database():
+            import logic
+
+            court_officer = get_any_officer("B", "10:00")
+            training_officer = get_any_officer("B", "15:00")
+            court_day = off_date_for_squad("B").strftime("%Y-%m-%d")
+            training_day = "2026-07-04"
+            court = logic.create_day_off_request(court_officer["id"], court_day, "Court")
+            training = logic.create_day_off_request(training_officer["id"], training_day, "Training")
+            self.assertTrue(court.get("success"), court.get("message"))
+            self.assertTrue(training.get("success"), training.get("message"))
 
 
 if __name__ == "__main__":

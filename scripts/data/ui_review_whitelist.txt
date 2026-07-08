@@ -45,3 +45,13 @@ prev
 swap
 swaps
 timeoff
+flsa
+comp
+hrs
+stat
+jpg
+scheduling
+bid
+bids
+rankings
+simulator

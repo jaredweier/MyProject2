@@ -1,0 +1,41 @@
+Dodgeville PD Scheduler — Officer Quick Start
+=============================================
+
+LOG IN
+------
+  Username: officer   Password: officer
+  Link your account to your roster name via Admin if needed.
+
+YOUR TABS
+---------
+  Command Post     — My Week schedule and alerts
+  Leave & Swaps    — submit vacation, training, court, or leave requests
+  My Timecard      — enter hours for the current pay period
+  Duty Timeline    — visual schedule for the rotation window
+
+REQUEST TIME OFF
+----------------
+1. Leave & Swaps → pick date and type → Submit.
+2. Track status in My Day Off Requests (pending, approved, denied).
+3. You receive a notification when a supervisor acts on your request.
+
+TIME CARD
+---------
+  Hours count in the pay period where the shift *starts* (overnight too).
+  Use Import from Schedule to pre-fill from your live rotation.
+  Submit for supervisor approval when the period is complete.
+
+VIEWING SCHEDULE
+----------------
+  Base Schedule  — rotation template
+  Live Schedule  — includes approved bumps and swaps
+  Duty Timeline  — Gantt-style week view
+
+NOTIFICATIONS
+-------------
+  Command Post → Alerts, or the badge on Command Post in the sidebar.
+
+NEED HELP?
+----------
+  Ask a supervisor to refresh data (sidebar → Refresh All).
+  Profile: click your name in the top bar for pay-period and hours summary.

@@ -91,8 +91,10 @@ class RotationConfigTests(unittest.TestCase):
         self.assertEqual(self.logic.get_cycle_day(date(2026, 7, 8)), 8)
         self.assertEqual(self.logic.get_squad_on_duty(8), "B")
 
+        from validators import officer_uses_command_staff_schedule
+
         officers = self.logic.get_officers_by_seniority()
-        squad_a = next(o for o in officers if o["squad"] == "A")
+        squad_a = next(o for o in officers if o["squad"] == "A" and not officer_uses_command_staff_schedule(o))
         self.assertTrue(self.logic.is_officer_working_on_day(squad_a["id"], date(2026, 7, 1)))
         self.assertFalse(self.logic.is_officer_working_on_day(squad_a["id"], date(2026, 7, 8)))
 

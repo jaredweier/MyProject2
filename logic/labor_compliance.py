@@ -211,6 +211,35 @@ def get_flsa_payroll_summary(officer_id: int, reference: Optional[date] = None) 
 
 def count_consecutive_work_days_ending(officer_id: int, end_date: date, max_lookback: int = 20) -> int:
     """Count consecutive scheduled work days ending on end_date (inclusive)."""
+    from logic import rust_bridge
+    from logic.officers import get_officer_by_id
+    from logic.rotation_config import get_active_rotation_base_date, get_active_rotation_cycle_length
+    from logic.scheduling import _load_override_maps_for_range
+
+    officer = get_officer_by_id(officer_id)
+    if officer and rust_bridge.available():
+        window_start = end_date - timedelta(days=max_lookback)
+        bumped_by_date, covering_by_date, swapped_by_date, bumped_status_by_date = _load_override_maps_for_range(
+            window_start, end_date
+        )
+        rust_count = rust_bridge.consecutive_work_days(
+            officer_id,
+            officer.get("squad") or "",
+            officer.get("shift_start") or "",
+            officer.get("active") == 1,
+            officer.get("job_title") or "",
+            end_date,
+            bumped_by_date,
+            covering_by_date,
+            swapped_by_date,
+            bumped_status_by_date,
+            get_active_rotation_base_date(),
+            get_active_rotation_cycle_length(),
+            max_lookback,
+        )
+        if rust_count is not None:
+            return rust_count
+
     count = 0
     current = end_date
     for _ in range(max_lookback):
@@ -377,3 +406,87 @@ def _officer_comp_hours(officer_id: int) -> Dict:
     from logic.operations import get_officer_time_banks
 
     return get_officer_time_banks(officer_id)
+
+
+def get_fatigue_score_threshold() -> float:
+    from logic.operations import get_department_setting
+
+    try:
+        return float(get_department_setting("fatigue_score_threshold", "70"))
+    except ValueError:
+        return 70.0
+
+
+def compute_fatigue_score(officer_id: int, *, as_of: Optional[date] = None) -> Dict:
+    """
+    Composite fatigue index 0–100 (higher = more fatigued).
+    Weights: consecutive work days 40%, weekly hours 35%, FLSA period hours 25%.
+    """
+    from analytics import get_hours_watch
+
+    today = as_of or date.today()
+    max_consecutive = get_max_consecutive_work_days()
+    streak = count_consecutive_work_days_ending(officer_id, today)
+    streak_pct = min(100.0, (streak / max(max_consecutive, 1)) * 100.0)
+
+    hours_watch = get_hours_watch(officer_id=officer_id)
+    weekly_top = hours_watch.get("warnings", [{}])[0] if hours_watch.get("warnings") else {}
+    weekly_hours = weekly_top.get("week_hours") or 0.0
+    weekly_threshold = weekly_top.get("le_weekly_threshold") or FLSA_LE_WEEKLY_THRESHOLD
+    weekly_pct = min(100.0, (weekly_hours / max(weekly_threshold, 1)) * 100.0)
+
+    flsa = get_flsa_207k_status(officer_id, reference=today)
+    period_hours = flsa.get("hours") or 0.0
+    period_threshold = flsa.get("threshold") or flsa_threshold_for_period_days(get_flsa_work_period_days())
+    period_pct = min(100.0, (period_hours / max(period_threshold, 1)) * 100.0)
+
+    score = round(streak_pct * 0.4 + weekly_pct * 0.35 + period_pct * 0.25, 1)
+    threshold = get_fatigue_score_threshold()
+    severity = None
+    if score >= threshold:
+        severity = "critical" if score >= min(100.0, threshold + 15) else "warning"
+
+    return {
+        "success": True,
+        "officer_id": officer_id,
+        "score": score,
+        "threshold": threshold,
+        "severity": severity,
+        "factors": {
+            "consecutive_days": streak,
+            "consecutive_pct": round(streak_pct, 1),
+            "weekly_hours": weekly_hours,
+            "weekly_pct": round(weekly_pct, 1),
+            "period_hours": period_hours,
+            "period_pct": round(period_pct, 1),
+        },
+        "message": (f"Fatigue score {score:.0f}/100" + (f" — above {threshold:.0f} threshold" if severity else "")),
+    }
+
+
+def get_fatigue_scoreboard(*, limit: int = 10) -> Dict:
+    """Top fatigued officers for dashboard and reports."""
+    rows = []
+    for officer in get_officers_by_seniority():
+        if not is_officer_active(officer):
+            continue
+        row = compute_fatigue_score(officer["id"])
+        rows.append(
+            {
+                "officer_id": officer["id"],
+                "officer_name": officer["name"],
+                "squad": officer.get("squad"),
+                "score": row["score"],
+                "severity": row["severity"],
+                "message": row["message"],
+            }
+        )
+    rows.sort(key=lambda r: r["score"], reverse=True)
+    elevated = [r for r in rows if r.get("severity")]
+    return {
+        "success": True,
+        "threshold": get_fatigue_score_threshold(),
+        "officers": rows[:limit],
+        "elevated_count": len(elevated),
+        "top": rows[0] if rows else None,
+    }

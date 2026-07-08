@@ -1,5 +1,6 @@
 """Login, permissions, and session lifecycle."""
 
+import os
 from typing import Optional
 
 from config import (
@@ -11,8 +12,9 @@ from database import init_database
 from logic import log_audit_action
 from permissions import role_has_permission
 from ui.branding import get_department_branding
+from ui.display import apply_main_window_layout, clear_login_window_layout, show_login_window
 from ui.login import LoginFrame
-from ui.window_layout import apply_main_window_layout
+from ui.window_layout import reset_main_window_layout_guard
 
 
 class SessionPageMixin:
@@ -38,7 +40,7 @@ class SessionPageMixin:
     def _refresh_department_branding(self) -> None:
         branding = get_department_branding()
         self.root.title(f"{branding['name']} Scheduler")
-        if hasattr(self, "_sidebar_mission_label"):
+        if getattr(self, "_sidebar_mission_label", None) is not None:
             self._sidebar_mission_label.configure(text=branding["tagline"])
         if hasattr(self, "_hero_dept_label"):
             self._hero_dept_label.configure(text=branding["name"])
@@ -47,10 +49,12 @@ class SessionPageMixin:
 
     def _bootstrap_session(self) -> None:
         init_database()
+        if os.environ.get("SCHEDULER_UI_TEST", "").strip() == "1":
+            return
         if AUTO_LOGIN_ENABLED and self._try_dev_auto_login():
             return
         self._show_login()
-        self.root.after(50, lambda: apply_main_window_layout(self.root))
+        show_login_window(self.root)
 
     def _try_dev_auto_login(self) -> bool:
         from logic import authenticate_user, list_all_users
@@ -81,29 +85,68 @@ class SessionPageMixin:
 
     def _on_login_success(self, user: dict) -> None:
         self.current_user = user
+        clear_login_window_layout(self.root)
         if getattr(self, "login_frame", None):
             self.login_frame.destroy()
             self.login_frame = None
+
+        if user.get("must_change_password"):
+            if not self._prompt_forced_password_change():
+                self.sign_out()
+                return
+            self.current_user["must_change_password"] = 0
+
+        import customtkinter as ctk
+
+        from ui.theme import UI_BG, UI_TEXT_MUTED, font
+
+        loading = ctk.CTkLabel(
+            self.root,
+            text="Loading scheduler…",
+            font=font("subheading"),
+            text_color=UI_TEXT_MUTED,
+            fg_color=UI_BG,
+        )
+        loading.pack(expand=True)
+        self.root.update_idletasks()
+        self.root.after(10, lambda: self._finish_login_shell(loading))
+
+    def _finish_login_shell(self, loading=None) -> None:
+        self._login_loading = loading
+        self._pending_initial_dashboard = bool(self.current_user)
         self._build_shell()
-        self.root.after_idle(self._run_post_login_flow)
+
+    def _finalize_login_shell(self) -> None:
+        loading = getattr(self, "_login_loading", None)
+        if loading is not None:
+            try:
+                loading.destroy()
+            except Exception:
+                pass
+            self._login_loading = None
         if not self.current_user:
+            self._pending_initial_dashboard = False
             return
+        self.root.after_idle(self._run_post_login_flow)
         self._refresh_department_branding()
         self._apply_dashboard_role_layout()
         self.root.bind("<F5>", lambda e: self._refresh_current_page())
         self._bind_keyboard_shortcuts()
-        self.root.after(100, lambda: apply_main_window_layout(self.root))
-        self.show_page("dashboard")
-        name = user.get("officer_name") or user.get("username")
-        nav_count = len(self.nav_buttons) if hasattr(self, "nav_buttons") else 0
-        status = f"Signed in as {name}"
-        if nav_count > 1:
-            status += (
-                f"  ·  Ctrl+0 dashboard  ·  Ctrl+1–{min(nav_count, 9)} pages  ·  F5 refresh  ·  Ctrl+Shift+Q sign out"
-            )
-        self.set_status(status)
+        if os.environ.get("SCHEDULER_UI_TEST", "").strip() != "1":
+            self.root.after(100, lambda: apply_main_window_layout(self.root))
 
     def _teardown_shell_state(self) -> None:
+        if hasattr(self, "_cancel_deferred_refresh"):
+            try:
+                self._cancel_deferred_refresh()
+            except Exception:
+                pass
+        from ui.helpers import cancel_pending_after
+
+        try:
+            cancel_pending_after(self.root)
+        except Exception:
+            pass
         self.current_user = None
         if hasattr(self, "shell") and self.shell.winfo_exists():
             self.shell.destroy()
@@ -139,4 +182,20 @@ class SessionPageMixin:
                 self.current_user.get("username"),
             )
         self._teardown_shell_state()
+        reset_main_window_layout_guard(self.root)
+        for attr in (
+            "_login_layout_done",
+            "_login_map_bound",
+            "_login_center_bound",
+            "_login_centering_active",
+            "_login_configure_bind_id",
+            "_login_map_bind_id",
+        ):
+            if hasattr(self.root, attr):
+                delattr(self.root, attr)
+        try:
+            self.root.state("normal")
+        except Exception:
+            pass
         self._show_login()
+        show_login_window(self.root)

@@ -574,6 +574,36 @@ def is_pay_period_locked(period_start: Optional[date] = None) -> bool:
     return bool(locked) and locked == start.isoformat()
 
 
+def get_pay_period_lock_reminder(
+    *,
+    days_before_end: int = 3,
+    reference: Optional[date] = None,
+) -> Dict:
+    """Supervisor reminder when the current pay period is ending soon and not locked."""
+    today = reference or date.today()
+    start, end = get_pay_period(today)
+    if not is_current_pay_period(start, reference=today):
+        return {
+            "success": True,
+            "needs_reminder": False,
+            "days_until_end": None,
+            "period_start": start.isoformat(),
+            "period_end": end.isoformat(),
+            "locked": is_pay_period_locked(start),
+        }
+    days_left = (end - today).days
+    locked = is_pay_period_locked(start)
+    return {
+        "success": True,
+        "needs_reminder": not locked and 0 <= days_left <= days_before_end,
+        "days_until_end": days_left,
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "locked": locked,
+        "days_before_end": days_before_end,
+    }
+
+
 def get_pay_period_history(limit: int = 6, officer_id: Optional[int] = None) -> Dict:
     """Summarize recent pay periods from timecard and payroll data."""
     conn = get_connection()

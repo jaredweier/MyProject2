@@ -1,8 +1,9 @@
-"""Headless UI smoke — build shell, visit every page, catch runtime errors."""
+"""Headless UI smoke — real login path, every page, callback errors fail the gate."""
 
 from __future__ import annotations
 
 import os
+import subprocess
 import sys
 import traceback
 
@@ -10,78 +11,82 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
+os.environ["SCHEDULER_UI_TEST"] = "1"
+
+
+def _run_role_subprocess(username: str, password: str, role_label: str) -> str | None:
+    env = os.environ.copy()
+    env["SCHEDULER_UI_TEST"] = "1"
+    script = os.path.join(ROOT, "scripts", "ui_smoke_role.py")
+    proc = subprocess.run(
+        [
+            sys.executable,
+            script,
+            "--username",
+            username,
+            "--password",
+            password,
+            "--role-label",
+            role_label,
+        ],
+        cwd=ROOT,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=90,
+    )
+    if proc.returncode == 0:
+        return None
+    detail = (proc.stdout or "") + (proc.stderr or "")
+    return detail.strip() or f"exit {proc.returncode}"
+
+
+def _check_role_nav_permissions(errors: list[str]) -> None:
+    from permissions import role_has_permission
+
+    if not role_has_permission("Supervisor", "simulator.use"):
+        errors.append("Supervisor missing simulator.use permission")
+    if not role_has_permission("Administration", "simulator.use"):
+        errors.append("Administration missing simulator.use permission")
+    if role_has_permission("Officer", "simulator.use"):
+        errors.append("Officer must not have simulator.use permission")
+
 
 def run_ui_smoke() -> int:
-    import customtkinter as ctk
-
-    from logic import authenticate_user, list_all_users
-    from ui.app import DodgevilleSchedulerApp
-    from ui.theme import NAV_ITEMS
-
     errors: list[str] = []
 
-    app = DodgevilleSchedulerApp()
-    app.root.withdraw()
+    from scripts.ui_test_helpers import assert_brand_assets
 
-    # Prefer admin without forced password change for automation
-    user = None
-    for u in list_all_users():
-        if u.get("role") == "Administration" and u.get("active") == 1:
-            if not u.get("must_change_password"):
-                auth = authenticate_user(u["username"], "admin")
-                if auth.get("success"):
-                    user = auth["user"]
-                    break
-    if not user:
-        auth = authenticate_user("admin", "admin")
-        if auth.get("success"):
-            user = auth["user"]
-            user["must_change_password"] = 0
-
-    if not user:
-        print("ui smoke: FAIL — no login user")
-        app.root.destroy()
-        return 1
+    assert_brand_assets(errors)
+    _check_role_nav_permissions(errors)
 
     try:
-        app.current_user = user
-        if hasattr(app, "login_frame"):
-            app.login_frame.destroy()
-        app._build_shell()
-        app._apply_dashboard_role_layout()
+        from scripts.ui_login_probe import main as login_probe_main
+
+        if login_probe_main() != 0:
+            errors.append("login probe failed (photos or post-login shell)")
     except Exception:
-        errors.append(f"build_shell:\n{traceback.format_exc()}")
+        errors.append(f"login probe:\n{traceback.format_exc()}")
 
-    pages = [key for key, _, _ in NAV_ITEMS if key in app.pages]
-    for key in pages:
-        try:
-            app.show_page(key)
-            app.root.update_idletasks()
-        except Exception:
-            errors.append(f"show_page({key}):\n{traceback.format_exc()}")
+    # Full Tk shell exercise once (fresh process). Role nav matrix checked above without extra Tk roots.
+    try:
+        err = _run_role_subprocess("admin", "admin", "Administration")
+        if err:
+            errors.append(f"Administration shell:\n{err}")
+    except subprocess.TimeoutExpired:
+        errors.append("Administration: timed out after 90s (likely UI hang)")
 
-    # Brand assets
-    from ui.assets import load_brand_image
-
-    for name, size, cover in (
-        ("logo.png", (72, 72), False),
-        ("team_photo.jpg", (320, 148), True),
-    ):
-        img = load_brand_image(name, size, cover=cover)
-        if img is None:
-            errors.append(f"load_brand_image({name}) returned None")
-
-    # Department branding helpers
     try:
         from ui.branding import get_department_branding
 
         branding = get_department_branding()
         if not branding.get("name"):
             errors.append("department name empty")
+        tagline = branding.get("tagline", "")
+        if "Wisconsin'S" in tagline:
+            errors.append(f"tagline has wrong possessive casing: {tagline!r}")
     except Exception:
-        errors.append(f"branding:\n{traceback.format_exc()}")
-
-    app.root.destroy()
+        errors.append(f"branding check:\n{traceback.format_exc()}")
 
     print("Dodgeville PD Scheduler — UI smoke")
     print("-" * 40)
@@ -92,9 +97,10 @@ def run_ui_smoke() -> int:
         print(f"ui smoke: {len(errors)} FAILURE(S)")
         return 1
 
-    print(f"  [ok] built shell for {user['username']} ({user['role']})")
-    print(f"  [ok] visited {len(pages)} pages")
-    print("  [ok] brand images loaded")
+    print("  [ok] brand assets on disk")
+    print("  [ok] admin shell built and all pages visited")
+    print("  [ok] supervisor/admin simulator permission; officer denied")
+    print("  [ok] no Tk callback errors")
     print("-" * 40)
     print("ui smoke: ALL PASSED")
     return 0

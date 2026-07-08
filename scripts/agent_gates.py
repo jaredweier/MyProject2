@@ -26,6 +26,8 @@ DEV_SKIP_AGENT_GATES = frozenset(
         "startup-gates",
         "cheap-check",
         "preflight",
+        "verify",
+        "readiness-check",
         "fix-hint",
         "usage-brief",
         "route-task",

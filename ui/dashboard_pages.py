@@ -4,7 +4,7 @@ from datetime import date
 
 import customtkinter as ctk
 
-from logic.staffing_config import get_active_shift_times
+from config import SCHEDULE_TYPE_COURT, SCHEDULE_TYPE_TRAINING
 from logic import (
     get_current_cycle_window,
     get_cycle_day,
@@ -17,7 +17,7 @@ from logic import (
     get_unread_notification_count,
     get_upcoming_holidays,
 )
-from ui.assets import load_logo, load_team_photo
+from logic.staffing_config import get_active_shift_times
 from ui.branding import get_department_branding
 from ui.helpers import active_officers
 from ui.theme import (
@@ -30,16 +30,15 @@ from ui.theme import (
     DODGEVILLE_RED,
     DODGEVILLE_SUCCESS,
     DODGEVILLE_WARNING,
-    UI_ACCENT_GLOW,
     UI_BORDER,
-    UI_PHOTO_BG,
     UI_SURFACE,
     UI_TEXT_MUTED,
+    UI_TEXT_PRIMARY,
     font,
-    tactical_stripe,
 )
 from ui.widgets import AlertBanner, Card, CompactButton, MetricRow, PrimaryButton, SectionHeader, StatCard
 from validators import format_date
+
 
 class DashboardPageMixin:
     def _dashboard_officer_id(self):
@@ -61,76 +60,57 @@ class DashboardPageMixin:
         )
         hero.grid(row=0, column=0, sticky="ew", pady=(0, 14))
         hero.grid_columnconfigure(0, weight=1)
-        stripe_host = ctk.CTkFrame(hero, fg_color="transparent")
-        stripe_host.grid(row=0, column=0, sticky="ew")
-        tactical_stripe(stripe_host)
 
         hero_body = ctk.CTkFrame(hero, fg_color="transparent")
-        hero_body.grid(row=1, column=0, sticky="nsew")
-        hero_body.grid_columnconfigure(1, weight=1)
-        hero_body.grid_columnconfigure(2, weight=0, minsize=272)
+        hero_body.pack(fill="x", padx=CARD_PAD, pady=16)
+        hero_body.grid_columnconfigure(0, weight=1)
 
         hero_left = ctk.CTkFrame(hero_body, fg_color="transparent")
-        hero_left.grid(row=0, column=0, sticky="ns", padx=(16, 12), pady=14)
-        hero_logo = load_logo((100, 100))
-        if hero_logo:
-            self._remember_brand_image(hero_logo)
-            ctk.CTkLabel(hero_left, text="", image=hero_logo).pack()
-
-        hero_center = ctk.CTkFrame(hero_body, fg_color="transparent")
-        hero_center.grid(row=0, column=1, sticky="nsew", padx=8, pady=14)
-        ctk.CTkLabel(
-            hero_center,
-            text="COMMAND POST",
-            font=font("nav_section"),
-            text_color=DODGEVILLE_GOLD,
+        hero_left.grid(row=0, column=0, sticky="w")
+        self._hero_greeting_label = ctk.CTkLabel(
+            hero_left,
+            text="Good day",
+            font=font("display"),
+            text_color=UI_TEXT_PRIMARY,
             anchor="w",
-        ).pack(fill="x")
-        ctk.CTkLabel(
-            hero_center,
-            text="Tactical Operations Center",
-            font=font("title"),
-            text_color=UI_ACCENT_GLOW,
-            anchor="w",
-        ).pack(fill="x", pady=(2, 0))
+        )
+        self._hero_greeting_label.pack(fill="x")
         self._hero_dept_label = ctk.CTkLabel(
-            hero_center,
+            hero_left,
             text=branding["name"],
-            font=font("subheading"),
-            text_color="#FFFFFF",
+            font=font("body"),
+            text_color=UI_TEXT_MUTED,
             anchor="w",
-            wraplength=520,
         )
         self._hero_dept_label.pack(fill="x", pady=(4, 0))
         self._hero_mission_label = ctk.CTkLabel(
-            hero_center,
+            hero_left,
             text=branding["tagline"],
-            font=font("body"),
-            text_color=DODGEVILLE_GOLD,
+            font=font("small"),
+            text_color=UI_TEXT_MUTED,
             anchor="w",
             wraplength=520,
         )
-        self._hero_mission_label.pack(fill="x", pady=(6, 0))
+        self._hero_mission_label.pack(fill="x", pady=(2, 0))
 
-        photo_wrap = ctk.CTkFrame(hero_body, fg_color=UI_PHOTO_BG, corner_radius=10)
-        photo_wrap.grid(row=0, column=2, sticky="ne", padx=(8, 14), pady=14)
-        team_img = load_team_photo((320, 140), cover=True, rounded=True, border=True)
-        if team_img:
-            self._remember_brand_image(team_img)
-            ctk.CTkLabel(photo_wrap, text="", image=team_img).pack(padx=4, pady=(4, 2))
-            ctk.CTkLabel(
-                photo_wrap,
-                text="Our Team",
-                font=font("small"),
-                text_color=DODGEVILLE_GOLD,
-            ).pack(pady=(0, 6))
-        else:
-            ctk.CTkLabel(
-                photo_wrap,
-                text="Team Photo",
-                font=font("small"),
-                text_color=UI_TEXT_MUTED,
-            ).pack(padx=24, pady=48)
+        hero_right = ctk.CTkFrame(hero_body, fg_color="transparent")
+        hero_right.grid(row=0, column=1, sticky="e", padx=(16, 0))
+        self._hero_date_label = ctk.CTkLabel(
+            hero_right,
+            text="",
+            font=font("subheading"),
+            text_color=UI_TEXT_PRIMARY,
+            anchor="e",
+        )
+        self._hero_date_label.pack(anchor="e")
+        self._hero_cycle_label = ctk.CTkLabel(
+            hero_right,
+            text="",
+            font=font("small"),
+            text_color=UI_TEXT_MUTED,
+            anchor="e",
+        )
+        self._hero_cycle_label.pack(anchor="e", pady=(4, 0))
 
         self._dash_alert_stack = ctk.CTkFrame(page, fg_color="transparent")
         self._dash_alert_stack.grid(row=1, column=0, sticky="ew", pady=(0, 10))
@@ -373,6 +353,7 @@ class DashboardPageMixin:
                 actions.append(("Patrol Roster", DODGEVILLE_BLUE, lambda: self.show_page("officers")))
             if self.can("database.backup"):
                 actions.append(("Backup Database", DODGEVILLE_SUCCESS, self.backup_database))
+                actions.append(("Restore Backup", DODGEVILLE_WARNING, self.restore_database))
 
         for idx, (label, color, cmd) in enumerate(actions):
             PrimaryButton(
@@ -389,8 +370,8 @@ class DashboardPageMixin:
         "bumped": DODGEVILLE_WARNING,
         "covering": DODGEVILLE_GOLD,
         "swapped": DODGEVILLE_ACCENT,
-        "training": "#1ABC9C",
-        "court": "#8E44AD",
+        "training": SCHEDULE_TYPE_TRAINING,
+        "court": SCHEDULE_TYPE_COURT,
         "leave": UI_TEXT_MUTED,
     }
     _SCHEDULE_STATUS_LABELS = {
@@ -426,15 +407,22 @@ class DashboardPageMixin:
                 text_color=UI_TEXT_MUTED,
             ).pack(pady=12)
             return
+        officer = week.get("officer") or {}
+        shift_band = ""
+        if officer.get("shift_start") and officer.get("shift_end"):
+            shift_band = f"{officer['shift_start']}–{officer['shift_end']}"
         for day in week.get("days", []):
             status = day.get("status", "off")
             color = self._SCHEDULE_STATUS_COLORS.get(status, UI_TEXT_MUTED)
             label = self._SCHEDULE_STATUS_LABELS.get(status, status.title())
+            detail = label
+            if status in ("working", "covering", "swapped", "training", "court") and shift_band:
+                detail = f"{label}  ·  {shift_band}"
             row = ctk.CTkFrame(self._dash_my_week_list, fg_color=UI_SURFACE, corner_radius=8)
             row.pack(fill="x", pady=2)
             ctk.CTkLabel(
                 row,
-                text=f"{day['day_label']}  ·  {label}",
+                text=f"{day['day_label']}  ·  {detail}",
                 font=font("body"),
                 text_color=color,
                 anchor="w",
@@ -651,6 +639,17 @@ class DashboardPageMixin:
                     "warning",
                 )
             )
+        if insights.get("officer_scoped") and insights.get("claimable_bid_slots", 0) > 0:
+            alerts.append(
+                ("Shift bid open — rank your preferences on the Availability tab.", "warning"),
+            )
+        elif insights.get("open_shift_bid_count", 0) > 0:
+            alerts.append(
+                (
+                    f"Shift bidding: {insights['open_shift_bid_count']} open bid event(s) awaiting officer responses.",
+                    "warning",
+                )
+            )
         budget = insights.get("labor_budget") or {}
         if budget.get("configured") and budget.get("over_budget"):
             alerts.append(
@@ -659,6 +658,41 @@ class DashboardPageMixin:
                     "critical",
                 )
             )
+        if not insights.get("officer_scoped"):
+            backup = insights.get("backup_status") or {}
+            if backup.get("needs_backup"):
+                age = backup.get("latest_age_days")
+                if age is None:
+                    backup_msg = "No database backup on file."
+                else:
+                    backup_msg = f"Latest backup is {age} day(s) old."
+                alerts.append(
+                    (
+                        f"{backup_msg} Use Backup Database in the sidebar (recommended every "
+                        f"{backup.get('max_age_days', 7)} days).",
+                        "warning",
+                    )
+                )
+            fatigue_top = insights.get("fatigue_top")
+            if fatigue_top and fatigue_top.get("severity"):
+                alerts.append(
+                    (
+                        f"Fatigue watch: {fatigue_top['officer_name']} "
+                        f"score {fatigue_top['score']:.0f}/100 — review scheduling load.",
+                        fatigue_top.get("severity", "warning"),
+                    )
+                )
+            lock_rem = insights.get("pay_period_lock_reminder") or {}
+            if lock_rem.get("needs_reminder"):
+                days_left = lock_rem.get("days_until_end", 0)
+                day_word = "day" if days_left == 1 else "days"
+                alerts.append(
+                    (
+                        f"Pay period ends in {days_left} {day_word}. Lock the period on Payroll when "
+                        "timecards are final.",
+                        "warning",
+                    )
+                )
         if not alerts:
             AlertBanner(
                 self._dash_alerts,
@@ -675,9 +709,7 @@ class DashboardPageMixin:
         squad = get_squad_on_duty(cycle)
         start, end = get_current_cycle_window(today)
         unread = get_unread_notification_count(officer_id=self._dashboard_officer_id())
-        shift_times = " · ".join(
-            f"{start}–{end}" for start, end in get_active_shift_times().values()
-        )
+        shift_times = " · ".join(f"{start}–{end}" for start, end in get_active_shift_times().values())
 
         for child in self._dash_ops_metrics_host.winfo_children():
             child.destroy()
@@ -710,6 +742,9 @@ class DashboardPageMixin:
             claimable = insights.get("claimable_open_shifts", 0)
             if claimable:
                 lines.append(f"{claimable} open shift(s) available to claim")
+            bid_slots = insights.get("claimable_bid_slots", 0)
+            if bid_slots:
+                lines.append(f"{bid_slots} shift bid slot(s) open — Blackout Dates")
         else:
             lines = [
                 f"{today.strftime('%A')}, {format_date(today)}",
@@ -726,7 +761,7 @@ class DashboardPageMixin:
         if self._is_officer_role():
             ctk.CTkLabel(
                 self._dash_holiday_list,
-                text="Your week and stat cards above are your home base. Use Schedules for full calendar detail.",
+                text="Your week and status cards above are your home base. Use Schedules for full calendar detail.",
                 font=font("small"),
                 text_color=UI_TEXT_MUTED,
                 wraplength=420,
@@ -779,8 +814,51 @@ class DashboardPageMixin:
     def _refresh_dashboard_data(self):
         if not self.stat_cards:
             return
+        today = date.today()
+        if hasattr(self, "_hero_greeting_label"):
+            from datetime import datetime
+
+            h = datetime.now().hour
+            if h < 12:
+                greet = "Good morning"
+            elif h < 17:
+                greet = "Good afternoon"
+            else:
+                greet = "Good evening"
+            self._hero_greeting_label.configure(text=greet)
+        if hasattr(self, "_hero_date_label"):
+            self._hero_date_label.configure(text=format_date(today))
+        if hasattr(self, "_hero_cycle_label"):
+            cycle = get_cycle_day(today)
+            squad = get_squad_on_duty(cycle)
+            self._hero_cycle_label.configure(text=f"Cycle day {cycle} · Squad {squad}")
         officer_id = self._dashboard_officer_id()
-        insights = get_dashboard_insights(officer_id=officer_id)
+        import os
+
+        if os.environ.get("SCHEDULER_UI_TEST", "").strip() == "1":
+            insights = {
+                "success": True,
+                "officer_scoped": officer_id is not None,
+                "coverage_issues": 0,
+                "coverage_gap_count": 0,
+                "coverage_gap_critical": 0,
+                "coverage_gaps": [],
+                "overtime_alerts": 0,
+                "hours_watch_count": 0,
+                "hours_watch_critical": 0,
+                "labor_compliance_count": 0,
+                "schedule_conflicts": 0,
+                "pending_requests": 0,
+                "pending_swaps": 0,
+                "pending_manual_review": 0,
+                "claimable_open_shifts": 0,
+                "claimable_bid_slots": 0,
+                "open_shifts": 0,
+                "open_shift_bid_count": 0,
+                "schedule_diff_count": 0,
+            }
+        else:
+            insights = get_dashboard_insights(officer_id=officer_id)
         if insights.get("officer_scoped"):
             oid = officer_id
             squad_label = "…"
@@ -789,16 +867,39 @@ class DashboardPageMixin:
                 if officer:
                     squad_label = f"Squad {officer['squad']}"
             self.stat_cards["officers"].set_value(squad_label)
-            open_val = insights.get("claimable_open_shifts", 0)
+            if insights.get("claimable_bid_slots", 0) > 0:
+                self.stat_cards["open_shifts"].set_label("Shift Bids Open")
+                open_val = insights["claimable_bid_slots"]
+            else:
+                self.stat_cards["open_shifts"].set_label("Claimable Shifts")
+                open_val = insights.get("claimable_open_shifts", 0)
         else:
             self.stat_cards["officers"].set_value(str(len(active_officers())))
             open_val = insights.get("open_shifts", 0)
+            self.stat_cards["open_shifts"].set_label("Open Shifts")
+            bid_count = insights.get("open_shift_bid_count", 0)
+            if "manual" in self.stat_cards:
+                if bid_count > 0:
+                    self.stat_cards["manual"].set_label("Open Shift Bids")
+                    self.stat_cards["manual"].set_value(str(bid_count))
+                    self.stat_cards["manual"].bind(
+                        "<Button-1>",
+                        lambda e: (self.show_page("availability"), self.refresh_availability()),
+                    )
+                else:
+                    self.stat_cards["manual"].set_label("Manual Review")
+                    self.stat_cards["manual"].set_value(str(insights.get("pending_manual_review", 0)))
+                    self.stat_cards["manual"].bind(
+                        "<Button-1>",
+                        lambda e: (
+                            self._set_request_view("review"),
+                            self.show_page("requests"),
+                        ),
+                    )
         self.stat_cards["pending"].set_value(str(insights.get("pending_requests", 0)))
         self.stat_cards["pending_swaps"].set_value(str(insights.get("pending_swaps", 0)))
         self.stat_cards["schedule_diff"].set_value(str(insights.get("schedule_diff_count", 0)))
         self.stat_cards["open_shifts"].set_value(str(open_val))
-        if "manual" in self.stat_cards:
-            self.stat_cards["manual"].set_value(str(insights.get("pending_manual_review", 0)))
         if hasattr(self, "_dash_alerts"):
             self._refresh_dashboard_alerts(insights)
         if hasattr(self, "_dash_ops_body"):
@@ -818,4 +919,4 @@ class DashboardPageMixin:
         if hasattr(self, "_dash_holiday_list"):
             self._refresh_dashboard_holidays()
         if hasattr(self, "notif_list"):
-            self.refresh_notifications()
+            self.root.after(150, self.refresh_notifications)

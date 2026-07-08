@@ -222,6 +222,8 @@ class NotificationsPageMixin:
             self.swap_filter.set("All")
         elif highlight == "open_shift":
             self._highlight_open_shift_id = related_id
+        elif highlight == "shift_bid":
+            self._highlight_shift_bid_id = related_id
         elif highlight == "availability":
             self._highlight_availability_id = related_id
         self.show_page(target["page"])
