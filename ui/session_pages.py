@@ -182,6 +182,15 @@ class SessionPageMixin:
                 self.current_user.get("username"),
             )
         self._teardown_shell_state()
+        from ui.assets import reset_brand_image_cache
+
+        reset_brand_image_cache()
+        if getattr(self, "login_frame", None):
+            try:
+                self.login_frame.destroy()
+            except Exception:
+                pass
+            self.login_frame = None
         reset_main_window_layout_guard(self.root)
         for attr in (
             "_login_layout_done",

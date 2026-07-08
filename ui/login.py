@@ -47,23 +47,29 @@ class LoginFrame(ctk.CTkFrame):
 
     def _paint_brand_images(self) -> None:
         """Load images after the window is mapped — avoids blank CTkImage on first paint."""
-        if self._photo_label is not None and self._photo_label.winfo_exists():
-            team = load_team_photo((520, 360), cover=True, rounded=False, border=False)
-            if team:
-                self._remember(team)
-                self._photo_label.configure(image=team, text="")
-            else:
-                self._photo_label.configure(
-                    text="Place team_photo.jpg in the project folder.",
-                    font=font("body"),
-                    text_color=UI_TEXT_MUTED,
-                    image=None,
-                )
-        if hasattr(self, "_logo_label") and self._logo_label.winfo_exists():
-            logo = load_logo((48, 48))
-            if logo:
-                self._remember(logo)
-                self._logo_label.configure(image=logo, text="")
+        if not self.winfo_exists():
+            return
+        try:
+            if self._photo_label is not None and self._photo_label.winfo_exists():
+                team = load_team_photo((520, 360), cover=True, rounded=False, border=False)
+                if team:
+                    self._remember(team)
+                    self._photo_label.configure(image=team, text="")
+                else:
+                    self._photo_label.configure(
+                        text="Place team_photo.jpg in the project folder.",
+                        font=font("body"),
+                        text_color=UI_TEXT_MUTED,
+                        image=None,
+                    )
+            if hasattr(self, "_logo_label") and self._logo_label.winfo_exists():
+                logo = load_logo((48, 48))
+                if logo:
+                    self._remember(logo)
+                    self._logo_label.configure(image=logo, text="")
+        except Exception:
+            # Stale pyimage after sign-out/re-login — skip paint on torn-down frame.
+            return
 
     def _build(self):
         self.grid_columnconfigure(0, weight=13, uniform="login")

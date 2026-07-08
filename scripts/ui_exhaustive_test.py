@@ -78,26 +78,10 @@ def _close_toplevels(root) -> None:
 
 def _destroy_app(root) -> None:
     """Tear down Tk safely; pending after() callbacks can hang plain destroy() on Windows."""
+    from ui.helpers import destroy_tk_root
+
     _close_toplevels(root)
-    try:
-        pending = root.tk.call("after", "info")
-        if pending:
-            for after_id in pending:
-                try:
-                    root.after_cancel(after_id)
-                except Exception:
-                    pass
-    except Exception:
-        pass
-    try:
-        root.update()
-        root.quit()
-    except Exception:
-        pass
-    try:
-        root.destroy()
-    except Exception:
-        pass
+    destroy_tk_root(root)
 
 
 def _write_ui_report(
@@ -709,11 +693,20 @@ def run_ui_exhaustive(
                         fn()
                     with patch("tkinter.filedialog.asksaveasfilename", return_value=export_pdf):
                         app._export_coverage_pdf()
-                        app._export_pay_stub_pdf()
                     app._export_schedule_diff_from_reports(work_day.year, work_day.month)
-                    app._show_pay_stub_preview()
+                    # Pay stub preview/PDF live on Payroll tab (deduped from Reports).
+                    app.show_page("payroll")
+                    app.refresh_payroll_period()
+                    if hasattr(app, "pay_officer"):
+                        vals = app.pay_officer.cget("values")
+                        if vals and vals[0] not in ("Loading...", "—"):
+                            app.pay_officer.set(vals[0])
+                            app._on_pay_officer_change(vals[0])
+                    app._preview_payroll_stub()
+                    with patch("tkinter.filedialog.asksaveasfilename", return_value=export_pdf):
+                        app._export_payroll_stub()
 
-                _run_step("reports: exports + pay stub preview", _reports_exports)
+                _run_step("reports: exports + payroll pay stub", _reports_exports)
 
                 if mutating and hasattr(app, "_dept_name_entry"):
 

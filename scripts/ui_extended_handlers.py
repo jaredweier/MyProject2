@@ -21,7 +21,11 @@ from scripts.ui_exhaustive_test import (
 
 def _login_role(app, username: str, password: str) -> None:
     from logic import authenticate_user, set_department_setting
+    from ui.assets import reset_brand_image_cache
+    from ui.helpers import cancel_pending_after
 
+    cancel_pending_after(app.root)
+    reset_brand_image_cache()
     auth = authenticate_user(username, password)
     if not auth.get("success"):
         raise RuntimeError(auth.get("message", f"login failed for {username}"))
@@ -29,7 +33,10 @@ def _login_role(app, username: str, password: str) -> None:
     user["must_change_password"] = 0
     app.current_user = user
     if getattr(app, "login_frame", None):
-        app.login_frame.destroy()
+        try:
+            app.login_frame.destroy()
+        except Exception:
+            pass
         app.login_frame = None
     app._gantt_spec = None
     app._monthly_spec = None
