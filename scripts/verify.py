@@ -153,10 +153,25 @@ def _step_ui_workflow() -> int:
 
 def _step_ui_exhaustive() -> int:
     """Subprocess — fresh Tk root; must not share process with ui-smoke."""
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
     result = subprocess.run(
-        [sys.executable, os.path.join(ROOT, "scripts", "ui_exhaustive_test.py")],
+        [sys.executable, "-u", os.path.join(ROOT, "scripts", "ui_exhaustive_test.py")],
         cwd=ROOT,
+        capture_output=True,
+        text=True,
+        env=env,
     )
+    if result.stdout:
+        print(result.stdout, end="" if result.stdout.endswith("\n") else "\n")
+    if result.returncode != 0:
+        if result.stderr:
+            print(result.stderr, end="" if result.stderr.endswith("\n") else "\n")
+        tail = (result.stdout or "").strip().splitlines()[-12:]
+        if tail:
+            print("  --- ui-exhaustive tail ---")
+            for line in tail:
+                print(f"  {line}")
     return result.returncode
 
 

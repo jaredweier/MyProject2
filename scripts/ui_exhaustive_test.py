@@ -41,6 +41,34 @@ if ROOT not in sys.path:
 
 os.environ["SCHEDULER_UI_TEST"] = "1"
 
+_EXHAUSTIVE_LOCK = os.path.join(ROOT, "logs", ".ui_exhaustive.lock")
+
+
+def _acquire_exhaustive_lock() -> bool:
+    """Prevent concurrent exhaustive runs (they deadlock headless Tk login)."""
+    os.makedirs(os.path.dirname(_EXHAUSTIVE_LOCK), exist_ok=True)
+    if os.path.isfile(_EXHAUSTIVE_LOCK):
+        try:
+            with open(_EXHAUSTIVE_LOCK, encoding="utf-8") as fh:
+                pid = fh.read().strip()
+        except OSError:
+            pid = "?"
+        print(
+            f"ui-exhaustive: lock held ({_EXHAUSTIVE_LOCK}, pid={pid}) — wait for other run to finish",
+            flush=True,
+        )
+        return False
+    with open(_EXHAUSTIVE_LOCK, "w", encoding="utf-8") as fh:
+        fh.write(str(os.getpid()))
+    return True
+
+
+def _release_exhaustive_lock() -> None:
+    try:
+        os.remove(_EXHAUSTIVE_LOCK)
+    except OSError:
+        pass
+
 
 def _step(
     name: str,
@@ -60,7 +88,7 @@ def _step(
         if app is not None and screenshot_dir:
             path = os.path.join(screenshot_dir, f"{len(results):02d}_{_safe_filename(name)}.png")
             _screenshot_window(app.root, path)
-        if screenshot_dir or step_delay > 0:
+        if screenshot_dir or step_delay > 0 or os.environ.get("SCHEDULER_UI_TEST", "").strip() == "1":
             print(f"  [ok] {name}", flush=True)
     except Exception:
         results.append((name, False, traceback.format_exc()))
@@ -199,6 +227,32 @@ def _login_admin(app) -> None:
 
 
 def run_ui_exhaustive(
+    *,
+    visible: bool = False,
+    step_delay: float = 0,
+    screenshot_dir: str | None = None,
+    isolated: bool = True,
+    auto_login: bool = False,
+    mutating: bool = True,
+    hold_seconds: float = 0,
+) -> int:
+    if not _acquire_exhaustive_lock():
+        return 1
+    try:
+        return _run_ui_exhaustive_impl(
+            visible=visible,
+            step_delay=step_delay,
+            screenshot_dir=screenshot_dir,
+            isolated=isolated,
+            auto_login=auto_login,
+            mutating=mutating,
+            hold_seconds=hold_seconds,
+        )
+    finally:
+        _release_exhaustive_lock()
+
+
+def _run_ui_exhaustive_impl(
     *,
     visible: bool = False,
     step_delay: float = 0,
