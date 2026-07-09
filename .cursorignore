@@ -45,3 +45,5 @@ check_result.log
 EVALUATE.txt
 
 # Large source: use `python dev.py outline <path>` before editing — do not skip reading the slice.
+
+graphify-out/

@@ -56,3 +56,18 @@ rust/**/target/
 .env
 .env.*
 *.pem
+
+# gstack (global install; do not vendor)
+.claude/skills/gstack/
+
+# graphify runtime (local cost/cache; graph.json may be committed if desired)
+graphify-out/cost.json
+graphify-out/cache/
+
+# graphify large regenerable outputs (rebuild: graphify extract . --code-only)
+graphify-out/graph.json
+graphify-out/graph.html
+graphify-out/.graphify_analysis.json
+graphify-out/manifest.json
+graphify-out/.graphify_labels.json
+graphify-out/.graphify_labels.json.sig

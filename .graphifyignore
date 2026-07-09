@@ -1,0 +1,14 @@
+﻿# Local/runtime noise — keep graph focused on product code
+logs/
+backups/
+exports/
+dist/
+build/
+.venv/
+venv/
+.grok/sessions/
+rust/**/target/
+graphify-out/
+terminals/
+docs/FULL_PROJECT_CODE.txt
+*.db

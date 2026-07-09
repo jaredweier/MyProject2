@@ -1,18 +1,29 @@
 # Dodgeville PD — Agent Rules
 
-**Dynamic:** `@logs/agent_pack/latest.md` · **Stable:** `@docs/AGENT_STABLE.md`
+**Bootstrap (free):** `python dev.py agent-kit` → `@logs/agent_kit/latest.md`
+**Dynamic:** `@logs/agent_pack/latest.md` · **Stable:** `@docs/AGENT_STABLE.md` · **Hub:** `@docs/AGENT_TOOLKIT.md`
 
-Auto-context OFF. Load on demand: one `.grok/skills/*/SKILL.md` · `@docs/AGENTS_REFERENCE.md` · `@docs/HANDOFF.md`
+Auto-context OFF. One skill: `.grok/skills/*/SKILL.md` (prefer `token-discipline` at start)
 
-State: `logs/last_agent_gate.json` · `logs/last_verify.json` · `logs/last_gate.json`
-
-## Sufficiency / Minimize (mandatory)
-Stop when confident · `outline`/`symbol` first · `usage-brief <slice>` before reads · `verify --tier fast` after edits · `token-improve` if prompts/index change
-
-## Verify (unified — see `.grok/rules/verify-policy.md`)
-`verify --tier fast` → `verify --tier preflight` → `verify-slice <id>` → **`verify --tier check`** (ship gate). Never claim done below check.
+## Minimize (mandatory)
+`usage-brief` → `read-budget` → `outline`/`symbol` → edit → `verify --tier fast` · ship: **`check`** · `token-improve` if index/prompts change
 
 ## Edit boundaries
-`validators.py` + `logic/*` · `ui/*_pages.py` · slice `touch_together` · `import logic`
+`validators` + `logic/*` · `ui/*_pages` · slice `touch_together` · `import logic`
+Domain: `AGENT_STABLE` · UI: `.grok/rules/ui-modern.md` · Math: `.grok/rules/scheduling-math.md`
 
-Domain facts (payroll, scheduling): `docs/AGENT_STABLE.md`. Known fixes: `.grok/rules/known-issues.md`
+## gstack (optional)
+Process skills from [gstack](https://github.com/garrytan/gstack) — install notes in `CLAUDE.md`.
+Global: `~/.claude/skills/gstack` · `/office-hours` `/review` `/qa` `/ship` `/browse` `/investigate`
+**Does not replace** free Dodgeville gates (`dev.py verify`, token-discipline, slice `touch_together`).
+Domain work stays on `.grok/skills/*` + `logic/*` / `validators`.
+
+## stop-slop (optional prose)
+Remove AI writing tells from user-facing copy / docs: `.grok/skills/stop-slop/SKILL.md`
+(also `.claude/skills/stop-slop/`). Load when drafting or reviewing prose — not for code/logic.
+
+## graphify (optional map)
+Code knowledge graph: `graphify-out/` · skills `.claude/skills/graphify/` + `.grok/skills/graphify/` · CLI `graphify`
+Prefer `graphify query "…"` / `path` / `explain` when `graphify-out/graph.json` exists.
+Rebuild after code changes: `graphify extract . --code-only` (local AST, no API key).
+Ship gate remains `python dev.py verify` — graphify does not replace it.
