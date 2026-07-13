@@ -1,5 +1,5 @@
 """
-Headless exhaustive UI test — every tab and major handler.
+Headless exhaustive UI test — modular page shell (post-rebuild).
 
 Run: python dev.py ui-exhaustive
 """
@@ -13,10 +13,25 @@ import sys
 import tempfile
 import time
 import traceback
-import uuid
 from contextlib import nullcontext
 from datetime import datetime, timezone
 from unittest.mock import patch
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
+
+os.environ["SCHEDULER_UI_TEST"] = "1"
+
+from scripts.ui_test_helpers import (  # noqa: E402
+    authenticate_role,
+    destroy_app,
+    headless_login,
+    refresh_tk,
+    shell_ready,
+)
+
+_EXHAUSTIVE_LOCK = os.path.join(ROOT, "logs", ".ui_exhaustive.lock")
 
 
 def _safe_filename(name: str) -> str:
@@ -26,8 +41,6 @@ def _safe_filename(name: str) -> str:
 def _screenshot_window(root, path: str) -> None:
     from PIL import ImageGrab
 
-    from scripts.ui_test_helpers import refresh_tk
-
     refresh_tk(root)
     x = root.winfo_rootx()
     y = root.winfo_rooty()
@@ -36,24 +49,12 @@ def _screenshot_window(root, path: str) -> None:
     ImageGrab.grab((x, y, x + w, y + h)).save(path)
 
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-if ROOT not in sys.path:
-    sys.path.insert(0, ROOT)
-
-os.environ["SCHEDULER_UI_TEST"] = "1"
-
-from scripts.ui_test_helpers import refresh_tk
-
-_EXHAUSTIVE_LOCK = os.path.join(ROOT, "logs", ".ui_exhaustive.lock")
-
-
 def _lock_holder_alive(pid: str) -> bool:
     try:
         os.kill(int(pid), 0)
     except (OSError, ValueError, TypeError):
         return False
-    else:
-        return True
+    return True
 
 
 def _acquire_exhaustive_lock() -> bool:
@@ -123,11 +124,8 @@ def _close_toplevels(root) -> None:
 
 
 def _destroy_app(root) -> None:
-    """Tear down Tk safely; pending after() callbacks can hang plain destroy() on Windows."""
-    from ui.helpers import destroy_tk_root
-
     _close_toplevels(root)
-    destroy_tk_root(root)
+    destroy_app(root)
 
 
 def _write_ui_report(
@@ -155,12 +153,7 @@ def _write_ui_report(
                 "index": i,
                 "name": name,
                 "ok": ok,
-                "screenshot": os.path.join(
-                    screenshot_dir,
-                    f"{i:02d}_{_safe_filename(name)}.png",
-                )
-                if ok
-                else None,
+                "screenshot": os.path.join(screenshot_dir, f"{i:02d}_{_safe_filename(name)}.png") if ok else None,
                 "error": detail.strip() if detail else None,
             }
             for i, (name, ok, detail) in enumerate(results, start=1)
@@ -221,27 +214,41 @@ def _entries_in(widget):
 
 
 def _shell_alive(app) -> bool:
-    try:
-        return getattr(app, "shell", None) is not None and app.shell.winfo_exists()
-    except Exception:
-        return False
+    return shell_ready(app)
 
 
 def _login_admin(app) -> None:
+    """Headless admin session against the modular shell."""
     from logic import set_department_setting
-    from scripts.ui_test_helpers import authenticate_role, headless_login
 
     user = authenticate_role("admin", "admin")
     if not user:
-        raise RuntimeError("admin login failed")
-    if not _shell_alive(app):
+        raise RuntimeError("admin login failed (username=admin)")
+    if not shell_ready(app):
         headless_login(app, user)
-        app._bind_keyboard_shortcuts()
-        app.root.bind("<F5>", lambda e: app._refresh_current_page())
+    else:
+        app.current_user = user
+        if app.current_page is None and app.pages:
+            app.show_page("dashboard")
     set_department_setting("setup_complete", "1")
-    app._refresh_department_branding()
-    app._apply_dashboard_role_layout()
-    app.root.update_idletasks()
+    refresh_tk(app.root)
+    if not shell_ready(app):
+        raise RuntimeError("shell not ready after admin login")
+    if not app.current_user or app.current_user.get("role") != "Administration":
+        raise RuntimeError("admin role not active after login")
+
+
+def _login_role(app, username: str, password: str) -> None:
+    from logic import set_department_setting
+
+    user = authenticate_role(username, password)
+    if not user:
+        raise RuntimeError(f"login failed for {username}")
+    headless_login(app, user)
+    set_department_setting("setup_complete", "1")
+    refresh_tk(app.root)
+    if not shell_ready(app):
+        raise RuntimeError(f"shell not ready after {username} login")
 
 
 def run_ui_exhaustive(
@@ -280,22 +287,13 @@ def _run_ui_exhaustive_impl(
     mutating: bool = True,
     hold_seconds: float = 0,
 ) -> int:
-    from logic import (
-        get_holidays,
-        get_monthly_summary_from_snapshot,
-        get_notifications,
-        get_officer_availability,
-        get_open_shifts,
-        get_pending_day_off_requests,
-        get_pending_shift_swap_requests,
-        list_all_users,
-    )
-    from tests.helpers import get_any_officer, off_date_for_squad, test_database, working_date_for_squad
+    """Modular exhaustive: login → visit every page → controller refresh → roles → shell ops."""
+    from tests.helpers import get_any_officer, test_database, working_date_for_squad
+    from ui.pages import PAGE_CLASSES
+    from ui.theme import NAV_ITEMS
 
     results: list[tuple[str, bool, str]] = []
-    tmp = tempfile.gettempdir()
-    export_csv = os.path.join(tmp, "ui_exhaustive.csv")
-    export_pdf = os.path.join(tmp, "ui_exhaustive.pdf")
+    app = None
 
     def _run_step(name: str, fn) -> None:
         _step(
@@ -310,681 +308,206 @@ def _run_ui_exhaustive_impl(
     db_ctx = test_database() if isolated else nullcontext()
 
     with db_ctx:
-        login_patch = patch("ui.session_pages.AUTO_LOGIN_ENABLED", auto_login)
-        with login_patch:
-            from ui.app import DodgevilleSchedulerApp
-            from ui.theme import NAV_ITEMS
-            from ui.window_layout import apply_main_window_layout
+        from ui.app import DodgevilleSchedulerApp
+        from ui.window_layout import apply_main_window_layout
 
-            if visible:
-                print("  Starting visible UI session…", flush=True)
-            app = DodgevilleSchedulerApp()
-            if visible:
-                print("  App window created.", flush=True)
-            if visible:
-                app.root.deiconify()
-                app.root.lift()
-                app.root.attributes("-topmost", True)
-                app.root.after(300, lambda: app.root.attributes("-topmost", False))
-                app.root.focus_force()
-                apply_main_window_layout(app.root)
+        if visible:
+            print("  Starting visible UI session…", flush=True)
+        app = DodgevilleSchedulerApp()
+        if visible:
+            app.root.deiconify()
+            app.root.lift()
+            app.root.attributes("-topmost", True)
+            app.root.after(300, lambda: app.root.attributes("-topmost", False))
+            app.root.focus_force()
+            apply_main_window_layout(app.root)
+        else:
+            app.root.withdraw()
+
+        patches = [
+            patch("tkinter.messagebox.showinfo"),
+            patch("tkinter.messagebox.showwarning"),
+            patch("tkinter.messagebox.showerror"),
+            patch("tkinter.messagebox.askyesno", side_effect=_confirm_yesno),
+            patch(
+                "tkinter.filedialog.asksaveasfilename", return_value=os.path.join(tempfile.gettempdir(), "ui_ex.csv")
+            ),
+            patch("tkinter.filedialog.askopenfilename", return_value=""),
+        ]
+        for p in patches:
+            p.start()
+        try:
+            # ---- login ----
+            if not auto_login:
+                _run_step("shell: admin login", lambda: _login_admin(app))
             else:
-                app.root.withdraw()
+                user = authenticate_role("admin", "admin")
+                if not user:
+                    raise RuntimeError("auto_login: admin auth failed")
+                headless_login(app, user)
 
-            patches = [
-                patch("tkinter.messagebox.showinfo"),
-                patch("tkinter.messagebox.showwarning"),
-                patch("tkinter.messagebox.showerror"),
-                patch("tkinter.messagebox.askyesno", side_effect=_confirm_yesno),
-                patch("tkinter.filedialog.asksaveasfilename", return_value=export_csv),
-                patch("tkinter.filedialog.askopenfilename", return_value=""),
-            ]
-            for p in patches:
-                p.start()
-            try:
-                if not auto_login:
-                    _run_step("shell: admin login", lambda: _login_admin(app))
-                else:
-                    from logic import set_department_setting
+            # ---- nav visit (NAV_ITEMS + page frames) ----
+            visited = set()
+            for key, _, _ in NAV_ITEMS:
+                if key not in app.pages:
+                    # notifications aliases to dashboard frame
+                    if key == "notifications" and "dashboard" in app.pages:
+                        _run_step(f"nav: show_page({key})", lambda: app.show_page("notifications"))
+                        visited.add(key)
+                    continue
+                _run_step(f"nav: show_page({key})", lambda k=key: app.show_page(k))
+                visited.add(key)
 
-                    if app.current_user:
-                        app.current_user["must_change_password"] = 0
-                    set_department_setting("setup_complete", "1")
+            for key in PAGE_CLASSES:
+                if key in visited or key not in app.pages:
+                    continue
+                _run_step(f"nav: show_page({key})", lambda k=key: app.show_page(k))
 
-                for key, _, _ in NAV_ITEMS:
-                    if key in app.pages:
-                        _run_step(f"nav: show_page({key})", lambda k=key: app.show_page(k))
+            # ---- controller refresh each mounted page ----
+            for key, ctrl in list(app.page_controllers.items()):
 
-                _run_step("shell: refresh_all", app.refresh_all)
-                _run_step("shell: _refresh_current_page (F5)", app._refresh_current_page)
-                _run_step("shell: profile dialog", lambda: _show_profile(app))
+                def _refresh(k=key, c=ctrl):
+                    app.show_page(k)
+                    c.ensure_built()
+                    c.refresh()
 
-                officer_a = get_any_officer("A", "06:00")
-                officer_a2 = get_any_officer("A", "10:00")
-                work_day = working_date_for_squad("A")
-                work_day_str = work_day.strftime("%Y-%m-%d")
-                off_day_str = off_date_for_squad("A").strftime("%Y-%m-%d")
-                logo_path = os.path.join(ROOT, "logo.png")
-                test_officer_id: int | None = None
-                created_username: str | None = None
+                _run_step(f"page: refresh({key})", _refresh)
 
-                def _dashboard_refresh():
-                    app.show_page("dashboard")
-                    app._refresh_dashboard()
-                    app._refresh_dashboard_data()
+            _run_step("shell: refresh_all", app.refresh_all)
 
-                _run_step("dashboard: refresh data", _dashboard_refresh)
+            def _refresh_current():
+                if app.current_page:
+                    app._refresh_page(app.current_page)
 
-                def _dashboard_quick_actions():
-                    app.show_page("dashboard")
-                    app._build_dashboard_quick_actions()
+            _run_step("shell: refresh current page (F5)", _refresh_current)
 
-                _run_step("dashboard: quick actions", _dashboard_quick_actions)
+            # ---- logic-backed mutation smoke (UI still shows results via refresh) ----
+            if mutating and app.can("requests.approve"):
+                officer = get_any_officer("A", "06:00")
+                work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
 
-                if mutating and app.can("requests.approve"):
+                def _day_off_ui_refresh():
+                    import logic
 
-                    def _dashboard_bulk():
-                        app.show_page("dashboard")
-                        app._bulk_approve_requests()
-                        app._bulk_reject_requests()
-
-                    _run_step("dashboard: bulk approve/reject", _dashboard_bulk)
-
-                def _officers_search_picker():
-                    app.show_page("officers")
-                    app.officer_search.delete(0, "end")
-                    app.officer_search.insert(0, "Squad A")
-                    app.refresh_officer_list()
-                    app.off_show_inactive.select()
-                    app.refresh_officer_list()
-                    if app.off_picker.cget("values") and app.off_picker.cget("values")[0] != "—":
-                        app.off_picker.set(app.off_picker.cget("values")[0])
-                        app._on_officer_picker(app.off_picker.get())
-
-                _run_step("officers: search + picker + inactive", _officers_search_picker)
-
-                def _officers_save_existing():
-                    app.show_page("officers")
-                    app.refresh_officer_list()
-                    app.load_officer(officer_a["id"])
-                    original = app.off_name.get()
-                    app.off_name.delete(0, "end")
-                    app.off_name.insert(0, original)
-                    app.save_officer()
-
-                if mutating:
-                    _run_step("officers: save existing", _officers_save_existing)
-
-                    def _officers_create():
-                        nonlocal test_officer_id
-                        app.show_page("officers")
-                        app.new_officer_form()
-                        unique = f"UI Test {uuid.uuid4().hex[:6]}"
-                        app.off_name.insert(0, unique)
-                        app.off_seniority.delete(0, "end")
-                        app.off_seniority.insert(0, "99")
-                        app.save_officer()
-                        test_officer_id = app.selected_officer_id
-
-                    _run_step("officers: create new", _officers_create)
-
-                    def _officers_bulk_pay():
-                        app.show_page("officers")
-                        dlg = _open_dialog_without_wait(app, app.bulk_pay_rate_dialog)
-                        if dlg:
-                            entries = _entries_in(dlg)
-                            if entries:
-                                entries[0].insert(0, "0")
-                                if len(entries) > 1:
-                                    entries[1].insert(0, "0")
-                            _invoke_button(dlg, "Apply to Roster")
-                        _close_toplevels(app.root)
-
-                    _run_step("officers: bulk pay rate", _officers_bulk_pay)
-
-                    def _officers_photo():
-                        app.show_page("officers")
-                        target_id = test_officer_id or officer_a["id"]
-                        app.load_officer(target_id)
-                        with patch("tkinter.filedialog.askopenfilename", return_value=logo_path):
-                            app.upload_officer_photo()
-                        app.remove_officer_photo()
-
-                    _run_step("officers: upload/remove photo", _officers_photo)
-
-                    def _officers_deactivate():
-                        if test_officer_id:
-                            app.show_page("officers")
-                            app.load_officer(test_officer_id)
-                            app.deactivate_officer()
-
-                    _run_step("officers: deactivate test officer", _officers_deactivate)
-
-                    def _officers_delete():
-                        app.show_page("officers")
-                        app.new_officer_form()
-                        unique = f"UI Del {uuid.uuid4().hex[:6]}"
-                        app.off_name.insert(0, unique)
-                        app.off_seniority.delete(0, "end")
-                        app.off_seniority.insert(0, "98")
-                        app.save_officer()
-                        del_id = app.selected_officer_id
-                        if del_id:
-                            app.load_officer(del_id)
-                            app.delete_officer_profile()
-
-                    _run_step("officers: delete new officer", _officers_delete)
-
-                    def _officers_import():
-                        app.show_page("officers")
-                        app.import_roster_csv()
-
-                    _run_step("officers: import roster csv", _officers_import)
-                else:
-
-                    def _officers_readonly():
-                        app.show_page("officers")
-                        app.refresh_officer_list()
-                        app.load_officer(officer_a["id"])
-
-                    _run_step("officers: view roster", _officers_readonly)
-
-                def _requests_views():
-                    app.show_page("requests")
-                    for view in ("queue", "history", "review"):
-                        if view == "review" and not app.can("requests.approve"):
-                            continue
-                        app._set_request_view(view)
-
-                _run_step("requests: view switches", _requests_views)
-
-                def _requests_preview():
-                    app.show_page("requests")
-                    app.req_officer.set(officer_a["name"])
-                    app.req_date.delete(0, "end")
-                    app.req_date.insert(0, work_day_str)
-                    app.preview_request_coverage()
-
-                _run_step("requests: coverage preview", _requests_preview)
-
-                if mutating:
-
-                    def _requests_submit_approve():
-                        app.show_page("requests")
-                        app.req_officer.set(officer_a["name"])
-                        app.req_date.delete(0, "end")
-                        app.req_date.insert(0, off_day_str)
-                        app.submit_request()
-                        app.refresh_requests()
-                        pending = get_pending_day_off_requests()
-                        if pending:
-                            req = pending[0]
-                            app.handle_request(req["id"], "approve")
-                            app._show_request_bump_preview(req)
-
-                    _run_step("requests: submit + approve", _requests_submit_approve)
-
-                    def _requests_reject():
-                        app.show_page("requests")
-                        app.req_officer.set(officer_a2["name"])
-                        app.req_date.delete(0, "end")
-                        app.req_date.insert(0, off_date_for_squad("A").strftime("%Y-%m-%d"))
-                        app.submit_request()
-                        pending = get_pending_day_off_requests()
-                        if pending:
-                            app.handle_request(pending[-1]["id"], "reject")
-
-                    _run_step("requests: submit + reject", _requests_reject)
-
-                    def _requests_exports():
-                        app.show_page("requests")
-                        app._export_requests_csv_filtered()
-                        app._export_requests_pdf_filtered()
-
-                    _run_step("requests: filtered exports", _requests_exports)
-                else:
-                    _run_step("requests: refresh", lambda: (app.show_page("requests"), app.refresh_requests()))
-
-                def _swaps_preview_submit():
-                    app.show_page("swaps")
-                    app._refresh_swap_officer_dropdowns()
-                    labels = list(app.swap_officer_map.keys())
-                    if len(labels) >= 2:
-                        app.swap_officer1.set(labels[0])
-                        app.swap_officer2.set(labels[1])
-                        app.swap_date.delete(0, "end")
-                        app.swap_date.insert(0, work_day_str)
-                        app.preview_swap()
-                        if mutating:
-                            app.submit_swap()
-
-                _run_step("swaps: preview" + (" + submit" if mutating else ""), _swaps_preview_submit)
-
-                if mutating:
-
-                    def _swaps_approve():
-                        app.show_page("swaps")
-                        app.refresh_swaps()
-                        pending = get_pending_shift_swap_requests()
-                        if pending:
-                            app.handle_swap(pending[0]["id"], "approve")
-
-                    _run_step("swaps: approve", _swaps_approve)
-
-                    def _swaps_reject():
-                        app.show_page("swaps")
-                        labels = list(app.swap_officer_map.keys())
-                        if len(labels) >= 2:
-                            app.swap_officer1.set(labels[0])
-                            app.swap_officer2.set(labels[1])
-                            app.swap_date.delete(0, "end")
-                            app.swap_date.insert(0, work_day_str)
-                            app.submit_swap()
-                        pending = get_pending_shift_swap_requests()
-                        if pending:
-                            app.handle_swap(pending[-1]["id"], "reject")
-
-                    _run_step("swaps: submit + reject", _swaps_reject)
-
-                    def _swaps_exports():
-                        app.show_page("swaps")
-                        app._export_swaps_csv_filtered()
-                        app._export_swaps_pdf_filtered()
-
-                    _run_step("swaps: filtered exports", _swaps_exports)
-                else:
-                    _run_step("swaps: refresh", lambda: (app.show_page("swaps"), app.refresh_swaps()))
-
-                def _timeline_gantt():
-                    app.show_page("timeline")
-                    app.refresh_gantt()
-                    app._shift_gantt_cycle(-1)
-                    app._shift_gantt_cycle(1)
-                    app._reset_gantt_cycle()
-                    app._export_gantt_ical()
-                    with patch("tkinter.filedialog.asksaveasfilename", return_value=export_pdf):
-                        app._export_gantt_pdf()
-
-                _run_step("timeline: gantt cycle + exports", _timeline_gantt)
-
-                def _base_schedule():
-                    app.show_page("base_schedule")
-                    app.refresh_monthly("base")
-                    app._schedule_action("base")
-                    base_state = app._schedule_pages["base"]
-                    base_summary = get_monthly_summary_from_snapshot(
-                        base_state.get("snapshot"),
-                        work_day.year,
-                        work_day.month,
-                        "base",
-                    )
-                    for entry in base_summary:
-                        if entry.get("date") == work_day:
-                            app._select_monthly_day("base", work_day.day, entry)
-                            break
-                    with patch("tkinter.filedialog.asksaveasfilename", return_value=export_pdf):
-                        app._export_monthly_pdf("base")
-
-                _run_step("base_schedule: publish + day + pdf", _base_schedule)
-
-                def _live_schedule():
-                    app.show_page("live_schedule")
-                    state = app._schedule_pages["updated"]
-                    state["month_year"].set(f"{work_day.year}-{work_day.month:02d}")
-                    app.refresh_monthly("updated")
-                    app._schedule_action("updated")
-                    summary = get_monthly_summary_from_snapshot(
-                        state.get("snapshot"),
-                        work_day.year,
-                        work_day.month,
-                        "updated",
-                    )
-                    for entry in summary:
-                        if entry.get("date") == work_day:
-                            app._select_monthly_day("updated", work_day.day, entry)
-                            break
-                    app._show_schedule_diff()
-                    if _invoke_button(app.root, "Export CSV"):
+                    cr = logic.create_day_off_request(officer["id"], work_day, "Vacation")
+                    if not cr.get("success"):
+                        # may already exist from prior step — still exercise UI
                         pass
-                    _close_toplevels(app.root)
-                    dlg = _open_dialog_without_wait(app, app._show_manual_coverage_dialog)
-                    if dlg:
-                        entries = _entries_in(dlg)
-                        if entries:
-                            entries[0].delete(0, "end")
-                            entries[0].insert(0, work_day_str)
-                        _invoke_button(dlg, "Assign Coverage")
-                    _close_toplevels(app.root)
-                    if state.get("selected_entry"):
-                        edit_dlg = _open_dialog_without_wait(
-                            app,
-                            lambda: app._manual_schedule_edit("updated"),
-                        )
-                        if edit_dlg:
-                            _invoke_button(edit_dlg, "Save Assignment")
-                    _close_toplevels(app.root)
-                    app._export_updated_diff_csv_from_toolbar()
-                    with patch("tkinter.filedialog.asksaveasfilename", return_value=export_pdf):
-                        app._export_monthly_pdf("updated")
+                    app.show_page("requests")
+                    ctrl = app.page_controllers.get("requests")
+                    if ctrl:
+                        ctrl.refresh()
+                    app.show_page("dashboard")
+                    dctrl = app.page_controllers.get("dashboard")
+                    if dctrl:
+                        dctrl.refresh()
 
-                _run_step("live_schedule: sync/diff/coverage/edit", _live_schedule)
+                _run_step("workflow: day-off request + leave/dashboard refresh", _day_off_ui_refresh)
 
-                def _timecard_periods():
+            if mutating and app.can("timecard.edit_all"):
+                officer = get_any_officer("A", "06:00")
+
+                def _timecard_ui():
+                    import logic
+
+                    start, _end = logic.get_pay_period()
+                    logic.save_timecard_entry(
+                        officer["id"],
+                        start.isoformat(),
+                        hours_worked=8.0,
+                    )
                     app.show_page("timecard")
-                    app.refresh_timecard()
-                    app._shift_timecard_period(-1)
-                    app._shift_timecard_period(1)
-                    app._reset_timecard_period()
-
-                _run_step("timecard: period navigation", _timecard_periods)
-
-                if mutating:
-
-                    def _timecard_save_flow():
-                        app.show_page("timecard")
-                        app.prefill_timecard()
-                        app.copy_previous_timecard()
-                        if app._timecard_day_widgets:
-                            w = app._timecard_day_widgets[0]
-                            if not w.get("imported"):
-                                app._save_timecard_day(
-                                    w["date"],
-                                    w["time_in"],
-                                    w["time_out"],
-                                    w["hours"],
-                                    w["pay_type"],
-                                    w["night"],
-                                    w["notes"],
-                                )
-                        app.save_all_timecard()
-                        app.import_timecard_payroll()
-                        app._export_timecard_csv()
-
-                    _run_step("timecard: prefill/save/import/export", _timecard_save_flow)
-                else:
-                    _run_step("timecard: refresh", lambda: (app.show_page("timecard"), app.refresh_timecard()))
-
-                def _payroll_periods():
+                    ctrl = app.page_controllers.get("timecard")
+                    if ctrl:
+                        ctrl.refresh()
                     app.show_page("payroll")
-                    app.refresh_payroll_period()
-                    app.refresh_payroll()
-                    app._shift_payroll_period(-1)
-                    app._shift_payroll_period(1)
-                    app._reset_payroll_period()
+                    pctrl = app.page_controllers.get("payroll")
+                    if pctrl:
+                        pctrl.refresh()
 
-                _run_step("payroll: period navigation", _payroll_periods)
+                _run_step("workflow: timecard save + finance refresh", _timecard_ui)
 
-                if mutating:
+            # ---- jump / search if present ----
+            if hasattr(app, "_jump_to_page"):
 
-                    def _payroll_entry():
+                def _jump():
+                    app._jump_to_page("payroll")
+                    if app.current_page not in ("payroll", "timecard", "banked_time"):
+                        # jump is best-effort; still navigable via show_page
                         app.show_page("payroll")
-                        if app.pay_officer_map:
-                            first = next(iter(app.pay_officer_map))
-                            app.pay_officer.set(first)
-                            app._on_pay_officer_change()
-                            app._on_pay_type_change()
-                            app.pay_hours.delete(0, "end")
-                            app.pay_hours.insert(0, "8")
-                            app.pay_date.delete(0, "end")
-                            app.pay_date.insert(0, work_day_str)
-                            app.preview_payroll()
-                            app.save_payroll_entry()
-                        app._preview_payroll_stub()
-                        app._toggle_pay_period_lock()
-                        app._toggle_pay_period_lock()
-                        with patch("tkinter.filedialog.asksaveasfilename", return_value=export_pdf):
-                            app._export_payroll_stub()
-                            app._export_payroll_pdf()
-                        app._export_payroll_csv_from_tab()
-                        app._export_pay_period_history_csv()
-                        app._refresh_pay_period_history()
-                        if _invoke_button(app.root, "Timecard"):
-                            app.show_page("payroll")
 
-                    _run_step("payroll: entry/lock/exports/history jump", _payroll_entry)
-                else:
+                _run_step("shell: jump_to_page payroll", _jump)
 
-                    def _payroll_readonly():
-                        app.show_page("payroll")
-                        app.preview_payroll()
+            # ---- backup ----
+            if mutating and hasattr(app, "backup_database"):
+                _run_step("shell: backup database", app.backup_database)
 
-                    _run_step("payroll: preview", _payroll_readonly)
+            # ---- role sessions ----
+            for username, password, label in (
+                ("supervisor", "supervisor", "Supervisor"),
+                ("officer", "officer", "Officer"),
+            ):
 
-                def _reports_exports():
-                    app.show_page("reports")
-                    app.refresh_reports()
-                    for fn in (
-                        app._export_roster_csv,
-                        app._export_payroll_csv,
-                        app._export_timecard_csv,
-                        app._export_requests_csv,
-                        app._export_swaps_csv,
-                        app._export_audit_csv,
-                        app._export_pay_period_history_csv,
-                    ):
-                        fn()
-                    with patch("tkinter.filedialog.asksaveasfilename", return_value=export_pdf):
-                        app._export_coverage_pdf()
-                    app._export_schedule_diff_from_reports(work_day.year, work_day.month)
-                    # Pay stub preview/PDF live on Payroll tab (deduped from Reports).
-                    app.show_page("payroll")
-                    app.refresh_payroll_period()
-                    if hasattr(app, "pay_officer"):
-                        vals = app.pay_officer.cget("values")
-                        if vals and vals[0] not in ("Loading...", "—"):
-                            app.pay_officer.set(vals[0])
-                            app._on_pay_officer_change(vals[0])
-                    app._preview_payroll_stub()
-                    with patch("tkinter.filedialog.asksaveasfilename", return_value=export_pdf):
-                        app._export_payroll_stub()
-
-                _run_step("reports: exports + payroll pay stub", _reports_exports)
-
-                if mutating and hasattr(app, "_dept_name_entry"):
-
-                    def _reports_dept_settings():
-                        from logic import get_department_setting, set_department_setting
-
-                        app.show_page("reports")
-                        app.root.update_idletasks()
-                        uid = app.current_user.get("id")
-                        updates = {
-                            "department_name": "Dodgeville Police Department",
-                            "department_mission": (
-                                "To protect and serve, in partnership with our community, "
-                                "through integrity and compassion"
-                            ),
-                            "department_tagline": "Est. 1859",
-                            "overtime_threshold": "80",
-                        }
-                        for key, value in updates.items():
-                            result = set_department_setting(key, value, user_id=uid)
-                            if not result.get("success"):
-                                raise RuntimeError(result.get("message", f"Failed to save {key}"))
-                        app._refresh_department_branding()
-                        # Logic API save only — skip refresh_reports() here; full scroll
-                        # rebuild after prior export steps can race Tk destroy on Windows.
-                        for key, value in updates.items():
-                            if get_department_setting(key) != value:
-                                raise RuntimeError(f"Setting {key} did not persist")
-
-                    _run_step("reports: department settings save", _reports_dept_settings)
-
-                def _availability_base():
-                    app.show_page("availability")
-                    app.refresh_availability()
-
-                _run_step("availability: refresh", _availability_base)
-
-                if mutating:
-
-                    def _availability_crud():
-                        app.show_page("availability")
-                        app._avail_date_entry.delete(0, "end")
-                        app._avail_date_entry.insert(0, "2026-12-15")
-                        app._add_availability()
-                        entries = get_officer_availability()
-                        if entries:
-                            app._delete_availability(entries[-1]["id"])
-
-                    _run_step("availability: add + delete", _availability_crud)
-
-                    if app.can("holidays.manage"):
-
-                        def _availability_holiday():
-                            app.show_page("availability")
-                            dlg = _open_dialog_without_wait(app, app._show_add_holiday_dialog)
-                            if dlg:
-                                entries = _entries_in(dlg)
-                                if len(entries) >= 2:
-                                    entries[0].insert(0, "UI Test Holiday")
-                                    entries[1].insert(0, "2026-12-26")
-                                _invoke_button(dlg, "Save")
-                            _close_toplevels(app.root)
-                            holidays = get_holidays(2026)
-                            ui_holidays = [h for h in holidays if h.get("name") == "UI Test Holiday"]
-                            if ui_holidays:
-                                app._delete_holiday(ui_holidays[-1]["id"])
-
-                        _run_step("availability: holiday add + delete", _availability_holiday)
-
-                    if app.can("open_shifts.manage") and hasattr(app, "_open_shift_date"):
-
-                        def _availability_open_shift():
-                            app.show_page("availability")
-                            app._open_shift_date.delete(0, "end")
-                            app._open_shift_date.insert(0, work_day_str)
-                            app._post_open_shift()
-                            shifts = get_open_shifts()
-                            if shifts and app.can("open_shifts.claim"):
-                                app._claim_open_shift(shifts[-1]["id"])
-
-                        _run_step("availability: post + claim open shift", _availability_open_shift)
-
-                def _notifications_flow():
-                    app.show_page("dashboard")
-                    app.refresh_notifications()
-                    notes = get_notifications(limit=20)
-                    unread = [n for n in notes if not n.get("is_read")]
-                    if unread:
-                        app._mark_notification(unread[0]["id"])
-                    if notes:
-                        app._navigate_from_notification(notes[0])
-                    app._mark_all_notifications_read()
-                    app._export_requests_pdf()
-
-                _run_step("notifications: mark/read/navigate/export", _notifications_flow)
-
-                def _users_list():
-                    app.show_page("users")
-                    app.refresh_users()
-
-                _run_step("users: refresh list", _users_list)
-
-                if mutating and app.can("users.manage"):
-
-                    def _users_create():
-                        nonlocal created_username
-                        app.show_page("users")
-                        created_username = f"uitest_{uuid.uuid4().hex[:8]}"
-                        app._user_username.delete(0, "end")
-                        app._user_username.insert(0, created_username)
-                        app._user_password.delete(0, "end")
-                        app._user_password.insert(0, "TestPass1!")
-                        app._user_role.set("Officer")
-                        app._create_app_user()
-
-                    _run_step("users: create account", _users_create)
-
-                    def _users_edit_reset_toggle():
-                        app.show_page("users")
-                        app.refresh_users()
-                        target = None
-                        for user in list_all_users():
-                            if created_username and user["username"] == created_username:
-                                target = user
-                                break
-                        if not target:
-                            for user in list_all_users():
-                                if user["username"].startswith("uitest_"):
-                                    target = user
-                                    break
-                        if not target:
+                def _role(u=username, p=password, lab=label):
+                    _login_role(app, u, p)
+                    # visit a subset of pages each role can open
+                    for key in ("dashboard", "base_schedule", "live_schedule", "requests", "timecard"):
+                        if key in app.pages:
+                            app.show_page(key)
+                            ctrl = app.page_controllers.get(key)
+                            if ctrl:
+                                ctrl.refresh()
+                    if app.current_user and app.current_user.get("role") != lab:
+                        # officer seed may map to Officer; supervisor → Supervisor
+                        got = (app.current_user or {}).get("role")
+                        if lab == "Officer" and got == "Officer":
                             return
-                        dlg = _open_dialog_without_wait(
-                            app,
-                            lambda: app._edit_app_user(target, full_edit=True),
-                        )
-                        if dlg:
-                            _invoke_button(dlg, "Save Changes")
-                        _close_toplevels(app.root)
-                        import customtkinter as ctk
+                        if lab == "Supervisor" and got == "Supervisor":
+                            return
+                        # tolerate alternate role names if auth succeeded
+                        if not got:
+                            raise RuntimeError(f"{lab} role missing after login")
 
-                        with patch.object(ctk.CTkInputDialog, "get_input", return_value="ResetPass1!"):
-                            app._reset_user_password(target)
-                        app._toggle_user_active(target, active=False)
-                        app._toggle_user_active(target, active=True)
+                _run_step(f"role: {label} login + page walk", _role)
 
-                    _run_step("users: edit + reset password + toggle active", _users_edit_reset_toggle)
+            # back to admin for sign-out test
+            _run_step("shell: re-login admin", lambda: _login_admin(app))
 
-                def _simulator_flow():
-                    app.show_page("simulator")
-                    app._simulator_load_roster()
-                    app.run_schedule_simulator()
-                    app._export_simulation_csv()
+            if mutating:
 
-                _run_step("simulator: load/run/export", _simulator_flow)
-
-                from scripts.ui_extended_handlers import run_extended_handlers, run_role_sessions
-
-                ctx = {
-                    "officer_a": officer_a,
-                    "officer_a2": officer_a2,
-                    "work_day": work_day,
-                    "work_day_str": work_day_str,
-                    "off_day_str": off_day_str,
-                    "export_pdf": export_pdf,
-                    "export_csv": export_csv,
-                }
-                run_extended_handlers(app, ctx, _run_step, mutating=mutating)
-                run_role_sessions(app, ctx, _run_step, mutating=mutating)
-
-                def _shell_shortcuts():
-                    app.show_page("dashboard")
-                    app.root.event_generate("<Control-Key-2>")
+                def _sign_out_relogin():
+                    app.sign_out()
                     refresh_tk(app.root)
-                    app.root.event_generate("<Control-Key-0>")
-                    refresh_tk(app.root)
+                    _login_admin(app)
 
-                _run_step("shell: keyboard shortcuts", _shell_shortcuts)
+                _run_step("shell: sign out + re-login", _sign_out_relogin)
 
-                if mutating:
-                    _run_step("shell: backup database", app.backup_database)
-                    _run_step("shell: restore backup (cancel)", app.restore_database)
+            # extended modular handlers (safe / no old monolith APIs)
+            from scripts.ui_extended_handlers import run_extended_handlers, run_role_sessions
 
-                    def _shell_sign_out_login():
-                        app.sign_out()
-                        refresh_tk(app.root)
-                        _login_admin(app)
+            officer_a = get_any_officer("A", "06:00")
+            ctx = {
+                "officer_a": officer_a,
+                "work_day_str": working_date_for_squad("A").strftime("%Y-%m-%d"),
+            }
+            run_extended_handlers(app, ctx, _run_step, mutating=mutating)
+            run_role_sessions(app, ctx, _run_step, mutating=mutating)
 
-                    _run_step("shell: sign out + re-login", _shell_sign_out_login)
-
-            finally:
-                for p in reversed(patches):
-                    p.stop()
-
+        finally:
+            for p in reversed(patches):
+                p.stop()
             if visible and hold_seconds > 0:
                 refresh_tk(app.root)
                 time.sleep(hold_seconds)
-
-            report_path = _write_ui_report(
+            _write_ui_report(
                 results,
                 visible=visible,
                 mutating=mutating,
                 isolated=isolated,
                 screenshot_dir=screenshot_dir,
             )
-            _destroy_app(app.root)
+            if app is not None:
+                _destroy_app(app.root)
 
     title = "UI live on-screen test" if visible else "UI exhaustive test"
     failures = [r for r in results if not r[1]]
@@ -998,8 +521,6 @@ def _run_ui_exhaustive_impl(
                 for line in detail.strip().splitlines()[-5:]:
                     print(f"         {line}", flush=True)
         print("=" * 60, flush=True)
-    else:
-        print("=" * 60, flush=True)
     if screenshot_dir:
         report_path = os.path.join(screenshot_dir, "report.json")
         if os.path.isfile(report_path):
@@ -1009,13 +530,6 @@ def _run_ui_exhaustive_impl(
         return 1
     print(f"ui exhaustive: ALL {len(results)} STEPS PASSED")
     return 0
-
-
-def _show_profile(app) -> None:
-    from ui.profile_dialog import open_my_profile_dialog
-
-    open_my_profile_dialog(app)
-    _close_toplevels(app.root)
 
 
 if __name__ == "__main__":

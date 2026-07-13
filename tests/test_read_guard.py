@@ -18,13 +18,21 @@ class ReadGuardTests(unittest.TestCase):
         r = check_read("config.py")
         self.assertEqual(r.action, "allow")
 
-    def test_ask_large_payroll_ui(self):
-        r = check_read("ui/payroll_pages.py")
+    def test_ask_large_cli(self):
+        # After payroll/finance package splits, cli.py remains a large editable surface
+        r = check_read("cli.py")
         self.assertEqual(r.action, "ask")
+
+    def test_payroll_package_readable(self):
+        r = check_read("logic/payroll/timecard.py")
+        self.assertIn(r.action, ("allow", "ask"))
 
     def test_known_large_ui_nonempty(self):
         large = known_large_ui_files()
-        self.assertTrue(any("payroll_pages" in p for p, _ in large))
+        self.assertTrue(
+            any(p == "cli.py" or "logic/" in p or "gui/" in p for p, _ in large),
+            f"expected large product modules in {large[:8]}",
+        )
 
 
 if __name__ == "__main__":

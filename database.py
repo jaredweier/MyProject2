@@ -350,6 +350,80 @@ def _ensure_schema_migrations(cursor) -> None:
     _migrate_timecard_multi_entry(cursor)
     _ensure_department_setting_defaults(cursor)
     _ensure_tier2_tables(cursor)
+    _migrate_frontier_features(cursor)
+
+
+def _migrate_frontier_features(cursor) -> None:
+    """Leave donation, station/post, cert categories — FR product frontiers."""
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS leave_donations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            donor_officer_id INTEGER NOT NULL,
+            recipient_officer_id INTEGER NOT NULL,
+            bank_type TEXT NOT NULL,
+            hours REAL NOT NULL,
+            notes TEXT,
+            status TEXT DEFAULT 'completed',
+            created_by_user_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (donor_officer_id) REFERENCES officers(id),
+            FOREIGN KEY (recipient_officer_id) REFERENCES officers(id)
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_leave_donations_donor ON leave_donations(donor_officer_id)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_leave_donations_recipient ON leave_donations(recipient_officer_id)")
+
+    cursor.execute("PRAGMA table_info(officers)")
+    officer_cols = {row[1] for row in cursor.fetchall()}
+    if "station" not in officer_cols:
+        cursor.execute("ALTER TABLE officers ADD COLUMN station TEXT")
+    if "workforce_class" not in officer_cols:
+        # sworn | civilian — Netchex dual workforce
+        cursor.execute("ALTER TABLE officers ADD COLUMN workforce_class TEXT DEFAULT 'sworn'")
+
+    cursor.execute("PRAGMA table_info(open_shifts)")
+    os_cols = {row[1] for row in cursor.fetchall()}
+    if "station" not in os_cols:
+        cursor.execute("ALTER TABLE open_shifts ADD COLUMN station TEXT")
+
+    cursor.execute("PRAGMA table_info(certification_types)")
+    ct_cols = {row[1] for row in cursor.fetchall()}
+    if "category" not in ct_cols:
+        cursor.execute("ALTER TABLE certification_types ADD COLUMN category TEXT DEFAULT 'certification'")
+    # Seed immunization types (ESO readiness pattern) — ignore if codes exist
+    for code, name in (
+        ("IMM_TB", "TB screening"),
+        ("IMM_HEP_B", "Hepatitis B"),
+        ("IMM_FLU", "Seasonal influenza"),
+        ("IMM_COVID", "COVID-19 vaccination"),
+    ):
+        try:
+            cursor.execute(
+                """
+                INSERT OR IGNORE INTO certification_types (code, name, description, active, category)
+                VALUES (?, ?, ?, 1, 'immunization')
+                """,
+                (code, name, f"Immunization / medical readiness: {name}"),
+            )
+            # Existing rows from older seed without category
+            cursor.execute(
+                "UPDATE certification_types SET category = 'immunization' WHERE code = ? AND (category IS NULL OR category = '')",
+                (code,),
+            )
+        except Exception:
+            # Pre-category schema edge: try without category column
+            try:
+                cursor.execute(
+                    """
+                    INSERT OR IGNORE INTO certification_types (code, name, description, active)
+                    VALUES (?, ?, ?, 1)
+                    """,
+                    (code, name, f"Immunization / medical readiness: {name}"),
+                )
+            except Exception:
+                pass
 
 
 def _migrate_demo_password_policy(cursor) -> None:

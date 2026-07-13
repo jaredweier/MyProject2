@@ -1,4 +1,4 @@
-﻿# Local/runtime noise — keep graph focused on product code
+# Local/runtime noise — still index product code + docs/rules (not dump files)
 logs/
 backups/
 exports/
@@ -7,8 +7,14 @@ build/
 .venv/
 venv/
 .grok/sessions/
+.grok/skills/**/references/**
 rust/**/target/
 graphify-out/
 terminals/
 docs/FULL_PROJECT_CODE.txt
 *.db
+*.png
+*.jpg
+*.jpeg
+*.webp
+photos/

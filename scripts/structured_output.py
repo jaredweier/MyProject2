@@ -14,7 +14,21 @@ BATCH_FIELDS: Dict[str, Sequence[str]] = {
     "validation": ("valid", "checks"),
 }
 
-ROUTE_FIELDS = ("tier", "slice", "skill", "cursor", "verify")
+ROUTE_FIELDS = (
+    "tier",
+    "cost",
+    "slice",
+    "skill",
+    "cursor",
+    "agent",
+    "model",
+    "ui_lane",
+    "verify",
+    "agents",
+    "external",
+    "oss_searches",
+    "oss_actions",
+)
 
 CTX_FIELDS = ("turn", "task", "tokens", "threshold", "ephemeral", "decisions", "summary")
 
@@ -60,14 +74,22 @@ def shape_batch_results(task: str, rows: List[dict], *, full: bool = False) -> L
 
 
 def shape_route(rec: Any) -> dict:
-    verify = rec.verify[0] if getattr(rec, "verify", None) else "python dev.py cheap-check"
+    verify = rec.verify[0] if getattr(rec, "verify", None) else "python dev.py verify --tier fast"
     skill = rec.skill.split("/")[-2] if "/" in rec.skill else rec.skill
     return {
-        "tier": rec.complexity,
-        "slice": rec.slice_id,
+        "tier": getattr(rec, "complexity", ""),
+        "cost": getattr(rec, "cost_tier", ""),
+        "slice": getattr(rec, "slice_id", ""),
         "skill": skill,
-        "cursor": rec.cursor_mode,
+        "cursor": getattr(rec, "cursor_mode", ""),
+        "agent": getattr(rec, "primary_agent", "") or getattr(rec, "opencode_agent", ""),
+        "model": getattr(rec, "preferred_model", getattr(rec, "model_tier", "")),
+        "ui_lane": getattr(rec, "ui_lane", "none"),
         "verify": verify,
+        "agents": list(getattr(rec, "agents", []) or [])[:8],
+        "external": list(getattr(rec, "external_agents", []) or [])[:6],
+        "oss_searches": list(getattr(rec, "oss_searches", []) or [])[:6],
+        "oss_actions": list(getattr(rec, "oss_actions", []) or [])[:6],
     }
 
 

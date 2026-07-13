@@ -1,82 +1,121 @@
-# Agent & LLM Routing — Dodgeville PD Scheduler
+# Agent & LLM Routing — Chronos Command / Dodgeville PD
 
-**Auto-context: OFF.** Agents do not automatically load HANDOFF, all skills, or long docs. You or the agent loads context on demand (`@` mention, `route-task`, `usage-brief`).
+**Auto-context: OFF.** Load skills/docs on demand.
+**Any agent/LLM allowed** — recommendations pick **lowest cost that fits** complexity.
+**Router (source of truth):** `python dev.py route-task "<task>"` → `scripts/agent_route.py`
+**UI agent catalog:** [`UI_AGENTS_CATALOG.md`](UI_AGENTS_CATALOG.md)
+**Token ladder:** [`TOKEN_PERFORMANCE.md`](TOKEN_PERFORMANCE.md)
 
-**Any AI agent or LLM may be used for any task.** Recommendations below match **complexity** and **capability** — they are not restrictions.
+---
 
 ## Quick route
 
 ```bash
-python dev.py route-task "fix day-off bump cascade"
-python dev.py route-task --complexity high "integrate rust scheduling core"
-python dev.py route-task "why does approve button fail audit"
+python dev.py route-task "fix Title Case on media page"
+python dev.py route-task "screenshot shows broken nav"
+python dev.py route-task "e2e click through login"
+python dev.py route-task --complexity high "redesign scheduling IA"
+python dev.py route-task --json "wire chronos payroll tab"
 ```
 
-## Complexity matrix
+Output includes: **complexity**, **cost_tier**, **primary_agent**, **preferred_model**, **agent chain** (cheap→expensive), **external OSS UI agents**, **do_not**, verify commands.
 
-| Tier | Task signals | Best Cursor mode | Model tier (advisory) | Grok / OpenCode |
-|------|----------------|------------------|----------------------|-----------------|
-| **trivial** | typo, comment, import, rename | **Tab** | mini / none | — |
-| **low** | explain, where is, document | **Ask** | Auto, Haiku, Flash | quick chat |
-| **medium** | one slice, single bug/feature | **Agent** | Sonnet, Grok, Composer | skill + agent |
-| **high** | multi-file arch, refactor, rust | **Plan** then Agent | Opus, reasoning | parallel subagents |
-| **vision** | UI looks wrong, layout | Agent + **screenshot** | vision-capable | ui-vision-reviewer |
-| **verify** | run tests, audit, CI | **terminal** (or any agent) | any | qa-free, `/check` |
+---
 
-## Domain → skill → slice
+## Complexity → cost → model (automatic)
 
-| You are working on… | Load skill | Typical slice |
-|---------------------|------------|---------------|
-| Bumping, rotation, day-off | `scheduling-logic` | `day-off-requests` |
-| Swaps | `scheduling-logic` | `shift-swaps` |
-| Calendars, Gantt | `ui-development` + `scheduling-logic` | `schedules` |
-| Payroll / timecard | `payroll-timecard` | `payroll-timecard` |
-| Login, roles | `security` | `user-accounts` |
-| UI copy/theme | `ui-aesthetics-review` | varies |
-| UI layout/visual | `ui-vision-review` | varies |
-| CLI / dev.py | `cli-operations` | varies |
-| Frozen .exe | `build-deploy` | `build` |
-| Logic/UI split | `refactor` | varies |
-| Cost-conscious verify | `cost-efficient-workflow` | optional |
+| Tier | Signals | Cost | Cursor | Default model class | OpenCode |
+|------|---------|------|--------|---------------------|----------|
+| **verify** | run tests, audit, did it pass | **free** | Terminal | none | `qa-free` |
+| **trivial** | typo, spelling, whitespace only | **free** | **Tab** | none | skip |
+| **low** | explain, where is, copy-only | **cheap** | **Ask** | Haiku / Flash / Grok Fast / Auto | `small_model` / ui-static |
+| **medium** | one feature/bug, Chronos page | **balanced** | **Agent** | Sonnet / Grok / Composer | primary + skill / **ui-chronos** |
+| **high** | multi-slice, redesign, rust | **flagship** | **Plan→Agent** | Opus / reasoning | primary + qa |
+| **vision** | screenshot, looks wrong | **vision** | Agent + **1 PNG** | vision model **after** static gates | **ui-vision-reviewer** |
+| **browser** | e2e, click-through, browser-use | **vision** | optional Agent | cheap+Playwright first | ui-chronos + catalog |
 
-## Subagent pairing (high / vision)
+**Rule:** never jump cost tiers (e.g. Opus for typo, vision for Title Case).
 
-| Primary task | Subagents (parallel OK) |
-|--------------|-------------------------|
-| Scheduling bug | scheduling-logic → qa-verify |
-| UI feature | ui-development → ui-aesthetics-review |
-| UI looks wrong | ui-vision-review → ui-development |
-| Security change | security → qa-verify |
-| Large refactor | refactor → code-reviewer + qa-verify |
+---
 
-## Disable auto-context (platform)
+## UI lanes (auto-detected)
+
+| Lane | Triggers | First agents | Escalate |
+|------|----------|--------------|----------|
+| **none** | non-UI | domain skill | — |
+| **copy** | Title Case, wording, theme text | `ui-review` → aesthetics skill → ui-static-reviewer | Ask mini |
+| **layout** | tabs, widgets, pages | ui-development → Cursor Agent | Cline |
+| **chronos** | NiceGUI, Chronos, gui/, media, duty console | **ui-chronos** → Playwright | browser-use |
+| **vision** | png, screenshot, look wrong | static free → vision skill | OmniParser → browser-use |
+| **browser** | e2e, playwright, skyvern, click through | **Playwright** | Stagehand → browser-use → Skyvern |
+
+---
+
+## Domain → skill
+
+| Working on… | Skill |
+|-------------|--------|
+| Bump, rotation, day-off, swaps | `scheduling-logic` |
+| Payroll / timecard | `payroll-timecard` |
+| Auth / passwords / RBAC | `security` |
+| Chronos NiceGUI `gui/*` | `ui-development` (+ OpenCode **ui-chronos**) |
+| Copy / Title Case / theme | `ui-aesthetics-review` |
+| Screenshots / visual QA | `ui-vision-review` |
+| CLI / dev.py | `cli-operations` |
+| .exe / freeze | `build-deploy` |
+| Split monolith | `refactor` |
+| Unsure | `dodgeville-scheduler` |
+
+---
+
+## External UI agents (built into router)
+
+Catalog + URLs: **`docs/UI_AGENTS_CATALOG.md`**. Wired in `scripts/agent_route.py` → `AGENT_CATALOG`.
+
+| Prefer early (cheaper) | Prefer late (costly, **user-escalation only**) |
+|------------------------|--------------------------------------------------|
+| Terminal gates, Cursor Tab/Ask/Agent | browser-use, Skyvern, UI-TARS, OmniParser |
+| OpenCode `qa-free` / ui-static / ui-chronos | Multi-PNG vision |
+| Free `ui-review` / Playwright (browser lane) | `ui-observe --live` |
+
+**2026-07-12 prune:** default agent chain ≤3 steps; OSS empty for verify/trivial/low; design skills in `.grok/skills/_archive/`.
+
+---
+
+## Subagents
+
+| Task | Subagents |
+|------|-----------|
+| high complexity | domain skill + qa-verify |
+| vision / browser | ui-vision-review + ui-development |
+| chronos medium | ui-development + token-discipline |
+| verify / trivial / low | **none** (no subagent tax) |
+
+**Never** subagent for `verify` / `cheap-check` / `preflight` / `audit`.
+
+---
+
+## Platform notes
 
 ### Cursor
+- Plan mode for **high**; Tab for **trivial**; Ask for **low**.
+- Lean rules; `@docs/UI_AGENTS_CATALOG.md` on demand.
+- https://cursor.com/blog/agent-best-practices
 
-- Project rules use `alwaysApply: false` — only apply when **@-mentioned** (`.cursor/rules/agent-routing.mdc`).
-- Do not rely on implicit codebase injection; tag files or run `usage-brief`.
-- Settings: disable automatic full-repo context if your Cursor version exposes it; prefer explicit `@file` / `@folder`.
-
-### Grok (this repo)
-
-- `AGENTS.md` stays minimal at session start; load `agent-routing` skill when routing.
-- `cost-efficient-workflow` is **optional** (budget), not mandatory.
+### Grok
+- `AGENTS.md` minimal; run `route-task` once per task.
+- Load only the printed skill path.
 
 ### OpenCode
+- Agents: `qa-free`, `ui-static-reviewer`, `ui-chronos`, `ui-vision-reviewer`
+- `/route-task` → follow printed cost tier and agent chain
+- `small_model: fast` for light steps (`opencode.json`)
 
-- `opencode.json` `instructions` is empty by default — add paths manually or per-command.
-- Use `/route-task` custom command when added.
-
-## Verification (any agent)
-
-```bash
-python dev.py cheap-check
-python dev.py preflight
-python dev.py verify-slice <id>
-python dev.py check
-```
+---
 
 ## Related
 
-- [`USAGE_MINIMIZATION.md`](USAGE_MINIMIZATION.md) — optional budget tips
-- [`ZERO_AGENT_USAGE.md`](ZERO_AGENT_USAGE.md) — legacy free-first guide (optional)
+- [`UI_AGENTS_CATALOG.md`](UI_AGENTS_CATALOG.md) — full agent list + GitHub links
+- [`TOKEN_PERFORMANCE.md`](TOKEN_PERFORMANCE.md) — token findings
+- [`CHRONOS_SOURCES.md`](CHRONOS_SOURCES.md) — NiceGUI OSS
+- [`NEXT_AGENT_PROMPT.md`](NEXT_AGENT_PROMPT.md) — session handoff

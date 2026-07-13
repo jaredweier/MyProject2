@@ -1,57 +1,50 @@
 ---
 name: ui-development
 description: >
-  CustomTkinter UI specialist for Dodgeville PD Scheduler. Use for ui/app.py,
-  ui/admin_pages.py, ui/feature_pages.py, ui/login.py, ui/widgets.py, ui/theme.py.
-  Covers tab layout, permissions gating, and post-mutation refresh.
+  Chronos NiceGUI (gui/*) UI specialist — maximum capability. Use ANY public
+  source for look and function. Tool: python dev.py ui-domain.
 ---
 
-# UI Development Subagent
+# UI Development — maximum capability
 
-## Scope
+## Goal
 
-- `ui/app.py` — main shell, tabs, navigation
-- `ui/admin_pages.py` — users, setup wizard, password dialogs (`AdminPageMixin`)
-- `ui/feature_pages.py` — reports, department settings
-- `ui/login.py` — authentication and forced password change
-- `ui/widgets.py`, `ui/theme.py` — reusable components and colors
+Build the **best** Chronos UI possible. Research is unrestricted.
 
-## Architecture rule
+## Tools
 
-UI calls `logic.*` only. No SQL, no inline business rules. Gate actions with `permissions.role_has_permission()`.
+```bash
+python dev.py ui-domain explore|brainstorm|research-queries|suggest --all|learn
+python dev.py ui-review · ui-diff --quick · chronos-e2e
+```
 
-## Tab map
+web_search / GitHub / competitor UX / design systems / demos — **all allowed**.
 
-| Tab | Permission hints |
-|-----|------------------|
-| Dashboard | all roles |
-| Base / Updated Schedule | `schedule.base.view`, `schedule.updated.edit` for Assign Coverage |
-| Timeline (Gantt) | `schedule.export_own` for iCal |
-| Requests / Swaps | `requests.submit`, `requests.approve`, `swaps.*` |
-| Officers | `officers.manage` |
-| User Accounts | `users.manage` |
-| Payroll / Timecard | `payroll.*`, `timecard.*` |
-| Simulator | `simulator.use` |
-| Reports | `reports.view`, `settings.manage` for dept name |
-| Notifications | `notifications.manage` for admin actions |
+## Surfaces
 
-## Refresh checklist
+- Primary: `gui/app.py`, `gui/shell.py`, `gui/pages/*`, `gui/static/chronos.css`, `gui/tables.py`
+- Legacy `ui/*` only when useful as reference
 
-After mutations, refresh affected widgets:
+## Implementation
 
-- Officer CRUD → officer lists, request dropdowns, Gantt officer filter
-- Request approve/reject → dashboard stats, Gantt, requests table
-- User CRUD → users table
-- Manual override → updated schedule + Gantt
+- Prefer strong complete UX over half-wired features
+- Call `logic.*` for domain ops when practical; restructure layers if a better architecture wins
+- Deposit finds: `ui-domain learn --url … --as-idea`
 
-## Workflow
+## Design skill XOR (mandatory)
 
-1. Confirm logic function exists (`python dev.py feature-map`)
-2. Add UI control with existing theme patterns (`DODGEVILLE_*` colors)
-3. Wire command to `logic.*`; show success/error via existing dialog patterns
-4. Manual smoke: `python main.py` (or note GUI verification for user)
-5. Run `python dev.py check`
+Before visual UI work, pick **exactly one**:
 
-## Modularization note
+| Pick | Skill | Prefer when |
+|------|--------|-------------|
+| A | `frontend-design` | Greenfield identity, distinctive new pages |
+| B | taste pack (`design-taste-frontend`, `redesign-existing-projects`, …) | Chronos polish, anti-slop, redesign existing UI |
 
-Prefer new mixins (`admin_pages.py`, `feature_pages.py` pattern) over growing `app.py` monolith.
+- **Do not load both** in one task unless the user explicitly requests both.
+- User names a skill → that skill only.
+- Unspecified → Chronos/`gui` polish = **B** (`redesign-existing-projects`); greenfield brand = **A**.
+- Always keep `ui-modern.md` tokens; this skill still owns wiring/`logic` calls.
+
+## Related
+
+`first-responder-wfm` · `scheduling-logic` · `docs/knowledge/ui_sources.json` · `AGENTS.md` § UI design skills

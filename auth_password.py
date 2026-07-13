@@ -1,6 +1,7 @@
 """Password hashing utilities — PBKDF2 with legacy plaintext fallback."""
 
 import hashlib
+import hmac
 import secrets
 
 _HASH_PREFIX = "pbkdf2"
@@ -20,7 +21,8 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, stored: str) -> bool:
     if not stored or not stored.startswith(f"{_HASH_PREFIX}$"):
-        return password == stored
+        # Legacy plaintext — constant-time compare against empty-safe strings.
+        return hmac.compare_digest(password or "", stored or "")
     try:
         _, salt, expected_hex = stored.split("$", 2)
     except ValueError:
@@ -31,4 +33,4 @@ def verify_password(password: str, stored: str) -> bool:
         salt.encode("utf-8"),
         _ITERATIONS,
     )
-    return digest.hex() == expected_hex
+    return hmac.compare_digest(digest.hex(), expected_hex)

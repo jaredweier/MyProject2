@@ -1,0 +1,141 @@
+{
+  "version": 1,
+  "updated": "2026-07-09",
+  "policy": "MAXIMUM CAPABILITY for all logic/mathematics. Use ANY source or technique that improves correctness, speed, or coverage quality: OR-Tools, papers, MiniZinc, PuLP, HiGHS, Timefold/SolverForge, nurse rostering, CP-SAT, ILP, local search, ML heuristics, arXiv, textbooks, GitHub solvers, StackExchange OR. Re-architect optimizers freely if better. Starter lists optional. Deposit: python dev.py math-domain learn",
+  "excellence_tips": [
+    "Prefer proven OR algorithms over timid local patches",
+    "New engines/bridges OK if they outperform beam search or Rust path",
+    "Department policy knobs should be configurable — experiment boldly in logic/*"
+  ],
+  "in_repo_engines": {
+    "rust": "rust/scheduler_core + logic/rust_bridge.py",
+    "python_primary": "logic/scheduling.py",
+    "optimizer": "logic/coverage_optimizer.py (beam search multi-plan)",
+    "fallback": "logic/rust_fallback.py",
+    "cp_sat_optional": "logic/cp_sat_bridge.py (ortools if installed)",
+    "validators": "validators.py",
+    "payroll_math": "logic/payroll.py, labor_compliance.py, banked_time.py",
+    "free_checks": [
+      "python dev.py math-scenarios",
+      "python dev.py fuzz-scheduling",
+      "python dev.py scenarios",
+      "python dev.py audit",
+      "python -m unittest tests.test_coverage_optimizer"
+    ]
+  },
+  "starter_solvers_and_theory": [
+    "Google OR-Tools CP-SAT",
+    "OR-Tools shift_scheduling_sat.py example",
+    "CP-SAT primer (d-krupke)",
+    "MiniZinc + solver backends",
+    "PuLP / CBC / HiGHS",
+    "SolverForge / Timefold patterns (ideas)",
+    "PyJobShop (job-shop CP)",
+    "Nurse rostering problem (NRP) literature",
+    "Beam search / A* / ILP assignment problem",
+    "Graph coloring / constraint graphs for rest",
+    "FLSA 7(k) threshold arithmetic",
+    "Seniority vs junior-first selection theory"
+  ],
+  "search_templates": [
+    "nurse rostering constraint programming CP-SAT",
+    "employee shift scheduling OR-Tools python",
+    "minimum rest hours between shifts optimization",
+    "cascading shift bump replacement algorithm",
+    "beam search staffing coverage optimization",
+    "FLSA 7k 14 day 86 hour threshold calculation",
+    "equitable overtime distribution algorithm public safety",
+    "site:developers.google.com/optimization scheduling",
+    "site:github.com/google/or-tools shift_scheduling",
+    "MiniZinc nurse rostering model",
+    "PyO3 rust python scheduling hot path",
+    "consecutive work days constraint rostering",
+    "overnight shift pay period ownership start date",
+    "{error} ortools CpSolver",
+    "operations research police staffing model"
+  ],
+  "math_lanes": [
+    "rotation",
+    "bump_cascade",
+    "coverage_opt",
+    "rest_fatigue",
+    "night_min",
+    "flsa_payroll",
+    "equity_ot",
+    "bidding_award",
+    "cp_sat_whatif",
+    "rust_bridge",
+    "property_testing"
+  ],
+  "learnings": [
+    {
+      "ts": "2026-07-09T08:49:50.435785+00:00",
+      "topic": "improve-batch",
+      "note": "Hours vs 7k-style threshold meter on timecards using work_period_days scaling 171*(days/28)",
+      "source": "",
+      "url": ""
+    },
+    {
+      "ts": "2026-07-09T08:52:26.093204+00:00",
+      "topic": "plan-explain",
+      "note": "logic/plan_explain.explain_coverage_plans formats multi-plan scores/steps for supervisors (OR explainability)",
+      "source": "",
+      "url": "https://developers.google.com/optimization"
+    },
+    {
+      "ts": "2026-07-09T09:08:26.433712+00:00",
+      "topic": "timefold-hard-soft",
+      "note": "Hard/soft constraint split is standard in modern roster solvers (Timefold, OR-Tools CP-SAT). Chronos: hard = night min, rest, squad duty; soft = junior-first bump score, plan ranking. Keep explain_coverage_plans for supervisor trust of soft scores.",
+      "source": "",
+      "url": "https://docs.timefold.ai/"
+    },
+    {
+      "ts": "2026-07-09T09:10:25.369101+00:00",
+      "topic": "ortools-shift-scheduling-sat-code",
+      "note": "Read google/or-tools shift_scheduling_sat.py: work[e,s,d] bools; exactly_one per day; soft sequence via negated_bounded_span + penalty literals; soft sum with IntVar excess; night→morning forbidden (cost 0); cover demand hard min + excess penalty; objective minimize weighted penalties; solution printer lists each violated penalty by name. Chronos should keep named soft components in plan_explain (done) and optional CP-SAT for multi-day cover.",
+      "source": "",
+      "url": "https://github.com/google/or-tools/blob/stable/examples/python/shift_scheduling_sat.py"
+    },
+    {
+      "ts": "2026-07-09T09:10:25.761946+00:00",
+      "topic": "timefold-constraint-provider-java",
+      "note": "Read EmployeeSchedulingConstraintProvider.java: defineConstraints returns HARD then SOFT array. HARD: requiredSkill, noOverlappingShifts, atLeast10HoursBetweenTwoShifts, oneShiftPerDay, unavailableEmployee. SOFT: undesiredDay (penalize minutes), desiredDay (reward), balanceEmployeeShiftAssignments via loadBalance unfairness. Planning entity Shift + employee variable. Chronos maps hard to filters in list_scored_replacements; soft to w_junior/w_spare/w_same; certs ≈ requiredSkill.",
+      "source": "",
+      "url": "https://github.com/TimefoldAI/timefold-quickstarts/blob/stable/java/employee-scheduling/src/main/java/org/acme/employeescheduling/solver/EmployeeSchedulingConstraintProvider.java"
+    },
+    {
+      "ts": "2026-07-09T09:20:30.881824+00:00",
+      "topic": "ortools-cpsat-port-chronos",
+      "note": "Ported shift_scheduling_sat patterns into logic/cp_sat_bridge: hard cover minima, soft excess cover, Timefold-style load_balance unfairness (max-min days), night→early transition forbids, named penalty report via format_solution_report. Simulator CP-SAT week button. Coverage optimizer now soft-scores low OT (fairness) + transition soft weight. Dual OT ledger hours_offered vs worked. TeleStaff rank_open_shift_candidates on open shifts UI.",
+      "source": "",
+      "url": "https://github.com/google/or-tools/blob/stable/examples/python/shift_scheduling_sat.py"
+    }
+  ],
+  "deposited_urls": [
+    {
+      "url": "https://developers.google.com/optimization",
+      "topic": "plan-explain",
+      "ts": "2026-07-09T08:52:26.093225+00:00"
+    },
+    {
+      "url": "https://docs.timefold.ai/",
+      "topic": "timefold-hard-soft",
+      "ts": "2026-07-09T09:08:26.433726+00:00"
+    },
+    {
+      "url": "https://github.com/google/or-tools/blob/stable/examples/python/shift_scheduling_sat.py",
+      "topic": "ortools-shift-scheduling-sat-code",
+      "ts": "2026-07-09T09:10:25.369114+00:00"
+    },
+    {
+      "url": "https://github.com/TimefoldAI/timefold-quickstarts/blob/stable/java/employee-scheduling/src/main/java/org/acme/employeescheduling/solver/EmployeeSchedulingConstraintProvider.java",
+      "topic": "timefold-constraint-provider-java",
+      "ts": "2026-07-09T09:10:25.761968+00:00"
+    },
+    {
+      "url": "https://github.com/google/or-tools/blob/stable/examples/python/shift_scheduling_sat.py",
+      "topic": "ortools-cpsat-port-chronos",
+      "ts": "2026-07-09T09:20:30.881837+00:00"
+    }
+  ]
+}

@@ -1,12 +1,8 @@
-"""Entry point for Dodgeville PD Scheduler."""
+"""Entry point for Dodgeville PD Scheduler — Duty Console (web + desktop)."""
 
 import os
 import sys
 import traceback
-
-from ui.display import enable_windows_dpi_awareness
-
-enable_windows_dpi_awareness()
 
 
 def _bootstrap_runtime() -> None:
@@ -35,16 +31,26 @@ def _bootstrap_runtime() -> None:
 
 _bootstrap_runtime()
 
-from ui.app import run
 
 if __name__ == "__main__":
+    # Optional Windows DPI (no-op if display helpers unavailable)
+    try:
+        from ui.display import enable_windows_dpi_awareness
+
+        enable_windows_dpi_awareness()
+    except Exception:
+        pass
+
     from scripts.startup_gates import auto_before_gui
 
     gate_code = auto_before_gui()
-    if gate_code != 0 and __import__("os").environ.get("SCHEDULER_BLOCK_ON_GATE_FAIL", "").strip().lower() in (
+    if gate_code != 0 and os.environ.get("SCHEDULER_BLOCK_ON_GATE_FAIL", "").strip().lower() in (
         "1",
         "true",
         "yes",
     ):
         raise SystemExit(gate_code)
+
+    from gui.app import run
+
     run()

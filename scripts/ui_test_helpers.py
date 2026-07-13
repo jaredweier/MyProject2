@@ -12,7 +12,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
     sys.path.insert(0, ROOT)
 
-# Must be set before ui.app / session_pages import during test runs.
+# Must be set before ui.app / ui.session import during test runs.
 os.environ.setdefault("SCHEDULER_UI_TEST", "1")
 
 

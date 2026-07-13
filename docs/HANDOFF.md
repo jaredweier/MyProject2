@@ -4,20 +4,56 @@
 **Human-readable mirror:** [`PROJECT_README.md`](PROJECT_README.md) — keep both in sync when updating.
 **Update this file** when you finish a meaningful chunk of work (features, fixes, renames, perf passes).
 
-**Last updated:** 2026-07-06
-**Verification:** `python dev.py check` — **201+ tests**, audit 10/10 · `ui-diff` 78/78 baselines · pre-commit installed
+**Last updated:** 2026-07-12
+**Verification:** run `python dev.py verify --tier check` before ship (do not trust stale counts). **`honest_gate: true` required** for any done/ship claim.
+**Next agent (self-contained):** **[`docs/NEXT_AGENT_PROMPT.md`](NEXT_AGENT_PROMPT.md)** — integrity edition; anti-lie rules + proof requirements
+**Trust repair (do first if maps red):** **[`docs/TRUST_REPAIR_CHECKLIST.md`](TRUST_REPAIR_CHECKLIST.md)**
+**Depth only:** `TOKEN_PERFORMANCE.md` · `CHRONOS_SOURCES.md` · `UI_AGENTS_CATALOG.md` · `AGENT_ROUTING.md` · `python dev.py route-task`
 
+### Trust status (updated 2026-07-12)
+
+| Check | Status |
+|-------|--------|
+| Slice registry | **Fixed** — paths → `gui/pages/*` + `ui/pages/*`; status mostly `partial` |
+| feature-map UI column | **Fixed** — requires existing `ui_files` (Shift Bidding correctly UI `—`) |
+| Full unittest | **381 tests OK** (2026-07-12, `SCHEDULER_SKIP_AGENT_GATES=1`) |
+| `verify --tier check` | **PASS** 2026-07-13 · `honest_gate: true` (`logs/last_verify.json`) |
+| token-audit | **75/75** (2026-07-12 token prune) |
+| Chronos product depth | **Partial** — P2 inventory below |
+| Domain engine | **Strong** |
+| Chronos leave (P2) | Approve + multi-plan pick (score labels) + reject notes in `gui/pages/leave.py`; **logic smoke** `scripts/leave_flow_smoke.py` + `tests/test_leave_flow_smoke.py`; **browser click-approve unproven** |
+| Chronos payroll (P2) | Lock/unlock UI + **logic smoke** `scripts/payroll_flow_smoke.py`; browser lock click unproven |
+| Chronos notifications (P2) | Open path map + create/mark-read; **logic smoke** `scripts/notification_flow_smoke.py`; chrome e2e optional |
+
+Trust maps restored. Product Chronos dual-rated **partial**. Agent token path: caveman + lean route (2026-07-12).
+
+### Scheduling modularization (2026-07-09)
+
+`logic/scheduling.py` split (public API unchanged — `import logic` / `from logic.scheduling import …`):
+
+| Module | Role |
+|--------|------|
+| `logic/scheduling.py` | Rotation/rest core + re-exports (~450 lines) |
+| `logic/scheduling_bump.py` | Bump chain / replacement / format / validate |
+| `logic/scheduling_matrix.py` | Matrix, day status, override maps |
+| `logic/scheduling_sim.py` | Simulator + multi-plan preview (earlier extract) |
+
+Scripts: `scripts/split_scheduling_bump.py`, `scripts/split_scheduling_matrix.py` (idempotent).
+**Validators split (same session):** facade `validators.py` + `validators_dates|rules|officer|auth|ops.py`; config gates lazy-re-exported from `validators_config.py`. Script: `scripts/split_validators.py`.
 ---
 
 ## Quick resume
 
 | Item | Value |
 |------|--------|
-| Run GUI | `python main.py` |
+| Product | **Chronos Command** (NiceGUI primary UI in `gui/`) |
+| Run GUI | `python main.py` → `gui.app` |
+| Legacy UI | `ui/pages/*` CustomTkinter — not primary; **old root `ui/*_pages.py` mixins removed** |
 | Demo logins | `admin` / `admin`, `supervisor` / `supervisor`, `officer` / `officer` |
 | Auto-login | **Off by default** — set `SCHEDULER_AUTO_LOGIN=1` for dev skip-login |
-| Full verify | `python dev.py check` |
+| Full verify | `python dev.py verify --tier check` + read `logs/last_verify.json` |
 | Domain rules | `SCHEDULING_RULES.md`, `.grok/rules/known-issues.md` |
+| Display dates | US **M/D/YY** e.g. `7/9/26` via `validators.format_date` — not day-first |
 
 **User workflow lately:** iterative live GUI testing — launch app, fix feedback, re-run `dev.py check`, relaunch.
 
@@ -55,19 +91,42 @@
 
 **Blocked (user action):** GitHub push (no `origin` remote); OpenCode install if no network/package manager.
 
-### Vertical slice architecture (complete)
+### Vertical slice architecture (logic split done; **registry honest as of 2026-07-09**)
 
-Brownfield VSA for all shipped features + future work. Strategy doc: [`docs/VERTICAL_SLICES.md`](VERTICAL_SLICES.md).
+Brownfield VSA: [`docs/VERTICAL_SLICES.md`](VERTICAL_SLICES.md).
+**P0 repaired:** `python dev.py slice-check` → all bindings resolve; slice status is mostly **`partial`** (not complete). Primary UI paths are `gui/pages/*` (+ legacy `ui/pages/*` where listed).
 
 | Artifact | Purpose |
 |----------|---------|
-| `slices/registry.py` | 14 slices (`complete`), `SHARED_KERNEL`, optimized per-slice fields |
+| `slices/registry.py` | Slice defs — Chronos `gui/pages/*` + logic touch sets |
 | `python dev.py slice-map -v` | Find slice by capability; see `touch_together` files |
-| `python dev.py slice-check` | Resolve logic symbols, UI mixins, tests, scenarios |
-| `tests/test_vertical_slices.py` | Registry integrity (5 tests) |
+| `python dev.py slice-check` | Path existence / integrity |
+| `tests/test_vertical_slices.py` | Registry integrity tests |
 
-**Evaluation:** UI slice-aligned (9 page mixins + `ui/profile_dialog.py`). Logic package split complete — all `future_module` targets landed. `import logic` unchanged via `logic/__init__.py`.
+**Logic package split:** under `logic/*.py`; `import logic` via `logic/__init__.py`.
+**UI:** primary Chronos `gui/pages/*`; legacy `ui/pages/*` secondary (freeze except bugs unless task says otherwise).
 
+### Chronos depth inventory (P2 — 2026-07-09)
+
+Dual-rate only. **Logic strong ≠ Chronos complete.** Re-prove with browser smoke before `"complete"`.
+
+| Feature | Logic | Chronos page(s) | User can… | Status |
+|---------|-------|-----------------|-----------|--------|
+| Dashboard / KPIs | strong | `gui/pages/dashboard.py` | KPIs, gap board, hours watch, quick actions | **partial** |
+| Roster | strong | `roster.py` | CRUD-ish personnel | **partial** |
+| Day-off + swaps | strong | `leave.py` | Submit, preview, plans, confirm plan pick, reject notes, bulk, swaps | **partial** (logic smoke OK; browser click-approve unproven) |
+| Schedules | strong | `schedules.py` | My / monthly / live matrix | **partial** |
+| Payroll / timecard | strong | `finance/*` | Entry, prefill, **lock/unlock**, banks, ledger | **partial** (logic lock smoke OK; browser lock unproven) |
+| Notifications | strong | `notifications.py` | Inbox, mark read, compose, Open→route map | **partial** (path smoke OK) |
+| Ops reports | strong | `operations.py` | Gaps, hours, OT equity, full insights | **partial** |
+| Open shifts | strong | `self_service.py` | Board, post, claim/assign | **partial** |
+| Shift bidding | exists | `bidding.py` | Events + officer bid form | **partial** |
+| Availability | strong | `availability.py` | Blackouts / holidays | **partial** |
+| Simulator | yes | `simulator.py` | Scenario trainer | OK (UI-only by design) |
+| Security / users | strong | `security.py`, `access.py` | RBAC chrome / access | **partial** |
+| Multi-user deploy | NiceGUI | — | Hostable; hardening open | **partial** |
+
+**Legacy `ui/`:** frozen except bugs unless explicitly tasked.
 **Logic package (2026-07):**
 
 | Module | Slice |
@@ -76,7 +135,7 @@ Brownfield VSA for all shipped features + future work. Strategy doc: [`docs/VERT
 | `logic/scheduling.py` | rotation, bumping, matrix |
 | `logic/requests.py` | day-off, swaps, notifications |
 | `logic/snapshots.py` | monthly calendars, sync, overrides |
-| `logic/payroll.py` | payroll, timecard |
+| `logic/payroll/` | payroll, timecard (package: period, pay_codes, timecard, entries, banks) |
 | `logic/users.py` | auth, app users |
 | `logic/operations.py` | holidays, availability, open shifts, settings |
 | `logic/exports.py` | PDF/CSV/iCal export wrappers |
@@ -87,11 +146,11 @@ Tooling: `scripts/extract_logic_requests.py`, `scripts/extract_logic_modules.py`
 
 **Agent rule:** When changing a feature, find its slice → edit only `touch_together` files (+ shared kernel if cross-cutting) → run slice `verify` + `python dev.py check`.
 
-**UI fix during verify:** `ui/schedule_pages.py` `_refresh_monthly_sync_cta` — safe pack fallback (fixed `ui-smoke` on Current Monthly Schedule tab).
+**UI note:** monthly schedule CTAs live under Chronos `gui/pages/schedules.py` / legacy `ui/pages/*` (root `ui/*_pages.py` mixins removed).
 
-### Industry roadmap — Tier 1, Visual/UX, Phases A–C (complete)
+### Industry roadmap — Tier 1, Visual/UX, Phases A–C (**logic largely done; Chronos UI partial — do not call complete**)
 
-Implemented the full backlog from the public-safety scheduling UX review (coverage-at-a-glance, LE rules, self-service polish).
+Much of the public-safety scheduling UX backlog exists in **logic** and/or **legacy UI**. Chronos `gui/` has KPIs and key flows but **not full parity**. Rate Logic vs Chronos separately.
 
 **Tier 1 (logic + UI):**
 
@@ -191,39 +250,37 @@ If scroll is still slow on a specific tab, profile that tab first — Gantt and 
 
 ## Architecture reminders
 
-- UI → `logic.*` only (no SQL in UI)
+- Chronos UI → `logic.*` only (no SQL in `gui/`)
 - Validators are single source of truth for pre-checks
-- Page mixins: `ui/schedule_pages.py`, `ui/officers_pages.py`, `ui/requests_pages.py`, `ui/payroll_pages.py`, etc. (ongoing split from `ui/app.py`)
+- Primary pages: `gui/pages/*` · Legacy: `ui/pages/*` · Registry must match disk (see trust checklist)
 
 ---
 
 ## Open / next priorities
 
-From `AGENTS.md` and session context:
-
-1. **Continue live UI feedback** — user may report tab-specific polish after Tier 1 / Visual rollout
-2. **Production credential policy** — auto-login off by default (done); still TODO: force password change on demo accounts, optional LDAP
-3. ~~**Evaluation build**~~ — frozen package replaced 2026-07-01 (`C:\Users\Windows\Dodgeville_PD_Scheduler_Frozen_2026-07-01`, `scripts/build_frozen_eval.py`)
-4. ~~**Tier 2 backlog**~~ **Shipped (2026-07):** shift bidding (events, seniority awards, simulator import, award preview), callback rotation, certifications gating, fatigue score, LDAP auth scaffold, simulator scenario library
+1. **Chronos depth (P2)** — dual-rate features; browser-prove leave approve / payroll lock before `"complete"`
+2. **Continue live UI feedback** on `gui/`
+3. **Production credential / LDAP** — one true story for `must_change_password` + optional LDAP
+4. ~~**Evaluation build**~~ — frozen package tooling exists (`scripts/build_frozen_eval.py`)
+5. **Tier 2 logic** — bidding/callbacks/certs; do not claim Chronos shipped without page proof
+6. ~~Token prune~~ — done 2026-07-12 (caveman, lean route, skills `_archive`)
 
 ---
 
-## Key symbols (recent touch points)
+## Key symbols (current — verify paths exist before editing)
 
 ```
-logic.py
-  ensure_original_monthly_schedule()
-  build_monthly_roster_by_date()
-  get_pay_period_hours_summary()
-  get_day_off_requests_for_viewer()
+gui/app.py, gui/shell.py, gui/pages/*   — Chronos primary UI
+logic/scheduling*.py, logic/requests.py, logic/payroll/*, …
+validators.py (+ validators_*.py), database.py, config.py, cli.py
+slices/registry.py                      — paths OK (slice-check clean 2026-07-12)
+ui/pages/*                              — legacy CTk pages (secondary)
+ui/widgets.py, ui/theme.py              — legacy helpers may still be referenced by tests
 
-ui/schedule_pages.py     — monthly calendars, Gantt
-ui/officers_pages.py     — roster CRUD, sticky assignment header
-ui/requests_pages.py     — time off queue + ledger
-ui/payroll_pages.py      — payroll period, timecard
-ui/widgets.py            — ExpandableSection, CoverageBadge, StatusBadge
-validators.py            — format_datetime, title/squad/shift helpers
-config.py                — OFFICER_TITLE_OPTIONS, OFFICER_SQUAD_OPTIONS, OFFICER_SHIFT_OPTIONS
+DELETED / do not cite as current:
+  logic.py (monolith)
+  ui/dashboard_pages.py, ui/requests_pages.py, ui/payroll_pages.py,
+  ui/schedule_pages.py, ui/officers_pages.py, ui/feature_pages.py, …
 ```
 
 ---

@@ -76,22 +76,30 @@ def run_session_start() -> int:
     print("Automatic agent context: logs/agent_pack/latest.md (see logs/last_agent_gate.json)")
     print("  Skip: set SCHEDULER_SKIP_STARTUP_GATES=1")
 
-    print("\nMinimize (mandatory):")
+    # Always refresh free agent-kit so the next/this session has a pasteable pack.
+    slice_id = os.environ.get("SCHEDULER_SLICE", "").strip() or "day-off-requests"
+    task = os.environ.get("SCHEDULER_AGENT_TASK", "").strip() or "Session resume — follow agent-kit"
+    print(f"\nAgent kit (auto): slice={slice_id}")
+    try:
+        from scripts.agent_kit import run_agent_kit
+
+        run_agent_kit(slice_id=slice_id, task=task, quiet=True)
+        kit = os.path.join(ROOT, "logs", "agent_kit", "latest.md")
+        print(f"  → @{os.path.relpath(kit, ROOT).replace(chr(92), '/')}")
+        print("  Paste: @logs/agent_kit/latest.md  (not the whole repo)")
+    except Exception as exc:
+        print(f"  (agent-kit failed: {exc})")
+
+    print("\nMinimize (caveman):")
+    print("  @logs/agent_kit/latest.md + @logs/agent_pack/latest.md")
+    print('  python dev.py route-task "…"          # once; obey cost_tier')
     print("  python dev.py usage-brief <slice>      # before reads")
     print("  python dev.py outline <file>           # before full read")
-    print("  python dev.py cheap-check              # after edits")
-    print("  python dev.py token-improve            # find new savings")
-    print("\nAgent routing (auto-context OFF):")
-    print('  python dev.py route-task "your task"')
-    print("  python dev.py agent-pack --slice <id>  # minimal pasteable context")
-    print("  python dev.py token-minimize           # scan + audit index")
-    print("  docs/AGENT_ROUTING.md · docs/ZERO_AGENT_USAGE.md")
-
-    print("\nQuick commands:")
-    print("  python main.py")
-    print("  python dev.py preflight")
-    print("  python dev.py verify-slice <id>")
-    print("  python dev.py check")
+    print("  python dev.py verify --tier fast       # after edits")
+    print("  python dev.py verify --tier check      # ship + honest_gate")
+    print("  OSS/graphify/vision: only if user asks")
+    print("\nQuick:")
+    print("  python main.py · python dev.py preflight · python dev.py agent-pack --slice <id>")
     print("=" * 60)
     return 0
 

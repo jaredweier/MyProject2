@@ -4,12 +4,15 @@
 
 ## Open (product / design)
 
-- [ ] **Bump pick ignores seniority** — `find_replacement_officer` takes first eligible same-squad officer; seniority only orders vacation bulk approve (`logic/scheduling.py`)
-- [ ] **Partial bump cascades** — incomplete chains route to manual review instead of auto-complete (`plan_bump_chain`)
+- [x] **Bump pick uses junior-first seniority** — `find_replacement_officer` picks highest `seniority_rank` (most junior) among eligible same-squad officers (`logic/scheduling.py`)
+- [ ] **Partial bump cascades** — incomplete chains intentionally route to **Pending Manual Review** (product policy; not a bug — do not auto-complete) (`plan_bump_chain` / `process_day_off_request`)
 - [x] **Legacy bid tables** — empty `shift_bid_slots` / `shift_bids` dropped on init; new DBs skip creation (`database.py`)
-- [ ] **analytics.py outside logic package** — reports slice split across `analytics.py` and `logic/dashboard.py` (move planned)
-- [ ] **Monolith pages** — `ui/feature_pages.py`, `ui/schedule_pages.py` still large; `cli/roster_cmds.py`, `ui/payroll_stub_mixin.py` split started
-- [ ] **LDAP optional** — `logic/ldap_auth.py` works when configured; not department-tested by default
+- [x] **analytics package** — `analytics.py` is a thin re-export of `logic.analytics`; dashboard wrappers live in `logic/dashboard.py`
+- [x] **Monolith modules (2026-07-09)** — payroll `logic/payroll/*`; scheduling `scheduling.py` + `scheduling_bump` / `_matrix` / `_sim`; validators facade + `validators_dates|rules|officer|auth|ops` (+ lazy `validators_config`); root `ui/*_pages.py` gone
+- [ ] **LDAP optional** — `logic/ldap_auth.py` when configured; **not department-tested** — leave off unless field-validated
+- [x] **CTk maximize freeze** — `apply_main_window_layout` once-only via `_applied_for` in `ui/window_layout.py`; do **not** bind `<Map>` to maximize (login `<Map>` may only re-center login window)
+- [x] **Chronos leave approve UX** — confirm + multi-plan pick + reject notes in `gui/pages/leave.py` (2026-07-09); still partial until browser e2e
+- [ ] **Date display contract** — user-visible calendar dates via `validators.format_date` (US M/D/YY); storage ISO. Intentional exceptions: clock times (`gui/clock.py`), CSV export stamps (`gui/tables.py`), weekday abbr next to `format_date` on matrix headers
 
 ## Open (agent / process) — fixed 2026-07-08
 

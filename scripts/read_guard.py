@@ -86,16 +86,35 @@ def check_read(path: str, *, root: str = ROOT) -> ReadGuardResult:
 
 
 def known_large_ui_files(*, root: str = ROOT) -> list[tuple[str, float]]:
-    """Large indexable UI modules — prefer outline in agent-pack."""
-    ui = os.path.join(root, "ui")
-    if not os.path.isdir(ui):
-        return []
+    """Large indexable product modules — prefer outline/symbol (ui/, gui/, logic/)."""
     out: list[tuple[str, float]] = []
-    for name in os.listdir(ui):
-        if not name.endswith(".py"):
+    scan_roots = (
+        ("ui", os.path.join(root, "ui")),
+        ("gui", os.path.join(root, "gui")),
+        ("logic", os.path.join(root, "logic")),
+    )
+    for prefix, base in scan_roots:
+        if not os.path.isdir(base):
             continue
-        full = os.path.join(ui, name)
-        kb = os.path.getsize(full) / 1024
-        if kb >= LARGE_FILE_KB:
-            out.append((f"ui/{name}", kb))
+        for dirpath, _dirnames, filenames in os.walk(base):
+            if "__pycache__" in dirpath:
+                continue
+            for name in filenames:
+                if not name.endswith(".py"):
+                    continue
+                full = os.path.join(dirpath, name)
+                kb = os.path.getsize(full) / 1024
+                if kb < LARGE_FILE_KB:
+                    continue
+                rel = os.path.relpath(full, root).replace("\\", "/")
+                out.append((rel, kb))
+    # Root-level large modules agents often thrash
+    for name in ("cli.py", "validators.py", "analytics.py"):
+        full = os.path.join(root, name)
+        if os.path.isfile(full):
+            kb = os.path.getsize(full) / 1024
+            if kb >= LARGE_FILE_KB:
+                out.append((name, kb))
+    out.sort(key=lambda x: -x[1])
+    return out
     return sorted(out, key=lambda x: -x[1])

@@ -18,6 +18,7 @@ from validators import format_date
 
 
 def today_placeholder() -> str:
+    """User-facing date placeholder (M/D/YY e.g. 7/9/26)."""
     return format_date(date.today())
 
 
@@ -51,10 +52,11 @@ def handle_logic_result(
     set_status: Optional[Callable[[str], None]] = None,
 ) -> bool:
     if logic_success(result):
-        if success_detail:
-            messagebox.showinfo(success_title, success_detail)
+        # Prefer non-blocking status/toast when the shell is wired.
         if set_status and success_detail:
             set_status(success_detail)
+        elif success_detail:
+            messagebox.showinfo(success_title, success_detail)
         if on_success:
             on_success()
         return True
@@ -69,10 +71,12 @@ def handle_export_result(
     set_status: Optional[Callable[[str], None]] = None,
 ) -> bool:
     if result.get("success"):
-        detail = f"{label} exported ({result.get('count', '?')} rows)\n{result.get('path', '')}"
-        messagebox.showinfo("Export", detail)
+        detail = f"{label} exported ({result.get('count', '?')} rows)"
+        path = result.get("path") or ""
         if set_status:
-            set_status(f"{label} exported")
+            set_status(f"{detail}" + (f" · {path}" if path else ""))
+        else:
+            messagebox.showinfo("Export", f"{detail}\n{path}".strip())
         return True
     messagebox.showerror("Export Failed", result.get("message", "Unknown error"))
     return False

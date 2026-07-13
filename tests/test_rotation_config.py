@@ -82,7 +82,8 @@ class RotationConfigTests(unittest.TestCase):
         result = save_rotation_settings(
             cycle_length=21,
             preset="Panama 12-hour",
-            base_date_text="01-07-2026",
+            # ISO — unambiguous (US slash forms would parse 01-07 as Jan 7)
+            base_date_text="2026-07-01",
             squad_a_days_text="1,2,3,4,5,6,7",
         )
         self.assertTrue(result.get("success"), result.get("message"))

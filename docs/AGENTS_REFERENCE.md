@@ -6,7 +6,7 @@ Full tables moved from `AGENTS.md` to reduce per-turn tokens. @-mention this fil
 
 | Role | Skill | Focus |
 |------|-------|-------|
-| **Routing** | `.grok/skills/agent-routing/SKILL.md` | complexity tier, model/agent pick |
+| **Routing** | `.grok/skills/agent-routing/SKILL.md` | complexity → cost tier → multi UI agents (`docs/UI_AGENTS_CATALOG.md`) |
 | Scheduling | `.grok/skills/scheduling-logic/SKILL.md` | validators, bumping, rotation |
 | UI | `.grok/skills/ui-development/SKILL.md` | CustomTkinter tabs, permissions |
 | UI polish | `.grok/skills/ui-aesthetics-review/SKILL.md` | Spelling, wording, theme |

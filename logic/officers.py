@@ -236,6 +236,8 @@ def update_officer(officer_id: int, **fields) -> Dict:
         "job_title",
         "annual_hours_target",
         "overtime_multiplier",
+        "station",
+        "workforce_class",
     }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:

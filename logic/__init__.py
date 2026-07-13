@@ -9,7 +9,9 @@ from logic.callbacks import *
 from logic.certifications import *
 from logic.dashboard import *
 from logic.exports import *
+from logic.extra_duty import *
 from logic.labor_compliance import *
+from logic.leave_donation import *
 from logic.officers import *
 from logic.operations import *
 from logic.payroll import *

@@ -2,14 +2,14 @@
 
 This document summarizes **what the app does today**, **recent changes**, **how to run and test it**, and **where development is headed**. It mirrors the agent handoff in [`HANDOFF.md`](HANDOFF.md) in a form meant for humans and new contributors.
 
-**Last updated:** 2026-07-01
-**Tests:** `python dev.py check` — 195 tests, audit 10/10, all passing
+**Last updated:** 2026-07-12
+**Tests:** `python -m unittest discover -s tests -p "test_*.py"` — **381 OK** (re-prove after edits). Ship: `python dev.py verify --tier check` + `honest_gate: true`.
 
 ---
 
 ## What this application is
 
-Desktop scheduler for the Dodgeville Police Department: 14-day rotation, day-off requests with bumping, shift swaps, payroll/timecards, officer roster, notifications, PDF/CSV exports, and Gantt/monthly schedule views. Built with **Python**, **CustomTkinter**, and **SQLite**.
+Scheduler for the Dodgeville Police Department: 14-day rotation, day-off requests with bumping, shift swaps, payroll/timecards, officer roster, notifications, exports, and schedule views. **Primary UI:** Chronos NiceGUI (`gui/`). Legacy CustomTkinter in `ui/pages/`. Domain rules in `logic/*` + `validators` + SQLite.
 
 ---
 

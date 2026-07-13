@@ -5,8 +5,11 @@
 2. This file — stable policy
 3. `docs/AGENTS_REFERENCE.md` · `docs/HANDOFF.md` · one `.grok/skills/*/SKILL.md` — @ on demand
 
+## Reply style (caveman default)
+Short fragments / bullets. No preamble, no recap. Full prose only if user asks: explain / teach / write docs / design review. Ship claims still need `check` + `honest_gate`.
+
 ## Sufficiency
-Stop gathering when confident to answer. No extra reads/tools unless info is contradictory or clearly incomplete.
+Stop gathering when confident to answer. No extra reads/tools unless info is contradictory or clearly incomplete. No mandatory OSS or graphify unless user asks.
 
 ## Blocked
 `FULL_PROJECT_CODE.txt` · full `HANDOFF.md` · `.grok/skills/` tree · `tests/ui_snapshots/baseline/` · `logs/` · `.grok/sessions/` · whole-repo reads
@@ -24,13 +27,17 @@ State: `logs/last_verify.json` · fail: `fix-hint` · slice: `verify-slice <id>`
 ## Before full file read
 `python dev.py outline <file>` · `python dev.py symbol <name> [--slice id]`
 
+## Token performance catalog
+Full findings + free ladder + external research: **`docs/TOKEN_PERFORMANCE.md`** (also embedded in `docs/NEXT_AGENT_PROMPT.md`).
+
 ## Mandatory minimization tools
 Terminal only — use every session, no LLM:
 
 | When | Command |
 |------|---------|
-| Session start | `python dev.py session-start` |
-| Before reads | `python dev.py usage-brief <slice>` |
+| Session start | `python dev.py session-start` (**auto** runs `agent-kit`) |
+| Next session pack | `@logs/agent_kit/latest.md` (refreshed on session-start / Cursor open / Start Grok.bat) |
+| Before reads | `python dev.py usage-brief <slice>` · `read-budget <path>` |
 | Before full file | `python dev.py outline <file>` or `symbol <name>` |
 | Route once | `python dev.py route-task "<task>"` |
 | After each edit | `python dev.py verify --tier fast` |
@@ -55,21 +62,22 @@ Agents **find and ship** new savings — not only follow existing rules.
 
 **Ship tooling** in `scripts/` + wire `dev.py` when the same waste pattern appears twice.
 
-## Routing tiers → Cursor
-| tier | mode |
-|------|------|
-| trivial | Tab |
-| low | Ask |
-| medium | Agent |
-| high | Plan→Agent |
-| vision | Agent+1PNG |
-| verify | terminal |
+## Routing tiers → Cursor (auto cost)
+| tier | cost | mode |
+|------|------|------|
+| trivial | free | Tab |
+| low | cheap | Ask + mini |
+| medium | balanced | Agent |
+| high | flagship | Plan→Agent |
+| vision | vision | Agent+1PNG after static |
+| browser | vision | Playwright → browser-use |
+| verify | free | terminal |
 
-`python dev.py route-task "<task>"` for pick · edit `touch_together` only
+`python dev.py route-task "<task>"` · catalog `docs/UI_AGENTS_CATALOG.md` · edit `touch_together` only
 
 ## Edit boundaries
-- Business rules → `validators.py` then `logic/*` — never SQL in UI, never duplicate logic in `cli.py`
-- UI → `ui/*_pages.py`; refresh after mutations (`ui/helpers.py`)
+- Business rules → `validators` then `logic/*` — never SQL in UI, never duplicate logic in `cli.py`
+- UI primary → `gui/pages/*` (Chronos); legacy `ui/pages/*` only if tasked
 - Slice `touch_together` only; registry: `slices/registry.py`
 - Import: `import logic` (package re-exports)
 

@@ -1,0 +1,416 @@
+"""Ops reports + holidays."""
+
+from __future__ import annotations
+
+from nicegui import ui
+
+from gui import session
+from gui.clock import today_local
+from gui.shell import layout, page_header, panel
+from logic import (
+    backup_database,
+    create_extra_duty_event,
+    export_extra_duty_invoice_csv,
+    export_requests_pdf,
+    export_roster_csv,
+    export_schedule_pdf,
+    get_coverage_gap_board,
+    get_coverage_report,
+    get_dashboard_insights,
+    get_equitable_ot_ledger,
+    get_holidays,
+    get_holidays_in_range,
+    get_hours_watch,
+    get_labor_budget_status,
+    list_extra_duty_events,
+    maybe_run_auto_backup,
+)
+from validators import format_date
+
+
+def render_operations() -> None:
+    def body() -> None:
+        if not session.can("reports.view"):
+            page_header("Ops Reports", "Permission Required", kicker="Command")
+            ui.html(
+                '<div class="alert alert-warn">Ops Reports Require Supervisor Access.</div>',
+                sanitize=False,
+            )
+            return
+
+        page_header("Ops Reports", "Coverage · OT equity · labor budget · calendar", kicker="Chronos Command")
+        # Prefer fast KPIs for first paint; expand heavy analytics only on demand
+        from logic import get_dashboard_kpis_fast
+
+        insights = get_dashboard_kpis_fast() or {}
+        if not isinstance(insights, dict):
+            insights = {}
+
+        try:
+            budget = get_labor_budget_status() or {}
+        except Exception as exc:
+            budget = {"success": False, "message": str(exc)}
+        if budget.get("success") is not False or budget.get("projected_annual") is not None:
+            with panel("Labor budget (year)", glow=False):
+                configured = budget.get("configured")
+                proj = budget.get("projected_annual") or budget.get("projected") or "—"
+                spent = budget.get("spent") or budget.get("ytd") or budget.get("actual")
+                ui.label(
+                    f"Projected annual labor: {proj}"
+                    + (f" · YTD/spent: {spent}" if spent is not None else "")
+                    + ("" if configured else " · budget not configured (showing projection only)")
+                ).classes("text-sm")
+                if budget.get("message"):
+                    ui.label(str(budget["message"])).classes("text-xs text-gray-500")
+
+        with panel("Exports (wall roster / schedule PDF)"):
+            with ui.row().classes("gap-2 flex-wrap"):
+
+                def do_roster():
+                    r = export_roster_csv()
+                    ok = bool(r.get("success"))
+                    ui.notify(
+                        (r.get("message") or r.get("path") or "Roster CSV exported")
+                        if ok
+                        else r.get("message", "Failed"),
+                        type="positive" if ok else "negative",
+                    )
+
+                def do_pdf():
+                    r = export_schedule_pdf(today, today)
+                    ok = bool(r.get("success"))
+                    ui.notify(
+                        (r.get("message") or r.get("path") or "Schedule PDF exported")
+                        if ok
+                        else r.get("message", "Failed"),
+                        type="positive" if ok else "negative",
+                    )
+
+                def do_req_pdf():
+                    r = export_requests_pdf(status_filter="Pending")
+                    ok = bool(r.get("success"))
+                    path = r.get("path") or r.get("output_path") or r.get("file")
+                    ui.notify(
+                        (r.get("message") or (f"Requests PDF: {path}" if path else "Requests PDF ready"))
+                        if ok
+                        else r.get("message", "Failed"),
+                        type="positive" if ok else "negative",
+                    )
+
+                ui.button("Export roster CSV", on_click=do_roster).classes("btn-ghost").props("no-caps outline dense")
+                ui.button("Export today schedule PDF", on_click=do_pdf).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+                ui.button("Export pending leave PDF", on_click=do_req_pdf).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+
+        # TeleStaff-style extra duty / special detail (evaluated from UKG + Netchex)
+        if session.can("open_shifts.manage") or session.can("schedule.updated.edit"):
+            with panel("Extra duty / special detail", glow=True):
+                ui.label(
+                    "Industry (TeleStaff/Netchex): plan off-duty events, staff via open vacancy, "
+                    "track billing code for payroll export. Not full invoicing."
+                ).classes("text-xs text-gray-500 q-mb-sm")
+                ename = ui.input(label="Event name", value="Parade detail").classes("w-full")
+                edate = ui.input(label="Date", value=today_local().isoformat()).classes("w-full")
+                estart = ui.input(label="Start", value="18:00").classes("w-full")
+                eend = ui.input(label="End", value="23:00").classes("w-full")
+                eloc = ui.input(label="Location", value="").classes("w-full")
+                ebill = ui.input(label="Billing code", value="").classes("w-full")
+                esquad = ui.select(["", "A", "B"], value="", label="Squad (optional)").classes("w-full")
+
+                def post_extra():
+                    uid = (session.current_user() or {}).get("id")
+                    r = create_extra_duty_event(
+                        (edate.value or "").strip(),
+                        (estart.value or "").strip(),
+                        (eend.value or "").strip(),
+                        event_name=(ename.value or "Extra duty").strip(),
+                        location=(eloc.value or "").strip(),
+                        billing_code=(ebill.value or "").strip(),
+                        squad=(esquad.value or None) or None,
+                        user_id=uid,
+                    )
+                    ui.notify(
+                        r.get("message", "Posted") if r.get("success") else r.get("message", "Failed"),
+                        type="positive" if r.get("success") else "negative",
+                    )
+
+                ui.button("Post extra duty vacancy", on_click=post_extra).classes("btn-primary q-mt-sm").props(
+                    "no-caps unelevated dense"
+                )
+                try:
+                    listed = list_extra_duty_events(status="open", limit=12) or {}
+                    events = listed.get("events") or []
+                except Exception as exc:
+                    events = []
+                    ui.label(str(exc)).classes("text-xs text-red-400")
+                if events:
+                    ui.label(f"Open extra duty · {len(events)}").classes("text-xs text-gray-500 q-mt-sm")
+                    for ev in events[:8]:
+                        ui.label(
+                            f"{ev.get('date_display') or ev.get('shift_date')} · "
+                            f"{ev.get('event_name')} · {ev.get('shift_start')}–{ev.get('shift_end')} · "
+                            f"{ev.get('location') or ''}"
+                        ).classes("text-sm")
+                else:
+                    ui.label("No open extra-duty vacancies tagged yet.").classes("text-xs text-gray-500 q-mt-sm")
+
+                def do_invoice():
+                    r = export_extra_duty_invoice_csv(status="all")
+                    if r.get("success"):
+                        ui.notify(r.get("message") or f"Wrote {r.get('path')}", type="positive")
+                    else:
+                        ui.notify(r.get("message") or "Export failed", type="negative")
+
+                ui.button("Export extra-duty invoice CSV", on_click=do_invoice).classes("btn-ghost q-mt-sm").props(
+                    "no-caps outline dense"
+                )
+
+        heavy_host = ui.element("div")
+
+        def load_full():
+            heavy_host.clear()
+            with heavy_host:
+                ui.label("Loading Full Analytics…").classes("text-sm")
+            try:
+                full = get_dashboard_insights() or {}
+            except Exception as exc:
+                with heavy_host:
+                    ui.html(
+                        f'<div class="alert alert-crit">Analytics Failed: {exc}</div>',
+                        sanitize=False,
+                    )
+                return
+            with heavy_host:
+                if not isinstance(full, dict):
+                    full = {}
+                ui.html(
+                    f"""
+                    <div class="kpi-row q-mb-md">
+                      <div class="kpi"><div class="kpi-l">Coverage Gaps (Full)</div>
+                      <div class="kpi-v">{full.get("coverage_gap_count", 0)}</div></div>
+                      <div class="kpi"><div class="kpi-l">Overtime Alerts</div>
+                      <div class="kpi-v">{full.get("overtime_alerts", 0)}</div></div>
+                      <div class="kpi"><div class="kpi-l">Hours Watch</div>
+                      <div class="kpi-v">{full.get("hours_watch_count", 0)}</div></div>
+                      <div class="kpi"><div class="kpi-l">Labor Issues</div>
+                      <div class="kpi-v">{full.get("labor_compliance_count", 0)}</div></div>
+                    </div>
+                    """,
+                    sanitize=False,
+                )
+
+        ui.button("Load Full Labor & Coverage Analytics", on_click=load_full).classes("btn-ghost q-mb-md").props(
+            "no-caps outline dense"
+        )
+
+        ui.html(
+            f"""
+            <div class="kpi-row q-mb-md">
+              <div class="kpi warn"><div class="kpi-l">Pending Leave</div><div class="kpi-v">{insights.get("pending_requests", 0)}</div></div>
+              <div class="kpi"><div class="kpi-l">Pending Swaps</div><div class="kpi-v">{insights.get("pending_swaps", 0)}</div></div>
+              <div class="kpi danger"><div class="kpi-l">Coverage Gaps</div><div class="kpi-v">{insights.get("coverage_gap_count", 0)}</div></div>
+              <div class="kpi danger"><div class="kpi-l">Night Issues</div><div class="kpi-v">{insights.get("coverage_issues", 0)}</div></div>
+            </div>
+            """,
+            sanitize=False,
+        )
+
+        today = today_local()
+        report = get_coverage_report(today, today) if callable(get_coverage_report) else {}
+        if not isinstance(report, dict):
+            report = {}
+
+        with panel("Coverage Snapshot · Today"):
+            start_d = report.get("start_date") or format_date(today)
+            end_d = report.get("end_date") or format_date(today)
+            # Analytics may already return display-formatted dates; normalize via format_date
+            ui.label(f"Range {format_date(start_d)} – {format_date(end_d)}").classes("text-sm q-mb-sm").style(
+                "color: var(--muted)"
+            )
+            text = report.get("message") or report.get("summary") or ""
+            if text:
+                ui.label(str(text)).classes("text-sm text-gray-300")
+            days = report.get("days") or []
+            if days:
+                for day in days[:14]:
+                    if not isinstance(day, dict):
+                        continue
+                    d_disp = format_date(day.get("date") or today)
+                    squad = day.get("squad_on_duty") or "—"
+                    shifts = day.get("shift_counts") or {}
+                    shift_txt = " · ".join(f"{k}×{v}" for k, v in list(shifts.items())[:6]) or "—"
+                    with ui.element("div").classes("data-row"):
+                        ui.label(f"{d_disp} · Squad {squad} · {shift_txt}").classes("text-sm")
+            elif not text:
+                ui.label("Coverage Data Loaded.").classes("text-sm").style("color: var(--muted)")
+
+        with ui.element("div").classes("grid-2"):
+            with panel("Coverage gap board (48h)", glow=True):
+                try:
+                    board = get_coverage_gap_board(48) or {}
+                except Exception as exc:
+                    board = {"gaps": [], "message": str(exc)}
+                ui.label(f"Count {board.get('gap_count', 0)} · critical {board.get('critical_count', 0)}").classes(
+                    "text-xs text-gray-500 q-mb-sm"
+                )
+                for g in (board.get("gaps") or [])[:20]:
+                    if not isinstance(g, dict):
+                        continue
+                    raw = g.get("date") or ""
+                    band = g.get("shift_start") or g.get("band") or "—"
+                    ui.label(
+                        f"{format_date(raw) if raw else '—'} · {band} · "
+                        f"{g.get('shortfall') or g.get('severity') or g.get('message') or ''}"
+                    ).classes("text-sm")
+                if not board.get("gaps"):
+                    ui.html('<div class="alert alert-ok">No gaps in window.</div>', sanitize=False)
+
+            with panel("FLSA / hours watch"):
+                try:
+                    watch = get_hours_watch() or {}
+                except Exception as exc:
+                    watch = {"warnings": [], "message": str(exc)}
+                ui.label(
+                    f"Period {format_date(watch.get('period_start'))} – "
+                    f"{format_date(watch.get('period_end'))} · "
+                    f"threshold {watch.get('period_threshold', '—')}h"
+                ).classes("text-xs text-gray-500 q-mb-sm")
+                warns = watch.get("warnings") or []
+                if not warns:
+                    ui.html('<div class="alert alert-ok">No hours-threshold warnings.</div>', sanitize=False)
+                for w in warns[:25]:
+                    if isinstance(w, dict):
+                        ui.label(
+                            f"{w.get('officer_name') or w.get('name') or 'Officer'} · "
+                            f"{w.get('hours', w.get('period_hours', '—'))}h · "
+                            f"{w.get('message') or w.get('level') or ''}"
+                        ).classes("text-sm")
+                    else:
+                        ui.label(str(w)).classes("text-sm")
+
+        with panel("Equitable OT ledger (period)", glow=True):
+            try:
+                ot = get_equitable_ot_ledger() or {}
+            except Exception as exc:
+                ot = {"ledger": [], "message": str(exc)}
+            ui.label(
+                f"Dept OT total {ot.get('department_ot_total', 0)}h · "
+                f"avg {ot.get('department_ot_avg', 0)}h · officers {ot.get('officer_count', 0)}"
+            ).classes("text-xs text-gray-500 q-mb-sm")
+            ledger = ot.get("ledger") or []
+            if not ledger:
+                ui.html(
+                    '<div class="alert alert-ok">No OT ledger rows this period.</div>',
+                    sanitize=False,
+                )
+            else:
+                try:
+                    from gui.tables import aggrid_from_dicts
+
+                    rows = [
+                        {
+                            "name": r.get("officer_name") or r.get("name"),
+                            "squad": r.get("squad"),
+                            "ot_hours": r.get("ot_hours"),
+                            "hours_offered": r.get("hours_offered"),
+                            "opportunity_gap": r.get("opportunity_gap"),
+                            "vs_avg": r.get("vs_avg"),
+                            "fairness": r.get("fairness"),
+                        }
+                        for r in ledger
+                        if isinstance(r, dict)
+                    ]
+                    if ot.get("dual_ledger"):
+                        ui.label(
+                            "Dual ledger (CrewSense): hours_offered ≈ fill/callback opportunities · "
+                            "ot_hours = worked OT load"
+                        ).classes("text-xs text-gray-500 q-mb-xs")
+                    aggrid_from_dicts(
+                        rows,
+                        prefer_columns=[
+                            "name",
+                            "squad",
+                            "ot_hours",
+                            "hours_offered",
+                            "opportunity_gap",
+                            "vs_avg",
+                            "fairness",
+                        ],
+                        height="320px",
+                        csv_export=True,
+                        csv_name="ot_equity_dual_ledger",
+                    )
+                except Exception:
+                    for r in ledger[:40]:
+                        if not isinstance(r, dict):
+                            continue
+                        ui.label(
+                            f"{r.get('officer_name')} · squad {r.get('squad')} · "
+                            f"OT {r.get('ot_hours')}h · {r.get('fairness')}"
+                        ).classes("text-sm")
+
+        with panel("Holidays / Blackout (12 Months)"):
+            end = today.replace(year=today.year + 1)
+            try:
+                holidays = get_holidays_in_range(today, end)
+            except Exception:
+                holidays = []
+            if not holidays:
+                # Fallback: full year catalog
+                try:
+                    holidays = get_holidays(today.year) or []
+                except Exception:
+                    holidays = []
+            if isinstance(holidays, dict):
+                holidays = holidays.get("holidays") or holidays.get("rows") or []
+            if not holidays:
+                ui.html(
+                    '<div class="alert alert-ok">No Holidays Configured In Range.</div>',
+                    sanitize=False,
+                )
+            else:
+                for h in holidays[:40]:
+                    if isinstance(h, dict):
+                        raw = h.get("date") or h.get("holiday_date") or ""
+                        line = (
+                            f"{h.get('name') or h.get('holiday_name') or 'Holiday'} · "
+                            f"{format_date(raw) if raw else '—'}"
+                        )
+                    else:
+                        line = str(h)
+                    with ui.element("div").classes("data-row"):
+                        ui.label(line).classes("text-sm")
+
+        if session.can("admin.settings") or session.can("settings.manage") or session.can("reports.view"):
+            with panel("Database backup", glow=False):
+                ui.label("Snapshot SQLite for DR / handoff (same as cli backup).").classes(
+                    "text-xs text-gray-500 q-mb-sm"
+                )
+
+                def do_backup():
+                    try:
+                        path = backup_database()
+                        ui.notify(f"Backup written: {path}", type="positive")
+                    except Exception as exc:
+                        ui.notify(str(exc), type="negative")
+
+                def do_auto():
+                    try:
+                        r = maybe_run_auto_backup()
+                        if isinstance(r, dict):
+                            ui.notify(r.get("message") or str(r), type="info")
+                        else:
+                            ui.notify(str(r) if r else "Auto-backup checked", type="info")
+                    except Exception as exc:
+                        ui.notify(str(exc), type="negative")
+
+                with ui.row().classes("gap-2"):
+                    ui.button("Run backup now", on_click=do_backup).classes("btn-primary").props(
+                        "no-caps unelevated dense"
+                    )
+                    ui.button("Maybe auto-backup", on_click=do_auto).classes("btn-ghost").props("no-caps outline dense")
+
+    layout("operations", body)

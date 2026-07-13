@@ -1,0 +1,52 @@
+{
+  "ideas": [
+    {
+      "lane": "dashboard_kpis",
+      "idea": "Ctrl+K palette, clickable KPIs, iCal export+legend, bulk reject leave, availability page, 7k hours meter, prefill schedule, period catalog, open-shift digest",
+      "why": "",
+      "added": "2026-07-09T08:49:49.651022+00:00"
+    },
+    {
+      "lane": "deep-improve",
+      "idea": "Notifications inbox, certs admin UI, explainable coverage plan dialog, ops exports CSV/PDF, conflict panel on availability",
+      "why": "",
+      "added": "2026-07-09T08:52:25.656802+00:00"
+    },
+    {
+      "lane": "data_grids",
+      "idea": "NiceGUI AG Grid: themes quartz/balham/material/alpine; dark auto; floating filters (agText/agNumberColumnFilter); pagination; cellClassRules; get_selected_rows; export path via rowData snapshot. Dark ",
+      "why": "https://nicegui.io/documentation/aggrid",
+      "added": "2026-07-09T09:08:00.357915+00:00"
+    },
+    {
+      "lane": "dashboard_kpis",
+      "idea": "2026 admin/NOC dashboards: dark mode is functional for ops floors; alert-first severity colors on dark; KPI row at top; high contrast figures; clickable status chips. Chronos: severity_strip + KPI dee",
+      "why": "https://www.fanruan.com/en/blog/top-admin-dashboard-design-ideas-inspiration",
+      "added": "2026-07-09T09:08:00.749604+00:00"
+    },
+    {
+      "lane": "dashboard_kpis",
+      "idea": "Dashboard anatomy: header/context → KPI cards with weight → status indicators → detail grids. WCAG 4.5:1 text. Severity not only red-green — use cyan info on dark. Applied to Chronos ops severity stri",
+      "why": "https://www.setproduct.com/blog/dashboard-ui-design",
+      "added": "2026-07-09T09:08:01.140617+00:00"
+    },
+    {
+      "lane": "gantt_timeline",
+      "idea": "Bryntum+Timefold blogs: Gantt/timeline for shifts + hard/soft preference solve. Chronos matrix heat board is simpler; keep status legend + sticky officer labels; optional Gantt later.",
+      "why": "https://bryntum.com/blog/planning-employee-shifts-like-a-pro-with-timefold-and-bryntum/",
+      "added": "2026-07-09T09:08:02.394473+00:00"
+    },
+    {
+      "lane": "data_grids",
+      "idea": "NiceGUI AG Grid written as options={columnDefs,rowData,defaultColDef} + theme prop; floatingFilter column defs; run_grid_method for API; get_selected_rows async; update rowData then grid.update(); cel",
+      "why": "https://nicegui.io/documentation/aggrid",
+      "added": "2026-07-09T09:10:26.599845+00:00"
+    },
+    {
+      "lane": "e2e_testing",
+      "idea": "After large Chronos UI growth (finance dual FLSA, leave donation, CP-SAT sim, rank candidates): evaluate for broken imports, duplicate handlers, NiceGUI refresh errors, permission gates. No new UI unt",
+      "why": "",
+      "added": "2026-07-09T09:20:54.318112+00:00"
+    }
+  ]
+}

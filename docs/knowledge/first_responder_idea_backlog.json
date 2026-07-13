@@ -1,0 +1,238 @@
+{
+  "ideas": [
+    {
+      "lane": "self-service",
+      "idea": "Vacancy alerter lite (open-shift-digest), availability/blackouts, bulk leave reject",
+      "why": "learned",
+      "added": "2026-07-09T08:49:50.038335+00:00"
+    },
+    {
+      "lane": "deep-improve",
+      "idea": "Court/leave: explainable approve path; cert band gates UI; vacancy notify + alerts inbox; blackout conflicts",
+      "why": "learned",
+      "added": "2026-07-09T08:52:26.478922+00:00"
+    },
+    {
+      "lane": "ui",
+      "idea": "2026 police scheduling rankings emphasize Aladtec (TCP): shift scheduling, OT requests, cert tracking, communication, time-off, fatigue/coverage-gap alerts, department custom rules, reporting. inTime ",
+      "why": "tcpsoftware.com/articles/police-scheduling-software",
+      "added": "2026-07-09T08:59:34.513449+00:00"
+    },
+    {
+      "lane": "payroll",
+      "idea": "FLSA 7(k): work periods 7-28 consecutive days. LE OT after hours proportional to 171/28 (14-day LE = 86h; 7-day = 43h). Fire proportional to 212/28 (14-day fire = 106h). Not legal advice — product mus",
+      "why": "DOL WHD Fact Sheet #8",
+      "added": "2026-07-09T08:59:34.929990+00:00"
+    },
+    {
+      "lane": "self-service",
+      "idea": "Police shift bidding: officers rank preferred shifts; awards by seniority almost always; annual/semi-annual bid seasons common (e.g. Oct bid for Jan assignments). Products need draft→publish→rank→prev",
+      "why": "inTime + Cedar City + Tacoma PD CBA patterns",
+      "added": "2026-07-09T08:59:35.311632+00:00"
+    },
+    {
+      "lane": "fairness",
+      "idea": "Call-back for vacancies often administered on rotating list regardless of length of callback (ODL). Court time often has minimums (2-3h) when off-duty appearance. Shift incentive differentials (e.g. 3",
+      "why": "municipal CBA patterns (call back rotation)",
+      "added": "2026-07-09T08:59:35.682006+00:00"
+    },
+    {
+      "lane": "payroll",
+      "idea": "Aladtec Extra Hours: officers record unplanned shifts, holdovers, variances, unscheduled OT. Chronos analog: payroll entries + timecard add entry + open shifts; add holdover reason codes and superviso",
+      "why": "EMS1 Aladtec Extra Hours",
+      "added": "2026-07-09T08:59:36.058291+00:00"
+    },
+    {
+      "lane": "scheduling",
+      "idea": "EMS/fire WFM 2026: complex 24/7 rotations (Kelly/Pitman/24-on), multi-station boards, credential gates, OT cost visibility, labor rules. First Due style drag-drop boards and today strip remain UI targ",
+      "why": "recruiterslineup EMS software 2026",
+      "added": "2026-07-09T08:59:36.485100+00:00"
+    },
+    {
+      "lane": "payroll",
+      "idea": "Public-sector officers often elect cash OT vs comp bank per entry or per CBA default. Product needs election toggle on OT lines and clear bank caps. Chronos has Comp Earned vs Overtime Earned codes — ",
+      "why": "public sector OT practices",
+      "added": "2026-07-09T08:59:36.859527+00:00"
+    },
+    {
+      "lane": "agent",
+      "idea": "From dig+research: shipped pay-code CBA UI (callback min, holiday mult), bid participation report + apply preview awards, timecard scope ledger (Extra Hours pattern), roster title rates + period hours",
+      "why": "session dig implement",
+      "added": "2026-07-09T09:01:45.009893+00:00"
+    },
+    {
+      "lane": "self-service",
+      "idea": "Aladtec mobile (TCP App Store): trades/giveaways/swaps, extra-duty requests, OT signup; admins: coverage alerts, min staffing, skills/certs, OT spend, agency comms. Chronos should keep open-shift clai",
+      "why": "https://apps.apple.com/us/app/aladtec-by-tcp/id6736937495",
+      "added": "2026-07-09T09:03:17.767986+00:00"
+    },
+    {
+      "lane": "payroll",
+      "idea": "PowerDMS PowerTime LE: automated rest rules (no back-to-back), CBA rules engine for seniority bidding + fair OT, FLSA/comp tracking autopilot, off-duty special detail management, permanent audit trail",
+      "why": "https://www.powerdms.com/industry/law-enforcement/powertime",
+      "added": "2026-07-09T09:03:18.205161+00:00"
+    },
+    {
+      "lane": "ui",
+      "idea": "InTime top police scheduling features: (1) mobile app access (2) visual dashboard: OT causes, equitable OT, sick leave, fatigue, leave forecasts, agency spend (3) scheduling intelligence with agency r",
+      "why": "https://intime.com/industries/police/top-5-police-scheduling-software-features/",
+      "added": "2026-07-09T09:03:18.609175+00:00"
+    },
+    {
+      "lane": "ui",
+      "idea": "First Due Scheduling: drag-drop shiftboard, multi-day/rotation views, roster count strip, employee center (banks/announcements/call shifts), certifications hub, call-shift rules (sorting, rankings, re",
+      "why": "https://www.firstdue.com/products/schedulingpersonnel",
+      "added": "2026-07-09T09:03:19.019971+00:00"
+    },
+    {
+      "lane": "integration",
+      "idea": "Vector Scheduling LE: mass callback SMS/push, rules-based automation, FLSA OT + accrual, time-off approval routing, open post fill. Pattern: expedite callbacks with multi-channel notify. Chronos: in-a",
+      "why": "https://www.vectorsolutions.com/solutions/vector-scheduling/law-enforcement/",
+      "added": "2026-07-09T09:03:19.421122+00:00"
+    },
+    {
+      "lane": "scheduling",
+      "idea": "Hero Schedule police: OT management, leave, trades, open shifts, FLSA compliance, pay period management, shift bidding. Logic-driven admin for OT/leave/open shifts; officers request TO/OT and see open",
+      "why": "https://heroschedule.com/scheduling/police-departments/",
+      "added": "2026-07-09T09:03:19.817138+00:00"
+    },
+    {
+      "lane": "payroll",
+      "idea": "DOL/FLSA: public safety employees may accrue up to 480 hours comp time (not less than 1.5h banked per OT hour). At cap, additional OT must be cash. Employee must be permitted to use comp time unless u",
+      "why": "https://www.dol.gov/agencies/whd/fact-sheets/8-flsa-police-firefighters",
+      "added": "2026-07-09T09:03:20.211815+00:00"
+    },
+    {
+      "lane": "fairness",
+      "idea": "Snap Schedule police: rotating shifts, OT management, seniority open-shift fill, automated callouts invite via SMS/in-app/voice, time-off + OT workflows, FLSA/shift premium policies, union compliance ",
+      "why": "https://www.snapschedule.com/industry/police-law-enforcement-scheduling/",
+      "added": "2026-07-09T09:03:20.608541+00:00"
+    },
+    {
+      "lane": "payroll",
+      "idea": "Tracwire/SHIFT-class: work-period OT (7/14/28), rest period warnings, OT typed (internal/court/grant/special event), message blast available officers, claim from phone, export to payroll. Chronos shou",
+      "why": "https://www.tracwire.com/law-enforcement-scheduling-software",
+      "added": "2026-07-09T09:03:21.012463+00:00"
+    },
+    {
+      "lane": "agent",
+      "idea": "2026 consensus across Aladtec/inTime/PowerTime/First Due/Vector/Snap/Hero: mobile officer self-service, min staffing + open shifts, seniority/CBA bid + fair OT, rest/fatigue rules, cert gates, court/e",
+      "why": "multi-vendor research 2026-07",
+      "added": "2026-07-09T09:03:21.410888+00:00"
+    },
+    {
+      "lane": "agent",
+      "idea": "Deep dig across Aladtec/PowerTime/inTime/First Due/Vector/Hero/Snap/DOL: deposited 10+ learnings; KB 10 commercial products. Implemented: today roster-count strip + fatigue KPI on dashboard; FLSA 480h",
+      "why": "learned",
+      "added": "2026-07-09T09:05:16.418837+00:00"
+    },
+    {
+      "lane": "math",
+      "idea": "Timefold/Opta employee scheduling: hard vs soft constraints — no overlap, min rest between shifts, max days/week, unavailable; soft: desired/undesired days, load-balance nights (fairness), optional sh",
+      "why": "https://timefold.ai/videos/employee-shift-scheduling-ai-in-python",
+      "added": "2026-07-09T09:07:59.064626+00:00"
+    },
+    {
+      "lane": "math",
+      "idea": "Staffjoy open-source suite (Suite/Chomp/Mobius): algorithm-based publish shifts, cost-aware assignment, mobile companion. Pattern: separate decomposition (chomp) vs assignment (mobius). Chronos uses r",
+      "why": "https://www.staffjoy.com/",
+      "added": "2026-07-09T09:07:59.500252+00:00"
+    },
+    {
+      "lane": "scheduling",
+      "idea": "Auto Shift Planner (Java OSS): rule-based roster with heuristic/metaheuristic, portable no-install UX. Validates product demand for rule-first scheduling without cloud lock-in — Chronos on-prem SQLite",
+      "why": "https://betaiotazeta.github.io/AutoShiftPlanner/",
+      "added": "2026-07-09T09:07:59.952767+00:00"
+    },
+    {
+      "lane": "math",
+      "idea": "GitHub shift-scheduling MIP (Excel in → CSV out) and nurse rostering CP projects: classic data flow roster constraints → solver → export. Chronos already schedule→timecard→CSV/PDF; keep export-first s",
+      "why": "https://github.com/lbiedma/shift-scheduling",
+      "added": "2026-07-09T09:08:01.542138+00:00"
+    },
+    {
+      "lane": "integration",
+      "idea": "CAD/RMS literature (BJA LEITSC, Mark43, Tyler, CivicEye): CAD owns call-for-service real-time; RMS owns case records; WFM owns duty roster. Chronos stays WFM — integrate via exports/webhooks later, no",
+      "why": "https://bja.ojp.gov/sites/g/files/xyckuh186/files/media/document/leitsc_law_enforcement_cad_systems.pdf",
+      "added": "2026-07-09T09:08:01.964012+00:00"
+    },
+    {
+      "lane": "quals",
+      "idea": "D-Wave employee-scheduling example: availability, forecasted demand, manager/trainee pairing. Maps to Chronos cert/FTO pairing idea backlog + min staffing by band.",
+      "why": "https://github.com/dwave-examples/employee-scheduling",
+      "added": "2026-07-09T09:08:02.861197+00:00"
+    },
+    {
+      "lane": "agent",
+      "idea": "Read Staffjoy suite README architecture: Flask+MySQL+Redis; Chomp microservice creates shifts from forecast; Mobius assigns workers under constraints; cron every 60s on internal API; Twilio SMS; worke",
+      "why": "https://github.com/Staffjoy/suite",
+      "added": "2026-07-09T09:10:26.190940+00:00"
+    },
+    {
+      "lane": "scheduling",
+      "idea": "UKG TeleStaff Cloud (ex-Kronos): rules-based automation for fire/EMS/police/sheriff/dispatch/corrections. Modules: centralized static+rotation+daily roster; min-staffing roster alarms; vacancy fill us",
+      "why": "https://www.ukg.com/products/ukg-telestaff",
+      "added": "2026-07-09T09:11:58.112045+00:00"
+    },
+    {
+      "lane": "payroll",
+      "idea": "NEOGOV Time & Attendance/Payroll public sector: work rules engine for OT, meals, differentials; FLSA 7(k); leave donations; timesheet button convert OT→comp; blended rate; lookback OT in payroll modul",
+      "why": "https://www.neogov.com/products/time-and-attendance-software",
+      "added": "2026-07-09T09:11:58.542919+00:00"
+    },
+    {
+      "lane": "payroll",
+      "idea": "Netchex LE/sheriff payroll pattern: dual OT in one run (sworn 7k + civilian 40h); comp 480h public safety / 240h other; specialty assignment pay into regular rate; shift differentials blended for FLSA",
+      "why": "https://netchex.com/blog/payroll-software-sheriffs-offices-law-enforcement/",
+      "added": "2026-07-09T09:11:58.951364+00:00"
+    },
+    {
+      "lane": "scheduling",
+      "idea": "ESO Scheduling: fire/EMS roster inside records ecosystem; call-outs, swaps, PTO; cert+immunization readiness; live unit/station/shift dashboard; open shift bid; sync to Fire RMS/ePCR. Chronos cert gat",
+      "why": "https://www.eso.com/fire/",
+      "added": "2026-07-09T09:11:59.378639+00:00"
+    },
+    {
+      "lane": "fairness",
+      "idea": "TargetSolutions Scheduling / CrewSense / Vector: fire-EMS-police scheduling + OT management + training adjacency; OT equalization; compliance analytics. Complements Vector Scheduling LE callback SMS/p",
+      "why": "https://www.targetsolutions.com/",
+      "added": "2026-07-09T09:11:59.874587+00:00"
+    },
+    {
+      "lane": "payroll",
+      "idea": "eSchedule police software: schedule + automatic timekeeping for regular/OT/PTO; payroll/audit reports. Reinforces schedule→timesheet→payroll single path Chronos is building.",
+      "why": "https://goeschedule.com/police-scheduling-software/",
+      "added": "2026-07-09T09:12:00.380856+00:00"
+    },
+    {
+      "lane": "scheduling",
+      "idea": "ImageTrend Slate: EMS/fire crew scheduling for critical services — availability, assignments, coverage. EMS-first constraint set differs from patrol squad bands.",
+      "why": "https://www.imagetrend.com/platform/scheduling-software/",
+      "added": "2026-07-09T09:12:00.927616+00:00"
+    },
+    {
+      "lane": "agent",
+      "idea": "Expanded KB to 18 commercial products + research_frontiers list (TeleStaff extra duty, NEOGOV leave donation, Netchex dual OT, ESO station posts, ImageTrend EMS, CrewSense OT equity, PeopleSoft 7k, AD",
+      "why": "session deep dive",
+      "added": "2026-07-09T09:12:01.364956+00:00"
+    },
+    {
+      "lane": "agent",
+      "idea": "Built source-eval over 18 products. Implemented from evaluation: TeleStaff extra_duty (open_shift tagged EXTRA_DUTY) ops panel; NEOGOV convert_overtime_to_comp + UI; Netchex dual FLSA settings (dual f",
+      "why": "learned",
+      "added": "2026-07-09T09:15:53.404732+00:00"
+    },
+    {
+      "lane": "agent",
+      "idea": "Closed frontiers: leave donation (table+API+UI), blended OT rate, station/workforce_class on roster, IMM_* immunization types+status UI, extra-duty invoice CSV, ADP payroll pack. Remaining: voice SMS,",
+      "why": "learned",
+      "added": "2026-07-09T09:18:29.123346+00:00"
+    },
+    {
+      "lane": "agent",
+      "idea": "Industry eval themes (do not implement yet): schedule-to-payroll reconciliation is top failure mode; fatigue/rest blocks; dual workforce 7k vs 40h; TeleStaff launch pain is rules config not features; ",
+      "why": "https://netchex.com/blog/payroll-software-sheriffs-offices-law-enforcement/",
+      "added": "2026-07-09T09:20:53.250023+00:00"
+    }
+  ]
+}

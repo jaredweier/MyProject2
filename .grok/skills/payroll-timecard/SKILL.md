@@ -36,13 +36,19 @@ logic.is_future_pay_period(next_start, reference=ref)
 
 Use `tests.helpers.reference_today()` or `TEST_REFERENCE_DATE` instead of `date.today()` in assertions.
 
+## OPEN research (payroll math)
+
+Any public FLSA/comp-time/payroll source is allowed (DOL fact sheets, OPM, municipal policies, vendor marketing math).
+Also: `python dev.py math-domain research-queries "FLSA 7k"` · `fr-domain flsa` · web_search freely.
+Deposit: `math-domain learn` or `fr-domain learn`.
+
 ## Workflow
 
 1. Find slice: `python dev.py slice-map -v` → `payroll-timecard`
-2. Fix validators if input invalid; else `logic/payroll.py`
-3. Wire UI refresh in `ui/payroll_pages.py` after mutations
-4. `python dev.py verify-slice payroll-timecard`
-5. `python dev.py check`
+2. Fix validators if input invalid; else `logic/payroll.py` / `labor_compliance.py` / `banked_time.py`
+3. Wire UI in `gui/pages/finance.py` (primary) or legacy `ui/` only if needed
+4. `python dev.py verify-slice payroll-timecard` or targeted unittests
+5. `python dev.py verify --tier check` before ship
 
 ## Key symbols
 

@@ -3,6 +3,8 @@
 How to get the same quality with **less LLM/API spend** (Cursor, Grok, OpenCode, vision models).
 
 **Master guide (zero Agent usage):** [`ZERO_AGENT_USAGE.md`](ZERO_AGENT_USAGE.md)
+**Research findings + agent ladder (2026-07-09):** [`TOKEN_PERFORMANCE.md`](TOKEN_PERFORMANCE.md) — **agents: read this**
+**Session prompt:** [`NEXT_AGENT_PROMPT.md`](NEXT_AGENT_PROMPT.md)
 
 ## Free tools already in the repo
 

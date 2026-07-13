@@ -1,10 +1,11 @@
 {
   "$schema": "https://opencode.ai/config.json",
   "instructions": [
-    "Dynamic: logs/agent_pack/latest.md | Stable: docs/AGENT_STABLE.md | outline/symbol before full reads",
+    "Bootstrap: logs/agent_kit/latest.md (run: python dev.py agent-kit) | Dynamic: logs/agent_pack/latest.md | Stable: docs/AGENT_STABLE.md",
+    "Mandatory: usage-brief → read-budget → outline/symbol → edit → verify --tier fast; ship: verify --tier check",
     "Context: ephemeral tool results prune after 2 turns; summarize @6000t → logs/context_window/latest_summary.md",
     "Output: compact JSON with schema fields only — dev.py --json, batch-process (see structured_output.py)",
-    "Sufficiency: stop gathering when confident; no extra reads unless contradictory or incomplete"
+    "Sufficiency: stop gathering when confident; no extra reads unless contradictory or incomplete | Hub: docs/AGENT_TOOLKIT.md"
   ],
   "small_model": "fast",
   "compaction": {
@@ -54,8 +55,8 @@
       "subtask": false
     },
     "route-task": {
-      "template": "Run: python dev.py route-task \"$ARGUMENTS\". Follow the printed complexity tier, skill, and model recommendation. Load only the listed skill via @ mention. Any agent/LLM is allowed.",
-      "description": "Route task to best agent/model by complexity",
+      "template": "Run: python dev.py route-task \"$ARGUMENTS\". MUST follow cost_tier, primary_agent, short agent chain (max 3), ui_lane. Caveman replies. OSS/search only if cost_tier is medium+ AND API unknown or user asked research. No vision/flagship for trivial/low/verify. OpenCode agents when needed: ui-static-reviewer | ui-chronos | ui-vision-reviewer | qa-free.",
+      "description": "Route cost+agents (lean)",
       "subtask": false
     },
     "check": {

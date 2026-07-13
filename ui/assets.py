@@ -190,6 +190,43 @@ def _to_ctk_image(pil: Image.Image, size: Tuple[int, int], *, cache_key: Tuple =
     return None
 
 
+def make_monogram_badge(
+    size: Tuple[int, int],
+    initials: str = "PD",
+    *,
+    bg: Tuple[int, int, int] = (31, 111, 235),
+    fg: Tuple[int, int, int] = (240, 243, 247),
+):
+    """Always-available circular monogram when logo.png fails to paint."""
+    from PIL import ImageFont
+
+    w, h = size
+    key = ("monogram", w, h, initials, bg, fg)
+    cached = _cache.get(key)
+    if cached is not None:
+        return cached[0]
+    pil = Image.new("RGBA", (w, h), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(pil)
+    pad = max(1, min(w, h) // 16)
+    draw.ellipse((pad, pad, w - pad - 1, h - pad - 1), fill=bg)
+    text = (initials or "PD")[:2].upper()
+    font_size = max(10, int(min(w, h) * 0.38))
+    try:
+        font = ImageFont.truetype("segoeui.ttf", font_size)
+    except Exception:
+        try:
+            font = ImageFont.truetype("arial.ttf", font_size)
+        except Exception:
+            font = ImageFont.load_default()
+    bbox = draw.textbbox((0, 0), text, font=font)
+    tw, th = bbox[2] - bbox[0], bbox[3] - bbox[1]
+    draw.text(((w - tw) / 2 - bbox[0], (h - th) / 2 - bbox[1]), text, fill=fg, font=font)
+    ctk_img = _to_ctk_image(pil, size, cache_key=key)
+    if ctk_img is not None:
+        _cache[key] = (ctk_img, pil)
+    return ctk_img
+
+
 def load_logo(size: Tuple[int, int], bg: Tuple[int, int, int] = (5, 10, 18)):
     """Department shield logo — trimmed and centered on dark background."""
     import os
@@ -208,6 +245,14 @@ def load_logo(size: Tuple[int, int], bg: Tuple[int, int, int] = (5, 10, 18)):
     if os.environ.get("SCHEDULER_UI_TEST", "").strip() != "1":
         _cache[key] = (ctk_img, pil)
     return ctk_img
+
+
+def load_logo_safe(size: Tuple[int, int], initials: str = "PD", bg: Tuple[int, int, int] = (5, 10, 18)):
+    """Logo or monogram fallback — never None for sidebar/login chrome."""
+    img = load_logo(size, bg=bg)
+    if img is not None:
+        return img
+    return make_monogram_badge(size, initials=initials)
 
 
 def load_team_photo(

@@ -1,4 +1,6 @@
-"""UI theme — modern law-enforcement design system (tokens, fonts, navigation)."""
+"""Design tokens + navigation registry — enterprise LE command center (2026)."""
+
+from __future__ import annotations
 
 import customtkinter as ctk
 
@@ -17,53 +19,54 @@ from config import (
     UI_ACCENT_SUBTLE,
     UI_BG,
     UI_BORDER,
+    UI_BORDER_GLOW,
     UI_NAV_ACTIVE,
     UI_SIDEBAR,
     UI_SURFACE,
+    UI_SURFACE_ELEVATED,
     UI_SURFACE_LIGHT,
     UI_TEXT_MUTED,
     UI_TEXT_PRIMARY,
 )
 
-__all__ = [
-    "FONT_FAMILY",
-    "DODGEVILLE_ACCENT",
-    "DODGEVILLE_BLUE",
-    "DODGEVILLE_DANGER",
-    "DODGEVILLE_GOLD",
-    "DODGEVILLE_RED",
-    "DODGEVILLE_SUCCESS",
-    "DODGEVILLE_WARNING",
-    "UI_ACCENT_GLOW",
-    "UI_ACCENT_SUBTLE",
-    "UI_BG",
-    "UI_BORDER",
-    "UI_NAV_ACTIVE",
-    "SIDEBAR_WIDTH",
-    "UI_SIDEBAR",
-    "UI_SURFACE",
-    "UI_SURFACE_LIGHT",
-    "UI_TEXT_MUTED",
-    "UI_TEXT_PRIMARY",
-]
+# ---------------------------------------------------------------------------
+# Spacing scale (8pt grid — Linear / Mark43 density)
+# ---------------------------------------------------------------------------
+SPACE_1 = 4
+SPACE_2 = 8
+SPACE_3 = 12
+SPACE_4 = 16
+SPACE_5 = 20
+SPACE_6 = 24
+SPACE_8 = 32
 
-# Typography — Segoe UI on Windows; clean hierarchy (no shouty all-caps chrome)
+CORNER_RADIUS = 10
+BTN_RADIUS = 8
+CARD_PAD = SPACE_4
+CONTENT_PAD = SPACE_5
+SIDEBAR_WIDTH = 240
+TOPBAR_HEIGHT = 56
+SUBNAV_HEIGHT = 44
+BTN_HEIGHT_PRIMARY = 36
+BTN_HEIGHT_TOOLBAR = 30
+BTN_HEIGHT_COMPACT = 28
+ACCENT_STRIPE_HEIGHT = 2
+
 FONT_FAMILY = "Segoe UI"
-
 FONT_SPECS = {
-    "display": {"size": 28, "weight": "bold", "family": FONT_FAMILY},
-    "title": {"size": 22, "weight": "bold", "family": FONT_FAMILY},
-    "heading": {"size": 18, "weight": "bold", "family": FONT_FAMILY},
-    "subheading": {"size": 15, "weight": "bold", "family": FONT_FAMILY},
-    "body": {"size": 14, "family": FONT_FAMILY},
-    "small": {"size": 12, "family": FONT_FAMILY},
-    "stat_value": {"size": 26, "weight": "bold", "family": FONT_FAMILY},
-    "stat_label": {"size": 11, "family": FONT_FAMILY},
-    "nav": {"size": 13, "weight": "normal", "family": FONT_FAMILY},
-    "nav_section": {"size": 10, "weight": "bold", "family": FONT_FAMILY},
+    "display": {"size": 26, "weight": "bold", "family": FONT_FAMILY},
+    "title": {"size": 20, "weight": "bold", "family": FONT_FAMILY},
+    "heading": {"size": 16, "weight": "bold", "family": FONT_FAMILY},
+    "subheading": {"size": 13, "weight": "bold", "family": FONT_FAMILY},
+    "body": {"size": 13, "family": FONT_FAMILY},
+    "small": {"size": 11, "family": FONT_FAMILY},
+    "micro": {"size": 9, "weight": "bold", "family": FONT_FAMILY},
+    "stat_value": {"size": 28, "weight": "bold", "family": FONT_FAMILY},
+    "stat_label": {"size": 10, "family": FONT_FAMILY},
+    "nav": {"size": 13, "family": FONT_FAMILY},
+    "nav_section": {"size": 9, "weight": "bold", "family": FONT_FAMILY},
     "mono": {"size": 11, "family": "Consolas"},
 }
-
 _font_cache: dict = {}
 
 
@@ -84,10 +87,6 @@ STATUS_COLORS = {
     "Rejected": DODGEVILLE_DANGER,
     "Active": DODGEVILLE_SUCCESS,
     "Inactive": "#64748B",
-    "Auto OK": DODGEVILLE_SUCCESS,
-    "Needs Review": DODGEVILLE_WARNING,
-    "Open": DODGEVILLE_WARNING,
-    "Filled": UI_TEXT_MUTED,
     "Working": DODGEVILLE_SUCCESS,
     "Off": "#64748B",
     "Bumped": DODGEVILLE_WARNING,
@@ -109,6 +108,25 @@ SCHEDULE_STATUS_LABELS = {
     "leave": "Leave",
 }
 
+# Page keys must remain stable for smoke/tests
+NAV_ITEMS = [
+    ("dashboard", "Dashboard", ""),
+    ("base_schedule", "Original monthly", ""),
+    ("live_schedule", "Live schedule", ""),
+    ("timecard", "Timecard", ""),
+    ("banked_time", "Banked time", ""),
+    ("timeline", "Timeline", ""),
+    ("requests", "Time off", ""),
+    ("swaps", "Shift exchange", ""),
+    ("notifications", "Alerts", ""),
+    ("officers", "Patrol roster", ""),
+    ("payroll", "Payroll ledger", ""),
+    ("simulator", "Simulator", ""),
+    ("reports", "Ops reports", ""),
+    ("availability", "Blackout dates", ""),
+    ("users", "Access control", ""),
+]
+
 NAV_PERMISSIONS = {
     "officers": "officers.manage",
     "simulator": "simulator.use",
@@ -116,66 +134,43 @@ NAV_PERMISSIONS = {
     "users": ("users.manage", "users.edit_role"),
 }
 
-# Page registry (labels without emoji — icons handled in NavButton)
-NAV_ITEMS = [
-    ("dashboard", "Dashboard", ""),
-    ("base_schedule", "Original Monthly Schedule", ""),
-    ("live_schedule", "Live Schedule", ""),
-    ("timecard", "Timecard", ""),
-    ("banked_time", "Banked Time", ""),
-    ("timeline", "Duty Timeline", ""),
-    ("requests", "Time Off", ""),
-    ("swaps", "Shift Exchange", ""),
-    ("notifications", "Alerts", ""),
-    ("officers", "Patrol Roster", ""),
-    ("payroll", "Payroll Ledger", ""),
-    ("simulator", "Schedule Simulator", ""),
-    ("reports", "Ops Reports", ""),
-    ("availability", "Blackout Dates", ""),
-    ("users", "Access Control", ""),
-]
-
 NAV_HUBS: dict[str, dict] = {
     "schedules": {
         "label": "Schedules",
-        "icon": "",
         "default": "base_schedule",
         "pages": ("base_schedule", "live_schedule", "timeline"),
         "tabs": (
-            ("base_schedule", "Original Monthly"),
-            ("live_schedule", "Live Schedule"),
+            ("base_schedule", "Original monthly"),
+            ("live_schedule", "Live schedule"),
             ("timeline", "Timeline"),
         ),
     },
     "leave": {
-        "label": "Leave & Swaps",
-        "icon": "",
+        "label": "Leave & swaps",
         "default": "requests",
         "pages": ("requests", "swaps"),
         "tabs": (
-            ("requests", "Time Off"),
-            ("swaps", "Shift Exchange"),
+            ("requests", "Time off"),
+            ("swaps", "Shift exchange"),
         ),
     },
     "payroll_hub": {
         "label": "Payroll",
-        "icon": "",
         "default": "timecard",
         "pages": ("timecard", "banked_time", "payroll"),
         "tabs": (
             ("timecard", "Timecard"),
-            ("banked_time", "Banked Time"),
+            ("banked_time", "Banked time"),
             ("payroll", "Ledger"),
         ),
     },
     "operations": {
         "label": "Operations",
-        "icon": "",
         "default": "reports",
         "pages": ("reports", "availability"),
         "tabs": (
             ("reports", "Reports"),
-            ("availability", "Blackout Dates"),
+            ("availability", "Blackout dates"),
         ),
     },
 }
@@ -186,46 +181,46 @@ SIDEBAR_NAV = [
     ("section", "Scheduling"),
     ("schedules", "Schedules", ""),
     ("simulator", "Simulator", ""),
-    ("leave", "Leave & Swaps", ""),
+    ("leave", "Leave & swaps", ""),
     ("section", "People"),
     ("officers", "Roster", ""),
     ("section", "Finance"),
     ("payroll_hub", "Payroll", ""),
     ("section", "Administration"),
     ("operations", "Operations", ""),
-    ("users", "Access Control", ""),
+    ("users", "Access control", ""),
 ]
 
 PAGE_SUBTITLES = {
-    "dashboard": "Today's watch, alerts, and pending actions",
-    "base_schedule": "Rotation plan from squad and shift assignments",
-    "live_schedule": "Live schedule with time off, bumps, swaps, and coverage",
-    "timecard": "Biweekly pay period time entry",
-    "banked_time": "Comp, sick, and holiday banks with FLSA tracking",
-    "timeline": "14-day duty timeline by officer and squad",
-    "requests": "Submit time off, preview coverage, and review history",
-    "swaps": "Exchange shifts between officers on the same duty day",
-    "notifications": "Alerts for requests, swaps, and coverage events",
-    "officers": "Photos, ranks, pay rates, and time banks",
-    "payroll": "Biweekly pay period timesheets and ledger",
-    "simulator": "Model rotations and staffing before publishing",
-    "reports": "Coverage, overtime, labor cost, and exports",
-    "availability": "Officer blackout dates and department holidays",
-    "users": "Logins, roles, and password management",
+    "dashboard": "Today's watch, alerts, and next actions",
+    "base_schedule": "Rotation plan fixed after generation",
+    "live_schedule": "Live coverage with time off, bumps, and swaps",
+    "timecard": "Biweekly pay-period time entry",
+    "banked_time": "Comp, sick, and holiday banks",
+    "timeline": "14-day duty timeline by officer",
+    "requests": "Submit and review time off with coverage plans",
+    "swaps": "Exchange shifts on the same duty day",
+    "notifications": "Alerts for coverage and requests",
+    "officers": "Roster, ranks, and assignments",
+    "payroll": "Pay period ledger and stubs",
+    "simulator": "Model staffing before you publish",
+    "reports": "Coverage, overtime, and exports",
+    "availability": "Blackout dates and holidays",
+    "users": "Logins, roles, and passwords",
 }
 
 OFFICER_PAGE_SUBTITLES = {
-    "dashboard": "Your rotation, requests, and alerts at a glance",
-    "base_schedule": "Original monthly plan — your scheduled days are highlighted",
-    "live_schedule": "Your live schedule with time off, bumps, and swaps",
+    "dashboard": "Your rotation, requests, and alerts",
+    "base_schedule": "Your scheduled days on the monthly plan",
+    "live_schedule": "Your live schedule with changes",
     "timeline": "Your 14-day shift timeline",
-    "requests": "Submit and track your time off requests",
-    "swaps": "Request and manage shift exchanges",
-    "notifications": "Alerts for your requests and coverage",
-    "timecard": "Your biweekly pay period time entries",
-    "banked_time": "Your comp, sick, and holiday bank balances",
-    "payroll": "Your biweekly pay period totals",
-    "availability": "Mark blackout dates and view holidays",
+    "requests": "Submit and track time off",
+    "swaps": "Request shift exchanges",
+    "notifications": "Your alerts",
+    "timecard": "Your biweekly time entries",
+    "banked_time": "Your bank balances",
+    "payroll": "Your pay period totals",
+    "availability": "Your blackout dates",
 }
 
 UI_TEXT_LIGHT = UI_TEXT_PRIMARY
@@ -233,29 +228,31 @@ UI_TEXT_ACCENT = UI_ACCENT_GLOW
 UI_NAV_TEXT = UI_TEXT_PRIMARY
 UI_PHOTO_BG = "#0A0D12"
 BRAND_PHOTO_BORDER = UI_BORDER
-
-CORNER_RADIUS = 10
-CARD_PAD = 18
-CONTENT_PAD = 24
-SUBNAV_HEIGHT = 40
-TOPBAR_HEIGHT = 56
-BTN_HEIGHT_PRIMARY = 38
-BTN_HEIGHT_TOOLBAR = 32
-BTN_HEIGHT_COMPACT = 28
-BTN_RADIUS = 6
-SIDEBAR_WIDTH = 220
-ACCENT_STRIPE_HEIGHT = 1
 TACTICAL_STRIPE_GOLD_HEIGHT = 0
 
 
-def tactical_stripe(parent, *, side="top", pack_kwargs=None) -> None:
-    """Subtle separator — replaces legacy dual cyan/gold bars across the app."""
+def tactical_stripe(parent, *, side="top", pack_kwargs=None, color=None) -> None:
     pack_kwargs = pack_kwargs or {}
     pack_kwargs.setdefault("fill", "x")
-    ctk.CTkFrame(parent, fg_color=UI_BORDER, height=1, corner_radius=0).pack(
-        side=side,
-        **pack_kwargs,
+    ctk.CTkFrame(
+        parent,
+        fg_color=color or UI_BORDER_GLOW,
+        height=ACCENT_STRIPE_HEIGHT,
+        corner_radius=0,
+    ).pack(side=side, **pack_kwargs)
+
+
+def micro_label(parent, text: str, *, color=None, **pack):
+    lbl = ctk.CTkLabel(
+        parent,
+        text=(text or "").upper(),
+        font=font("micro"),
+        text_color=color or UI_ACCENT_GLOW,
+        anchor="w",
     )
+    if pack:
+        lbl.pack(**pack)
+    return lbl
 
 
 def hub_for_page(page_key: str) -> str | None:
@@ -279,3 +276,39 @@ def resolve_nav_target(key: str) -> str:
     if key in NAV_HUBS:
         return NAV_HUBS[key]["default"]
     return key
+
+
+__all__ = [
+    "FONT_FAMILY",
+    "DODGEVILLE_ACCENT",
+    "DODGEVILLE_BLUE",
+    "DODGEVILLE_DANGER",
+    "DODGEVILLE_GOLD",
+    "DODGEVILLE_RED",
+    "DODGEVILLE_SUCCESS",
+    "DODGEVILLE_WARNING",
+    "UI_ACCENT_GLOW",
+    "UI_ACCENT_SUBTLE",
+    "UI_BG",
+    "UI_BORDER",
+    "UI_BORDER_GLOW",
+    "UI_NAV_ACTIVE",
+    "UI_SIDEBAR",
+    "UI_SURFACE",
+    "UI_SURFACE_ELEVATED",
+    "UI_SURFACE_LIGHT",
+    "UI_TEXT_MUTED",
+    "UI_TEXT_PRIMARY",
+    "SIDEBAR_WIDTH",
+    "font",
+    "NAV_ITEMS",
+    "NAV_HUBS",
+    "NAV_PERMISSIONS",
+    "SIDEBAR_NAV",
+    "PAGE_SUBTITLES",
+    "OFFICER_PAGE_SUBTITLES",
+    "STATUS_COLORS",
+    "hub_for_page",
+    "page_title",
+    "resolve_nav_target",
+]

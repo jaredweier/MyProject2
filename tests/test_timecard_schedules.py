@@ -122,7 +122,8 @@ class TimecardScheduleTests(unittest.TestCase):
         with test_database():
             import logic
 
-            result = logic.search_pay_period_by_date("05-07-2026")
+            # US M/D or ISO — query a date inside the period ending 2026-07-05
+            result = logic.search_pay_period_by_date("2026-07-05")
             self.assertTrue(result["success"], result.get("message"))
             self.assertEqual(result["period_start"], "2026-06-22")
             self.assertEqual(result["period_end"], "2026-07-05")

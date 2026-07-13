@@ -62,8 +62,17 @@ def _suggestions(*, apply_fix: bool) -> tuple[List[str], List[str]]:
         if pattern not in ignore:
             actions.append(f"Consider adding `{pattern}` to .cursorignore")
 
+    agents = agents or _read("AGENTS.md")
+    if agents and "agent-kit" not in agents:
+        notes.append("AGENTS.md should mention `python dev.py agent-kit` as free bootstrap")
+
+    kit_skill = os.path.join(ROOT, ".grok", "skills", "token-discipline", "SKILL.md")
+    if not os.path.isfile(kit_skill):
+        actions.append("Missing token-discipline skill — restore .grok/skills/token-discipline/SKILL.md")
+
     if not actions:
         notes.append("No new high-impact gaps — re-run after adding large files or prompt bloat.")
+        notes.append("Session tip: python dev.py agent-kit --slice <id> before any large reads")
 
     return actions, notes
 

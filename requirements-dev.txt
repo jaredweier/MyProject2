@@ -5,3 +5,8 @@ pyspellchecker>=0.8
 pre-commit>=4.0
 pip-audit>=2.7
 codespell>=2.3
+
+# Optional math / E2E / property testing (not required for ship gate)
+# ortools>=9.10
+# playwright>=1.40
+# hypothesis>=6.100

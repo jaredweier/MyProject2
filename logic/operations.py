@@ -295,6 +295,81 @@ def create_open_shift(
         conn.close()
 
 
+def rank_open_shift_candidates(shift_id: int, *, limit: int = 12) -> Dict:
+    """
+    TeleStaff-style vacancy ranking: certs + rest + fatigue/OT equity + junior-first.
+
+    Does not fill — returns ordered candidates for supervisor/self-service.
+    """
+    from logic.analytics import get_equitable_ot_ledger
+    from logic.certifications import officer_meets_shift_cert_requirements
+    from logic.officers import get_officers_by_seniority
+    from validators import parse_date
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM open_shifts WHERE id = ? AND status = 'open'", (shift_id,))
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return {"success": False, "message": "Open shift not found", "candidates": []}
+    shift = dict(row)
+    try:
+        as_of = parse_date(shift["shift_date"])
+    except Exception:
+        return {"success": False, "message": "Invalid shift date", "candidates": []}
+
+    ot_by: Dict[int, float] = {}
+    try:
+        for r in (get_equitable_ot_ledger(as_of) or {}).get("ledger") or []:
+            if isinstance(r, dict) and r.get("officer_id") is not None:
+                ot_by[int(r["officer_id"])] = float(r.get("ot_hours") or 0)
+    except Exception:
+        pass
+
+    squad = shift.get("squad")
+    station = (shift.get("station") or "").strip()
+    candidates = []
+    for o in get_officers_by_seniority():
+        if o.get("active") != 1:
+            continue
+        if squad and o.get("squad") and o.get("squad") != squad:
+            continue
+        # Prefer same station when vacancy is station-scoped (ESO multi-post pattern)
+        oid = o["id"]
+        try:
+            cert_ok, _ = officer_meets_shift_cert_requirements(oid, shift["shift_start"], as_of)
+        except Exception:
+            cert_ok = False
+        if not cert_ok:
+            continue
+        rank = int(o.get("seniority_rank") or 0)
+        ot_h = ot_by.get(oid, 0.0)
+        station_bonus = 5.0 if station and (o.get("station") or "").strip() == station else 0.0
+        # Prefer junior (higher rank number) and lower OT (TeleStaff fatigue)
+        score = rank * 10.0 + max(0.0, 40.0 - min(ot_h, 40.0)) * 2.0 + station_bonus
+        candidates.append(
+            {
+                "officer_id": oid,
+                "officer_name": o.get("name"),
+                "squad": o.get("squad"),
+                "seniority_rank": rank,
+                "ot_hours": round(ot_h, 2),
+                "score": round(score, 2),
+                "station": o.get("station") or "",
+            }
+        )
+    candidates.sort(key=lambda c: (-c["score"], c["officer_id"]))
+    return {
+        "success": True,
+        "shift_id": shift_id,
+        "shift_date": shift.get("shift_date"),
+        "shift_start": shift.get("shift_start"),
+        "candidates": candidates[:limit],
+        "count": min(len(candidates), limit),
+    }
+
+
 def fill_open_shift(shift_id: int, officer_id: int, user_id: Optional[int] = None) -> Dict:
     from logic.certifications import officer_meets_shift_cert_requirements
     from logic.requests import _notify_open_shift_filled

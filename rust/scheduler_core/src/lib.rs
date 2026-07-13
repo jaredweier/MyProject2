@@ -433,6 +433,11 @@ fn suggest_bump_chain(
                     .extract()
                     .unwrap_or(true),
                 job_title: optional_string(d, "job_title"),
+                // get_item → Option; must flatten before extract (was always 9999).
+                seniority_rank: match d.get_item("seniority_rank") {
+                    Ok(Some(v)) => v.extract().unwrap_or(9999),
+                    _ => 9999,
+                },
             }
         })
         .collect();

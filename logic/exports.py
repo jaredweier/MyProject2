@@ -159,6 +159,95 @@ def export_payroll_csv(
     return _export(period_start, officer_id, output_path)
 
 
+def export_adp_payroll_pack(
+    period_start: Optional[date] = None,
+    output_path: Optional[str] = None,
+) -> Dict:
+    """
+    ADP/Paychex-style flat file handoff: employee id, name, earn code, hours, rate, amount.
+
+    Field names follow common municipal import templates (not vendor-certified).
+    """
+    import csv
+    from datetime import datetime
+    from pathlib import Path
+
+    from logic.officers import get_officer_by_id
+    from logic.payroll import blended_regular_rate, get_pay_period, get_payroll_entries
+    from validators import format_date
+
+    start, end = get_pay_period(period_start)
+    entries = get_payroll_entries(limit=2000, period_start=start) or []
+    root = Path(__file__).resolve().parent.parent
+    out = (
+        Path(output_path)
+        if output_path
+        else root / "exports" / (f"adp_payroll_pack_{start.isoformat()}_{datetime.now().strftime('%H%M%S')}.csv")
+    )
+    out.parent.mkdir(parents=True, exist_ok=True)
+    fields = [
+        "Co Code",
+        "Batch ID",
+        "File #",
+        "Employee Name",
+        "Workforce Class",
+        "Station",
+        "Earn Code",
+        "Hours",
+        "Rate",
+        "Amount",
+        "Temp Rate",
+        "Period Start",
+        "Period End",
+        "Entry Date",
+        "Notes",
+    ]
+    batch = f"CHRONOS{start.strftime('%Y%m%d')}"
+    with out.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for e in entries:
+            if not isinstance(e, dict):
+                continue
+            oid = e.get("officer_id")
+            officer = get_officer_by_id(oid) if oid else {}
+            base = float((officer or {}).get("pay_rate") or 0)
+            hours = float(e.get("hours") or 0)
+            rate = blended_regular_rate(
+                base,
+                night_differential_hours=float(e.get("night_differential_hours") or 0),
+                total_hours=max(hours, 1.0),
+                night_differential_rate=float((officer or {}).get("night_differential_rate") or 1.0),
+            )
+            w.writerow(
+                {
+                    "Co Code": "DODGEVILLE",
+                    "Batch ID": batch,
+                    "File #": oid,
+                    "Employee Name": e.get("officer_name") or (officer or {}).get("name"),
+                    "Workforce Class": (officer or {}).get("workforce_class") or "sworn",
+                    "Station": (officer or {}).get("station") or "",
+                    "Earn Code": e.get("entry_type"),
+                    "Hours": hours,
+                    "Rate": rate,
+                    "Amount": e.get("calculated_pay"),
+                    "Temp Rate": "",
+                    "Period Start": start.isoformat(),
+                    "Period End": end.isoformat(),
+                    "Entry Date": e.get("entry_date"),
+                    "Notes": (e.get("notes") or "")[:80],
+                }
+            )
+    return {
+        "success": True,
+        "path": str(out),
+        "count": len(entries),
+        "period_start": start.isoformat(),
+        "period_end": end.isoformat(),
+        "message": f"ADP-style pack: {len(entries)} row(s) · {format_date(start)}–{format_date(end)}",
+    }
+
+
 def export_payroll_pdf(
     officer_id: Optional[int] = None,
     period_start: Optional[date] = None,

@@ -20,6 +20,7 @@ pub struct OfficerFull {
     pub shift_end: String,
     pub active: bool,
     pub job_title: String,
+    pub seniority_rank: i32,
 }
 
 fn is_night_shift(shift_start: &str) -> bool {
@@ -188,7 +189,8 @@ fn find_replacement(
                 )
         })
         .collect();
-    candidates.sort_by_key(|o| o.id);
+    // Junior bumps first — higher seniority_rank = more junior (matches Python).
+    candidates.sort_by(|a, b| b.seniority_rank.cmp(&a.seniority_rank).then(a.id.cmp(&b.id)));
 
     let mut result = ReplacementSearch {
         on_duty: None,
@@ -479,6 +481,27 @@ pub fn suggest_bump_chain_py(
                     chain,
                     None,
                 );
+            }
+            let coverage_excluded: HashSet<i64> = chain
+                .iter()
+                .flat_map(|(orig, repl_id)| [*orig, *repl_id])
+                .chain(std::iter::once(original_officer_id))
+                .collect();
+            if shift_retains_coverage_after_bump(
+                current_id,
+                &current_shift,
+                squad,
+                &officers,
+                &day_context,
+                &coverage_excluded,
+                &shift_bands,
+            ) {
+                let primary_name = officers
+                    .iter()
+                    .find(|o| o.id == chain[0].1)
+                    .map(|o| o.name.as_str());
+                let msg = format!("Auto-approve ready — {} assignment(s)", chain.len());
+                return dict_result(py, true, &msg, false, None, steps, chain, primary_name);
             }
             let msg = format!(
                 "Cascade incomplete — no cover for {}'s {} shift after earlier assignments",

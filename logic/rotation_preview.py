@@ -156,9 +156,12 @@ def build_shift_bid_option_calendar(
         is_on = bool(cycle[cycle_idx])
         if is_on:
             on_count += 1
+        from validators import format_date
+
         days.append(
             {
-                "date": current.isoformat(),
+                "date": current.isoformat(),  # storage key (ISO)
+                "date_display": format_date(current),  # UI M/D/YY e.g. 7/9/26
                 "day": current.day,
                 "month": current.month,
                 "year": current.year,
@@ -166,6 +169,8 @@ def build_shift_bid_option_calendar(
                 "on": is_on,
             }
         )
+
+    from validators import format_date as _fmt
 
     return {
         "success": True,
@@ -175,6 +180,8 @@ def build_shift_bid_option_calendar(
         "pattern_label": pattern["label"],
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
+        "start_date_display": _fmt(start),
+        "end_date_display": _fmt(end),
         "weeks": weeks,
         "on_count": on_count,
         "off_count": total_days - on_count,

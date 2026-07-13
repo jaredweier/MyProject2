@@ -34,6 +34,11 @@ Scheduling math: `logic/rust_bridge.py` → `scheduler_core` (Rust). Emergency: 
 5. Insert `schedule_overrides`, update request status
 6. Notify requester and replacement officer (`create_notification`)
 
+## Agent knowledge map (graphify)
+
+Prefer `graphify query` / `path` / `explain` against `graphify-out/graph.json` before bulk-reading modules.
+Refresh: `graphify extract . --code-only`. Overview: `graphify-out/GRAPH_REPORT.md`. See `AGENTS.md`.
+
 ## Verification
 
 Ship gate: `python dev.py verify --tier check` · Release: `verify --tier full`

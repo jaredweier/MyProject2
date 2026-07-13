@@ -9,16 +9,73 @@ from logic.users import log_audit_action
 from validators import parse_date, storage_date_str
 
 
-def list_certification_types(*, active_only: bool = True) -> List[Dict]:
+def list_certification_types(
+    *,
+    active_only: bool = True,
+    category: Optional[str] = None,
+) -> List[Dict]:
     conn = get_connection()
     cursor = conn.cursor()
+    clauses = []
+    params: List = []
     if active_only:
-        cursor.execute("SELECT * FROM certification_types WHERE active = 1 ORDER BY name")
-    else:
-        cursor.execute("SELECT * FROM certification_types ORDER BY name")
+        clauses.append("active = 1")
+    if category:
+        clauses.append("category = ?")
+        params.append(category)
+    where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+    try:
+        cursor.execute(f"SELECT * FROM certification_types{where} ORDER BY name", params)
+    except Exception:
+        # Pre-migration DBs without category
+        cursor.execute(
+            "SELECT * FROM certification_types" + (" WHERE active = 1" if active_only else "") + " ORDER BY name"
+        )
     rows = [dict(r) for r in cursor.fetchall()]
     conn.close()
     return rows
+
+
+def list_immunization_types(*, active_only: bool = True) -> List[Dict]:
+    """ESO-style medical readiness types (category=immunization)."""
+    return list_certification_types(active_only=active_only, category="immunization")
+
+
+def officer_immunization_status(officer_id: int, as_of: Optional[date] = None) -> Dict:
+    """Summary of immunization/medical readiness for roster gates."""
+    as_of = as_of or date.today()
+    types = list_immunization_types(active_only=True)
+    by_type = {c.get("cert_type_id"): c for c in get_officer_certifications(officer_id)}
+    rows = []
+    missing = 0
+    expired = 0
+    for t in types:
+        tid = t["id"]
+        rec = by_type.get(tid)
+        if not rec:
+            rows.append({"code": t.get("code"), "name": t.get("name"), "status": "missing"})
+            missing += 1
+            continue
+        ok = _cert_is_valid(rec, as_of)
+        st = "valid" if ok else "expired"
+        if not ok:
+            expired += 1
+        rows.append(
+            {
+                "code": t.get("code"),
+                "name": t.get("name"),
+                "status": st,
+                "expires_date": rec.get("expires_date"),
+            }
+        )
+    return {
+        "success": True,
+        "officer_id": officer_id,
+        "missing": missing,
+        "expired": expired,
+        "ok": missing == 0 and expired == 0,
+        "items": rows,
+    }
 
 
 def get_officer_certifications(officer_id: int) -> List[Dict]:

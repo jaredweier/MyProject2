@@ -225,6 +225,56 @@ def get_equitable_ot_ledger(period_start: Optional[date] = None) -> Dict:
         else:
             row["fairness"] = "balanced"
 
+    # Dual ledger: hours offered (open-shift fills + callbacks) vs worked OT
+    # CrewSense / Snap equity pattern — grievance defense
+    offered_by: Dict[int, float] = {}
+    try:
+        from database import get_connection
+
+        start = sheets.get("period_start")
+        end = sheets.get("period_end")
+        conn = get_connection()
+        cur = conn.cursor()
+        if start and end:
+            cur.execute(
+                """
+                SELECT filled_by_officer_id, COUNT(*) AS n
+                FROM open_shifts
+                WHERE status = 'filled'
+                  AND shift_date >= ? AND shift_date <= ?
+                  AND filled_by_officer_id IS NOT NULL
+                GROUP BY filled_by_officer_id
+                """,
+                (start, end),
+            )
+            for row in cur.fetchall():
+                # approximate 1 fill ≈ 1 opportunity unit (not clock hours)
+                offered_by[int(row[0])] = float(row[1] or 0) * 8.0
+            try:
+                cur.execute(
+                    """
+                    SELECT officer_id, COUNT(*) FROM callback_events
+                    WHERE event_date >= ? AND event_date <= ?
+                    GROUP BY officer_id
+                    """,
+                    (start, end),
+                )
+                for row in cur.fetchall():
+                    oid = int(row[0])
+                    offered_by[oid] = offered_by.get(oid, 0.0) + float(row[1] or 0) * 4.0
+            except Exception:
+                pass
+        conn.close()
+    except Exception:
+        offered_by = {}
+
+    for row in ledger:
+        offered = offered_by.get(row["officer_id"], 0.0)
+        row["hours_offered"] = round(offered, 2)
+        row["hours_worked_ot"] = row["ot_hours"]
+        # opportunity equity: offered opportunities vs OT load
+        row["opportunity_gap"] = round(offered - row["ot_hours"], 2)
+
     ledger.sort(key=lambda r: (-r["ot_hours"], r["officer_name"]))
     dept_total = round(sum(r["ot_hours"] for r in ledger), 2)
     dept_avg = round(dept_total / len(ledger), 2) if ledger else 0.0
@@ -237,6 +287,7 @@ def get_equitable_ot_ledger(period_start: Optional[date] = None) -> Dict:
         "department_ot_total": dept_total,
         "department_ot_avg": dept_avg,
         "squad_averages": squad_avg,
+        "dual_ledger": True,
     }
 
 
@@ -262,7 +313,6 @@ def get_hours_watch(
         le_weekly_threshold = FLSA_LE_WEEKLY_THRESHOLD
 
     period_warn = period_threshold * FLSA_HOURS_WARN_PCT
-    weekly_warn = weekly_threshold * FLSA_HOURS_WARN_PCT
     le_weekly_warn = le_weekly_threshold * FLSA_HOURS_WARN_PCT
 
     sheets = get_payroll_period_timesheets(period_start)
@@ -287,6 +337,17 @@ def get_hours_watch(
     week_hours_map = {row["officer_id"]: row["week_hours"] or 0.0 for row in cursor.fetchall()}
     conn.close()
 
+    # Dual workforce (Netchex): civilians use weekly 40h-style thresholds, not LE 7(k)
+    try:
+        from logic.labor_compliance import get_flsa_settings
+
+        flsa_cfg = get_flsa_settings() or {}
+        dual_on = bool(flsa_cfg.get("dual_workforce"))
+        civ_weekly = float(flsa_cfg.get("civilian_weekly_threshold") or weekly_threshold)
+    except Exception:
+        dual_on = False
+        civ_weekly = weekly_threshold
+
     warnings = []
     for officer in get_officers_by_seniority():
         if not is_officer_active(officer):
@@ -299,25 +360,32 @@ def get_hours_watch(
         issues = []
         severity = None
         flsa_207k_hours = None
+        is_civilian = dual_on and str(officer.get("workforce_class") or "sworn").lower() == "civilian"
+        off_weekly = civ_weekly if is_civilian else weekly_threshold
+        off_weekly_warn = off_weekly * FLSA_HOURS_WARN_PCT
         if period_hours >= period_threshold:
             issues.append(f"pay period {period_hours:.1f}h ≥ {period_threshold:.0f}h")
             severity = "critical"
         elif period_hours >= period_warn:
             issues.append(f"pay period {period_hours:.1f}h approaching {period_threshold:.0f}h")
             severity = severity or "warning"
-        if week_hours >= weekly_threshold:
-            issues.append(f"work week {week_hours:.1f}h ≥ {weekly_threshold:.0f}h FLSA")
+        if week_hours >= off_weekly:
+            label = "civilian weekly" if is_civilian else "FLSA weekly"
+            issues.append(f"work week {week_hours:.1f}h ≥ {off_weekly:.0f}h {label}")
             severity = "critical"
-        elif week_hours >= weekly_warn:
-            issues.append(f"work week {week_hours:.1f}h approaching {weekly_threshold:.0f}h FLSA")
+        elif week_hours >= off_weekly_warn:
+            label = "civilian weekly" if is_civilian else "FLSA weekly"
+            issues.append(f"work week {week_hours:.1f}h approaching {off_weekly:.0f}h {label}")
             severity = severity or "warning"
-        if week_hours >= le_weekly_threshold:
-            issues.append(f"work week {week_hours:.1f}h ≥ {le_weekly_threshold:.0f}h LE §207(k) weekly")
-            severity = "critical"
-        elif week_hours >= le_weekly_warn:
-            issues.append(f"work week {week_hours:.1f}h approaching {le_weekly_threshold:.0f}h LE weekly")
-            severity = severity or "warning"
-        if FLSA_207K_ENABLED:
+        # LE §207(k) weekly probe only for sworn (or when dual off)
+        if not is_civilian:
+            if week_hours >= le_weekly_threshold:
+                issues.append(f"work week {week_hours:.1f}h ≥ {le_weekly_threshold:.0f}h LE §207(k) weekly")
+                severity = "critical"
+            elif week_hours >= le_weekly_warn:
+                issues.append(f"work week {week_hours:.1f}h approaching {le_weekly_threshold:.0f}h LE weekly")
+                severity = severity or "warning"
+        if FLSA_207K_ENABLED and not is_civilian:
             from logic.labor_compliance import get_flsa_207k_status
 
             flsa_207k = get_flsa_207k_status(oid)
@@ -337,8 +405,9 @@ def get_hours_watch(
                     "period_hours": round(period_hours, 2),
                     "week_hours": round(week_hours, 2),
                     "period_threshold": period_threshold,
-                    "weekly_threshold": weekly_threshold,
-                    "le_weekly_threshold": le_weekly_threshold,
+                    "weekly_threshold": off_weekly,
+                    "le_weekly_threshold": le_weekly_threshold if not is_civilian else None,
+                    "workforce_class": "civilian" if is_civilian else "sworn",
                     "flsa_207k_hours": flsa_207k_hours,
                     "message": "; ".join(issues),
                     "severity": severity,

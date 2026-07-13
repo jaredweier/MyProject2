@@ -2,7 +2,7 @@
 Day-off requests, shift swaps, and in-app notifications.
 """
 
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from config import REQUEST_STATUS, is_high_risk_night, logger
 from database import get_connection
@@ -512,6 +512,8 @@ def process_day_off_request(
     action: str = "approve",
     admin_notes: str = "",
     actor_user_id: Optional[int] = None,
+    *,
+    preferred_chain: Optional[List[Tuple[int, int]]] = None,
 ) -> ProcessRequestResult:
     conn = get_connection()
     cursor = conn.cursor()
@@ -558,33 +560,65 @@ def process_day_off_request(
             home_shift_start=request.get("shift_start"),
             home_shift_end=request.get("shift_end"),
         )
-        suggestion = suggest_bump_chain(
-            request["officer_id"],
-            request["request_date"],
-            request["squad"],
-            covered_start,
-            supervisor_override=manual_override,
-        )
-        if not manual_override and (not suggestion.success or suggestion.requires_manual):
-            cursor.execute(
-                """
-                UPDATE day_off_requests
-                SET status = 'Pending Manual Review', admin_notes = ?, processed_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """,
-                (admin_notes or suggestion.message, request_id),
-            )
-            conn.commit()
-            request["status"] = REQUEST_STATUS["pending_manual"]
-            _notify_day_off_processed(request, officer, "Pending Manual Review")
-            return ProcessRequestResult(
-                success=False,
-                status="Pending Manual Review",
-                message=suggestion.message,
-                requires_manual=True,
-            )
+        suggestion = None
+        steps = []
+        if preferred_chain is not None:
+            # Supervisor-selected plan from multi-plan UI (list of (original_id, replacement_id)).
+            from models import BumpChainStep
 
-        steps = suggestion.steps or []
+            for i, pair in enumerate(preferred_chain):
+                if not pair or len(pair) != 2:
+                    continue
+                orig_id, repl_id = int(pair[0]), int(pair[1])
+                orig = get_officer_by_id(orig_id)
+                repl = get_officer_by_id(repl_id)
+                if not orig or not repl:
+                    return ProcessRequestResult(
+                        success=False,
+                        message=f"Coverage plan references missing officer ({orig_id}→{repl_id})",
+                    )
+                orig_shift = covered_start if i == 0 else (orig.get("shift_start") or covered_start)
+                steps.append(
+                    BumpChainStep(
+                        step_number=i + 1,
+                        original_officer_id=orig_id,
+                        original_officer_name=orig["name"],
+                        original_shift=orig_shift,
+                        replacement_officer_id=repl_id,
+                        replacement_officer_name=repl["name"],
+                        replacement_shift=repl.get("shift_start") or "",
+                        replacement_on_duty=True,
+                    )
+                )
+            suggestion = type("S", (), {"success": True, "failure_reason": None, "message": "Selected coverage plan"})()
+        else:
+            suggestion = suggest_bump_chain(
+                request["officer_id"],
+                request["request_date"],
+                request["squad"],
+                covered_start,
+                supervisor_override=manual_override,
+            )
+            if not manual_override and (not suggestion.success or suggestion.requires_manual):
+                cursor.execute(
+                    """
+                    UPDATE day_off_requests
+                    SET status = 'Pending Manual Review', admin_notes = ?, processed_at = CURRENT_TIMESTAMP
+                    WHERE id = ?
+                """,
+                    (admin_notes or suggestion.message, request_id),
+                )
+                conn.commit()
+                request["status"] = REQUEST_STATUS["pending_manual"]
+                _notify_day_off_processed(request, officer, "Pending Manual Review")
+                return ProcessRequestResult(
+                    success=False,
+                    status="Pending Manual Review",
+                    message=suggestion.message,
+                    requires_manual=True,
+                )
+            steps = suggestion.steps or []
+
         replacement_id = None
         replacement_name = None
         for step in steps:

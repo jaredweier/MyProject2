@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
 from datetime import date
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -62,6 +62,11 @@ class BumpChainSuggestion:
     failure_reason: Optional[str] = None
     blocked_officer_name: Optional[str] = None
     blocked_shift: Optional[str] = None
+    # Coverage optimizer metadata (optional; ignored by older call sites)
+    plan_score: Optional[float] = None
+    alternatives_considered: Optional[int] = None
+    # Named soft components (OR-Tools / Timefold explainability)
+    score_components: Optional[List[Dict]] = None
 
 
 @dataclass

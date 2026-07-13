@@ -48,6 +48,11 @@ class VerifyUnifiedTests(unittest.TestCase):
     def test_check_includes_rust_backend(self):
         self.assertIn("rust-backend", STEP_CHECK)
 
+    def test_preflight_and_check_include_graphify(self):
+        self.assertIn("graphify", STEP_PREFLIGHT)
+        self.assertIn("graphify", STEP_CHECK)
+        self.assertNotIn("graphify", STEP_FAST)
+
     def test_tier_alias_cheap_check(self):
         self.assertEqual(tier_steps("cheap-check"), tier_steps("fast"))
 

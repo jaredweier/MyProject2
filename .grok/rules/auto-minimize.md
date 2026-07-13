@@ -1,9 +1,11 @@
 # Auto-minimize (Grok — always on)
 
-`@logs/agent_pack/latest.md` · `@docs/AGENT_STABLE.md` § Mandatory minimization · § Continuous minimization
+`@logs/agent_pack/latest.md` · `@docs/AGENT_STABLE.md`
 
-**Mandatory chain:** `usage-brief <slice>` → `outline`/`symbol` → edit → `cheap-check` · terminal gates, not subagents
+**Bootstrap:** `python dev.py agent-kit` → `@logs/agent_kit/latest.md`
+**Chain:** `route-task` → `usage-brief` → `outline`/`symbol` → edit → `verify --tier fast` · ship: `check` + `honest_gate`
+**Caveman:** short bullets; no research tax unless user asks.
 
-**Sufficiency:** stop gathering when confident; no extra reads/tools unless contradictory or incomplete.
+**Sufficiency:** stop when confident. No whole-repo reads. No subagents for gates.
 
-**Improve loop:** prompts/index change → `python dev.py token-improve` → safe fixes → `token-audit --strict`
+**Improve:** prompts/index change → `python dev.py token-improve` → `token-audit --strict`

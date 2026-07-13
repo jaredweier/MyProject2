@@ -7,8 +7,8 @@
 | Tier | Command | When | Honest for ship? |
 |------|---------|------|------------------|
 | fast | `python dev.py verify --tier fast` | After every edit | No |
-| preflight | `python dev.py verify --tier preflight` | Pre-commit, handoff | No |
-| **check** | `python dev.py verify --tier check` | Before claiming done | **Yes** |
+| preflight | `python dev.py verify --tier preflight` | Pre-commit, handoff (+ **graphify-gate**) | No |
+| **check** | `python dev.py verify --tier check` | Before claiming done (+ graphify) | **Yes** |
 | full | `python dev.py verify --tier full` | Release candidate | Yes |
 | release | `python dev.py verify --tier release` | Full regression | Yes |
 

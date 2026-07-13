@@ -47,3 +47,18 @@ EVALUATE.txt
 # Large source: use `python dev.py outline <path>` before editing — do not skip reading the slice.
 
 graphify-out/
+
+.agents/skills/design-taste-frontend/
+
+.agents/skills/design-taste-frontend-v1/
+
+.claude/skills/design-taste-frontend/
+
+.claude/skills/design-taste-frontend-v1/
+
+.agents/skills/
+
+.claude/skills/
+
+.grok/skills/_archive/
+.claude/skills/_archive/

@@ -2,7 +2,11 @@
 Canonical vertical-slice registry for Dodgeville PD Scheduler.
 
 Each slice groups what changes together: UI entry, logic, CLI, tests, and permissions.
-Shared infrastructure (database, validators, theme shell) lives in SHARED_KERNEL — not slices.
+Shared infrastructure lives in SHARED_KERNEL — not slices.
+
+Primary product UI is Chronos NiceGUI under gui/pages/.
+Legacy CustomTkinter lives under ui/pages/ (reference / some tests).
+status: complete | partial | planned — Logic-strong ≠ Chronos-complete.
 """
 
 from __future__ import annotations
@@ -16,16 +20,17 @@ class SliceDef(TypedDict, total=False):
     summary: str
     status: str  # complete | partial | planned
     ui_pages: List[str]
-    ui_mixin: str
+    ui_mixin: str  # primary Chronos page path (may be empty if no dedicated UI)
+    ui_files: List[str]  # all UI files that must exist for feature-map UI ✓
     logic: List[str]
-    logic_extra: List[str]  # e.g. database.backup_database
+    logic_extra: List[str]
     validators: List[str]
     cli: List[str]
     permissions: List[str]
     tables: List[str]
     tests: List[str]
     scenarios: List[str]
-    verify: List[str]  # dev.py commands that exercise this slice
+    verify: List[str]
     touch_together: List[str]
     future_module: str
 
@@ -41,18 +46,22 @@ SHARED_KERNEL: Dict[str, Any] = {
         "permissions.py",
         "paths.py",
         "audit.py",
+        "main.py",
+        "dev.py",
+        "gui/app.py",
+        "gui/shell.py",
+        "gui/theme.py",
+        "gui/session.py",
         "ui/app.py",
         "ui/theme.py",
         "ui/widgets.py",
         "ui/helpers.py",
         "ui/login.py",
-        "main.py",
-        "dev.py",
     ],
     "notes": [
         "validators.py remains the single source of truth for pre-checks.",
-        "analytics.py is report-oriented; slice-specific report functions are listed on the reports slice.",
-        "Import logic via `import logic` — package re-exports slice modules (logic/exports.py, logic/dashboard.py, etc.).",
+        "Primary UI is gui/ (NiceGUI). Legacy ui/ is secondary.",
+        "Import logic via `import logic` — package re-exports slice modules.",
     ],
 }
 
@@ -61,10 +70,11 @@ SLICES: List[SliceDef] = [
     {
         "id": "dashboard",
         "name": "Command Post Dashboard",
-        "summary": "Role-scoped ops home: stats, alerts, coverage gap board, on-duty strip, My Week, quick actions.",
-        "status": "complete",
+        "summary": "Role-scoped ops home: KPIs, alerts, coverage counts (Chronos partial vs full boards).",
+        "status": "partial",
         "ui_pages": ["dashboard"],
-        "ui_mixin": "ui/dashboard_pages.py",
+        "ui_mixin": "gui/pages/dashboard.py",
+        "ui_files": ["gui/pages/dashboard.py", "ui/pages/dashboard.py"],
         "logic": ["get_dashboard_insights", "get_coverage_gap_board", "get_hours_watch", "get_officer_schedule_window"],
         "validators": [],
         "cli": ["reports summary"],
@@ -72,17 +82,23 @@ SLICES: List[SliceDef] = [
         "tables": ["day_off_requests", "schedule_overrides", "notifications"],
         "tests": ["tests/test_analytics.py"],
         "scenarios": [],
-        "verify": ["smoke", "ui-smoke"],
-        "touch_together": ["analytics.py", "ui/dashboard_pages.py", "logic/dashboard.py"],
+        "verify": ["smoke"],
+        "touch_together": [
+            "analytics.py",
+            "logic/dashboard.py",
+            "gui/pages/dashboard.py",
+            "ui/pages/dashboard.py",
+        ],
         "future_module": "logic/dashboard.py",
     },
     {
         "id": "roster",
         "name": "Officer Roster",
-        "summary": "Patrol roster CRUD, photos, CSV import, title/squad/shift assignment, pay-period hours on rows.",
-        "status": "complete",
+        "summary": "Patrol roster CRUD, photos, title/squad/shift assignment.",
+        "status": "partial",
         "ui_pages": ["officers"],
-        "ui_mixin": "ui/officers_pages.py",
+        "ui_mixin": "gui/pages/roster.py",
+        "ui_files": ["gui/pages/roster.py", "ui/pages/roster.py"],
         "logic": [
             "add_officer",
             "update_officer",
@@ -98,11 +114,12 @@ SLICES: List[SliceDef] = [
         "tables": ["officers"],
         "tests": ["tests/test_officer_crud.py", "tests/test_roster_import.py"],
         "scenarios": [],
-        "verify": ["smoke", "ui-smoke"],
+        "verify": ["smoke"],
         "touch_together": [
             "logic/officers.py",
             "validators.py",
-            "ui/officers_pages.py",
+            "gui/pages/roster.py",
+            "ui/pages/roster.py",
             "cli.py",
             "seed_data.py",
         ],
@@ -111,10 +128,11 @@ SLICES: List[SliceDef] = [
     {
         "id": "day-off-requests",
         "name": "Day-Off Requests",
-        "summary": "Submit and approve time off with bump preview, cascade, manual review, and request ledger.",
-        "status": "complete",
+        "summary": "Submit and approve time off with bump preview, cascade, manual review.",
+        "status": "partial",
         "ui_pages": ["requests"],
-        "ui_mixin": "ui/requests_pages.py",
+        "ui_mixin": "gui/pages/leave.py",
+        "ui_files": ["gui/pages/leave.py", "ui/pages/leave.py"],
         "logic": [
             "create_day_off_request",
             "process_day_off_request",
@@ -146,7 +164,8 @@ SLICES: List[SliceDef] = [
             "rust/scheduler_core/Cargo.toml",
             "validators.py",
             "config.py",
-            "ui/requests_pages.py",
+            "gui/pages/leave.py",
+            "ui/pages/leave.py",
             "cli.py",
             "tests/test_logic.py",
             "tests/test_regressions.py",
@@ -156,10 +175,11 @@ SLICES: List[SliceDef] = [
     {
         "id": "shift-swaps",
         "name": "Shift Swaps",
-        "summary": "Exchange shifts between officers with feasibility checks and dual override creation.",
-        "status": "complete",
+        "summary": "Exchange shifts between officers with feasibility checks.",
+        "status": "partial",
         "ui_pages": ["swaps"],
-        "ui_mixin": "ui/requests_pages.py",
+        "ui_mixin": "gui/pages/leave.py",
+        "ui_files": ["gui/pages/leave.py", "ui/pages/leave.py"],
         "logic": [
             "create_shift_swap_request",
             "process_shift_swap",
@@ -173,12 +193,13 @@ SLICES: List[SliceDef] = [
         "tables": ["shift_swaps", "schedule_overrides"],
         "tests": ["tests/test_notifications_swaps_exports.py", "tests/test_regressions.py"],
         "scenarios": ["S-11"],
-        "verify": ["scenarios", "ui-smoke"],
+        "verify": ["scenarios"],
         "touch_together": [
             "logic/requests.py",
             "logic/scheduling.py",
             "validators.py",
-            "ui/requests_pages.py",
+            "gui/pages/leave.py",
+            "ui/pages/leave.py",
             "cli.py",
         ],
         "future_module": "logic/requests.py",
@@ -186,10 +207,11 @@ SLICES: List[SliceDef] = [
     {
         "id": "schedules",
         "name": "Schedules & Gantt",
-        "summary": "Original/current monthly calendars, 14-day Gantt, publish/sync, diff, manual coverage from calendar.",
-        "status": "complete",
+        "summary": "Monthly calendars, cycle matrix, publish/sync, manual coverage.",
+        "status": "partial",
         "ui_pages": ["base_schedule", "live_schedule", "timeline"],
-        "ui_mixin": "ui/schedule_pages.py",
+        "ui_mixin": "gui/pages/schedules.py",
+        "ui_files": ["gui/pages/schedules.py", "ui/pages/schedules.py"],
         "logic": [
             "build_schedule_matrix",
             "get_monthly_summary_from_snapshot",
@@ -213,13 +235,14 @@ SLICES: List[SliceDef] = [
         "tables": ["schedule_snapshots", "schedule_overrides"],
         "tests": ["tests/test_timecard_schedules.py", "tests/test_logic.py"],
         "scenarios": [],
-        "verify": ["smoke", "ui-smoke"],
+        "verify": ["smoke"],
         "touch_together": [
             "logic/snapshots.py",
             "logic/scheduling.py",
             "logic/rust_bridge.py",
             "rust/scheduler_core/Cargo.toml",
-            "ui/schedule_pages.py",
+            "gui/pages/schedules.py",
+            "ui/pages/schedules.py",
             "cli.py",
             "config.py",
         ],
@@ -228,10 +251,18 @@ SLICES: List[SliceDef] = [
     {
         "id": "payroll-timecard",
         "name": "Payroll & Timecard",
-        "summary": "Timecard entry, pay-period totals, payroll ledger, lock period, position pay rates.",
-        "status": "complete",
+        "summary": "Timecard entry, pay-period totals, payroll ledger, banked time.",
+        "status": "partial",
         "ui_pages": ["timecard", "banked_time", "payroll"],
-        "ui_mixin": "ui/payroll_pages.py",
+        "ui_mixin": "gui/pages/finance/__init__.py",
+        "ui_files": [
+            "gui/pages/finance/__init__.py",
+            "gui/pages/finance/timecards.py",
+            "gui/pages/finance/payroll_page.py",
+            "gui/pages/finance/banks.py",
+            "gui/pages/finance/ledger.py",
+            "ui/pages/finance.py",
+        ],
         "logic": [
             "get_officer_title_options",
             "add_custom_officer_title",
@@ -280,23 +311,33 @@ SLICES: List[SliceDef] = [
             "tests/test_banked_time.py",
         ],
         "scenarios": [],
-        "verify": ["smoke", "ui-smoke"],
+        "verify": ["smoke"],
         "touch_together": [
-            "logic/payroll.py",
+            "logic/payroll/__init__.py",
+            "logic/payroll/period.py",
+            "logic/payroll/pay_codes.py",
+            "logic/payroll/timecard.py",
+            "logic/payroll/entries.py",
+            "logic/payroll/banks.py",
             "logic/banked_time.py",
-            "ui/payroll_pages.py",
-            "ui/banked_time_pages.py",
+            "gui/pages/finance/__init__.py",
+            "gui/pages/finance/timecards.py",
+            "gui/pages/finance/payroll_page.py",
+            "gui/pages/finance/banks.py",
+            "gui/pages/finance/ledger.py",
+            "ui/pages/finance.py",
             "cli.py",
         ],
-        "future_module": "logic/payroll.py",
+        "future_module": "logic/payroll",
     },
     {
         "id": "notifications",
         "name": "Alerts & Notifications",
-        "summary": "In-app alerts inbox, read/mark-all, navigation to related records, schedule-sync notify hooks.",
-        "status": "complete",
+        "summary": "In-app alerts; Chronos shows counts — full inbox parity incomplete.",
+        "status": "partial",
         "ui_pages": ["notifications"],
-        "ui_mixin": "ui/notifications_pages.py",
+        "ui_mixin": "gui/pages/dashboard.py",
+        "ui_files": ["gui/pages/dashboard.py"],
         "logic": [
             "get_notifications",
             "mark_notification_read",
@@ -310,11 +351,10 @@ SLICES: List[SliceDef] = [
         "tables": ["notifications"],
         "tests": ["tests/test_notifications_swaps_exports.py", "tests/test_regressions.py"],
         "scenarios": [],
-        "verify": ["ui-smoke"],
+        "verify": [],
         "touch_together": [
             "logic/requests.py",
-            "ui/notifications_pages.py",
-            "ui/dashboard_pages.py",
+            "gui/pages/dashboard.py",
             "cli.py",
         ],
         "future_module": "logic/requests.py",
@@ -322,10 +362,11 @@ SLICES: List[SliceDef] = [
     {
         "id": "reports-analytics",
         "name": "Ops Reports & Analytics",
-        "summary": "Coverage, OT, labor budget, equitable OT ledger, audit log, department settings, PDF/CSV exports.",
-        "status": "complete",
+        "summary": "Coverage, OT, labor budget, audit log surfaces.",
+        "status": "partial",
         "ui_pages": ["reports"],
-        "ui_mixin": "ui/feature_pages.py",
+        "ui_mixin": "gui/pages/operations.py",
+        "ui_files": ["gui/pages/operations.py", "ui/pages/operations.py"],
         "logic": [
             "get_coverage_report",
             "get_overtime_alerts",
@@ -340,17 +381,25 @@ SLICES: List[SliceDef] = [
         "tables": ["audit_log", "department_settings"],
         "tests": ["tests/test_analytics.py"],
         "scenarios": [],
-        "verify": ["ui-smoke"],
-        "touch_together": ["analytics.py", "logic/dashboard.py", "ui/feature_pages.py", "cli.py", "exports.py"],
+        "verify": [],
+        "touch_together": [
+            "analytics.py",
+            "logic/dashboard.py",
+            "gui/pages/operations.py",
+            "ui/pages/operations.py",
+            "cli.py",
+            "exports.py",
+        ],
         "future_module": "logic/exports.py",
     },
     {
         "id": "availability",
         "name": "Blackout Dates & Holidays",
-        "summary": "Officer unavailability, schedule conflict warnings, department holiday calendar.",
-        "status": "complete",
+        "summary": "Officer unavailability and department holiday calendar.",
+        "status": "partial",
         "ui_pages": ["availability"],
-        "ui_mixin": "ui/feature_pages.py",
+        "ui_mixin": "gui/pages/operations.py",
+        "ui_files": ["gui/pages/operations.py", "ui/pages/operations.py"],
         "logic": [
             "add_officer_availability",
             "get_schedule_conflicts",
@@ -366,11 +415,12 @@ SLICES: List[SliceDef] = [
         "tables": ["officer_availability", "holidays"],
         "tests": ["tests/test_analytics.py"],
         "scenarios": [],
-        "verify": ["ui-smoke"],
+        "verify": [],
         "touch_together": [
             "analytics.py",
             "logic/operations.py",
-            "ui/feature_pages.py",
+            "gui/pages/operations.py",
+            "ui/pages/operations.py",
             "cli.py",
         ],
         "future_module": "logic/operations.py",
@@ -378,10 +428,11 @@ SLICES: List[SliceDef] = [
     {
         "id": "shift-bidding",
         "name": "Shift Bidding",
-        "summary": "Supervisors publish bid events; officers rank preferences; seniority resolves conflicts; simulator import.",
-        "status": "complete",
-        "ui_pages": ["availability", "simulator", "dashboard"],
-        "ui_mixin": "ui/bid_pages.py",
+        "summary": "Bid events and awards; Chronos publish/preview/finalize wired.",
+        "status": "partial",
+        "ui_pages": ["simulator"],
+        "ui_mixin": "gui/pages/bidding.py",
+        "ui_files": ["gui/pages/bidding.py"],
         "logic": [
             "create_shift_bid_event",
             "publish_shift_bid_event",
@@ -417,14 +468,12 @@ SLICES: List[SliceDef] = [
         ],
         "tests": ["tests/test_tier2.py"],
         "scenarios": [],
-        "verify": ["smoke", "check"],
+        "verify": ["smoke"],
         "touch_together": [
             "logic/bidding.py",
             "logic/rotation_preview.py",
             "logic/simulator_store.py",
-            "ui/bid_pages.py",
-            "ui/bid_dialogs.py",
-            "ui/simulator_pages.py",
+            "gui/pages/bidding.py",
             "cli.py",
             "validators.py",
             "database.py",
@@ -435,10 +484,11 @@ SLICES: List[SliceDef] = [
     {
         "id": "open-shifts",
         "name": "Open Shifts",
-        "summary": "Post claimable coverage gaps; officers claim open shifts from dashboard and availability hub.",
-        "status": "complete",
-        "ui_pages": ["availability", "dashboard"],
-        "ui_mixin": "ui/feature_pages.py",
+        "summary": "Post/claim open coverage vacancy board (Aladtec/Snap pattern).",
+        "status": "partial",
+        "ui_pages": ["dashboard"],
+        "ui_mixin": "gui/pages/self_service.py",
+        "ui_files": ["gui/pages/self_service.py", "gui/pages/dashboard.py"],
         "logic": ["create_open_shift", "get_open_shifts", "fill_open_shift"],
         "validators": [],
         "cli": ["open-shifts list", "open-shifts post"],
@@ -446,11 +496,11 @@ SLICES: List[SliceDef] = [
         "tables": ["open_shifts"],
         "tests": ["tests/test_analytics.py"],
         "scenarios": [],
-        "verify": ["ui-smoke"],
+        "verify": [],
         "touch_together": [
             "logic/operations.py",
-            "ui/feature_pages.py",
-            "ui/dashboard_pages.py",
+            "gui/pages/self_service.py",
+            "gui/pages/dashboard.py",
             "cli.py",
         ],
         "future_module": "logic/operations.py",
@@ -458,10 +508,11 @@ SLICES: List[SliceDef] = [
     {
         "id": "user-accounts",
         "name": "User Accounts & Auth",
-        "summary": "Login, demo users, role changes, password reset, setup wizard, permission gates.",
-        "status": "complete",
+        "summary": "Login, roles, password reset, access control.",
+        "status": "partial",
         "ui_pages": ["users"],
-        "ui_mixin": "ui/admin_pages.py",
+        "ui_mixin": "gui/pages/access.py",
+        "ui_files": ["gui/pages/access.py", "gui/pages/login.py", "ui/pages/access.py", "ui/login.py"],
         "logic": [
             "create_app_user",
             "update_app_user",
@@ -476,13 +527,14 @@ SLICES: List[SliceDef] = [
         "tables": ["app_users", "audit_log"],
         "tests": ["tests/test_users_security.py", "tests/test_auth.py", "tests/test_permissions.py"],
         "scenarios": [],
-        "verify": ["smoke", "ui-smoke"],
+        "verify": ["smoke"],
         "touch_together": [
             "logic/users.py",
             "auth_password.py",
             "permissions.py",
-            "ui/admin_pages.py",
-            "ui/profile_dialog.py",
+            "gui/pages/access.py",
+            "gui/pages/login.py",
+            "ui/pages/access.py",
             "ui/login.py",
             "cli.py",
             "tests/test_users_security.py",
@@ -492,10 +544,11 @@ SLICES: List[SliceDef] = [
     {
         "id": "exports-ical",
         "name": "Schedule & Document Exports",
-        "summary": "PDF schedule/payroll/requests, CSV roster, iCal per-officer export from timeline and CLI.",
-        "status": "complete",
+        "summary": "PDF/CSV/iCal via logic and CLI; Chronos export UX limited.",
+        "status": "partial",
         "ui_pages": ["timeline", "payroll", "requests", "reports"],
-        "ui_mixin": "ui/schedule_pages.py",
+        "ui_mixin": "gui/pages/schedules.py",
+        "ui_files": ["gui/pages/schedules.py", "exports.py", "logic/exports.py"],
         "logic": [
             "export_schedule_pdf",
             "export_officer_schedule_ical",
@@ -509,17 +562,18 @@ SLICES: List[SliceDef] = [
         "tables": [],
         "tests": ["tests/test_notifications_swaps_exports.py", "tests/test_analytics.py"],
         "scenarios": [],
-        "verify": ["ui-smoke"],
-        "touch_together": ["exports.py", "logic/exports.py", "cli.py"],
+        "verify": [],
+        "touch_together": ["exports.py", "logic/exports.py", "cli.py", "gui/pages/schedules.py"],
         "future_module": "logic/exports.py",
     },
     {
         "id": "simulator",
         "name": "Scenario Trainer",
-        "summary": "Supervisor training simulator for rotation and staffing what-if (UI-only, no CLI).",
-        "status": "complete",
+        "summary": "Supervisor training simulator for rotation/staffing what-if (UI-only CLI gap OK).",
+        "status": "partial",
         "ui_pages": ["simulator"],
-        "ui_mixin": "ui/simulator_pages.py",
+        "ui_mixin": "gui/pages/simulator.py",
+        "ui_files": ["gui/pages/simulator.py", "ui/pages/simulator.py"],
         "logic": ["run_schedule_simulation", "get_simulator_defaults_from_roster", "export_simulation_csv"],
         "validators": [],
         "cli": [],
@@ -527,22 +581,24 @@ SLICES: List[SliceDef] = [
         "tables": [],
         "tests": ["tests/test_simulator.py"],
         "scenarios": [],
-        "verify": ["ui-smoke"],
+        "verify": [],
         "touch_together": [
             "simulator.py",
             "logic/rust_bridge.py",
             "rust/scheduler_core/Cargo.toml",
-            "ui/simulator_pages.py",
+            "gui/pages/simulator.py",
+            "ui/pages/simulator.py",
         ],
         "future_module": "logic/operations.py",
     },
     {
         "id": "database-backup",
         "name": "Database Backup",
-        "summary": "Manual and auto SQLite backup from admin setup and CLI.",
-        "status": "complete",
+        "summary": "Manual/auto SQLite backup from security/admin and CLI.",
+        "status": "partial",
         "ui_pages": ["dashboard"],
-        "ui_mixin": "ui/admin_pages.py",
+        "ui_mixin": "gui/pages/security.py",
+        "ui_files": ["gui/pages/security.py"],
         "logic": ["maybe_run_auto_backup"],
         "logic_extra": ["database.backup_database"],
         "validators": [],
@@ -552,7 +608,7 @@ SLICES: List[SliceDef] = [
         "tests": ["tests/test_database_backup.py"],
         "scenarios": [],
         "verify": ["smoke"],
-        "touch_together": ["database.py", "logic/operations.py", "cli.py"],
+        "touch_together": ["database.py", "logic/operations.py", "gui/pages/security.py", "cli.py"],
         "future_module": "logic/operations.py",
     },
 ]
@@ -570,17 +626,24 @@ def get_slice(slice_id: str) -> Optional[SliceDef]:
 
 
 def features_for_map() -> List[Dict[str, Any]]:
-    """Adapter for scripts/feature_map.py display."""
+    """Adapter for scripts/feature_map.py — includes ui_files for existence checks."""
     out: List[Dict[str, Any]] = []
     for s in SLICES:
         if s["id"] in ("dashboard", "exports-ical"):
             continue
+        # Explicit ui_files=[] means no dedicated UI (do not fall back to ui_mixin)
+        if "ui_files" in s:
+            ui_files = list(s.get("ui_files") or [])
+        else:
+            ui_files = [s["ui_mixin"]] if s.get("ui_mixin") else []
         entry: Dict[str, Any] = {
             "name": s["name"],
             "logic": list(s.get("logic", [])),
             "ui": [f"{p} tab" for p in s.get("ui_pages", [])],
+            "ui_files": ui_files,
             "cli": list(s.get("cli", [])),
             "perm": " / ".join(s.get("permissions", [])[:2]),
+            "status": s.get("status", "partial"),
         }
         if s.get("logic_extra"):
             entry["extra"] = list(s["logic_extra"])

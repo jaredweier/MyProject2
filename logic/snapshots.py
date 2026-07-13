@@ -94,8 +94,7 @@ def _insert_snapshot_rows(
         assignable = [
             o
             for o in officers
-            if day_statuses.get(o["id"]) in WORKING_ASSIGNMENT_STATUSES
-            or day_statuses.get(o["id"]) == "covering"
+            if day_statuses.get(o["id"]) in WORKING_ASSIGNMENT_STATUSES or day_statuses.get(o["id"]) == "covering"
         ]
         band_assignments = distribute_shift_bands(assignable)
 
@@ -129,11 +128,7 @@ def _insert_snapshot_rows(
                 continue
 
             status = day_statuses[officer["id"]]
-            covered = (
-                covered_shift_for_officer_on_date(officer["id"], current)
-                if status == "covering"
-                else None
-            )
+            covered = covered_shift_for_officer_on_date(officer["id"], current) if status == "covering" else None
             shift_start, shift_end = resolve_assignment_shift(
                 officer,
                 status,
@@ -408,7 +403,8 @@ def get_officer_schedule_window(
         status = entry["days"][d] if entry else "off"
         schedule_days.append(
             {
-                "date": d.isoformat(),
+                "date": d.isoformat(),  # storage key (ISO)
+                "date_display": format_date(d),  # UI M/D/YY e.g. 7/9/26
                 "day_label": f"{d.strftime('%a')} {format_date(d)}",
                 "status": status,
             }
@@ -418,6 +414,8 @@ def get_officer_schedule_window(
         "officer": officer,
         "start_date": start.isoformat(),
         "end_date": end.isoformat(),
+        "start_date_display": format_date(start),
+        "end_date_display": format_date(end),
         "days": schedule_days,
     }
 
@@ -645,7 +643,9 @@ def set_snapshot_assignment(
     from logic.shift_assignment import get_shift_band_options, shift_end_for_start
 
     effective_start = shift_start or officer.get("shift_start") or ""
-    effective_end = shift_end or (shift_end_for_start(effective_start) if effective_start else officer.get("shift_end") or "")
+    effective_end = shift_end or (
+        shift_end_for_start(effective_start) if effective_start else officer.get("shift_end") or ""
+    )
     if status in ("working", "covering", "swapped", "training"):
         bands = get_shift_band_options()
         if bands and (effective_start, effective_end) not in bands:
@@ -758,11 +758,7 @@ def sync_updated_schedule(
         conn.commit()
         if notify:
             _notify_schedule_published(year, month, snapshot_id)
-        message = (
-            "Live schedule published and staff notified"
-            if notify
-            else "Live schedule updated"
-        )
+        message = "Live schedule published and staff notified" if notify else "Live schedule updated"
         return {"success": True, "snapshot_id": snapshot_id, "message": message}
     except Exception as e:
         conn.rollback()

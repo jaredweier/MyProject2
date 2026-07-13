@@ -10,7 +10,8 @@ from typing import Dict, Tuple
 
 # ==================== APPLICATION ====================
 APP_VERSION = "2026.07.1"
-APP_NAME = "Dodgeville PD Scheduler"
+APP_NAME = "Chronos Command"
+PRODUCT_NAME = "Chronos Command"
 
 # ==================== ROTATION ====================
 ROTATION_BASE_DATE: date = date(2026, 6, 28)
@@ -98,51 +99,76 @@ def is_high_risk_night(target_date) -> bool:
 
 
 # ==================== COLORS ====================
-# Modern command-center UI — deep navy surfaces, single blue accent, badge gold (accents only)
-DODGEVILLE_BLUE = "#1E3A5F"
-DODGEVILLE_ACCENT = "#4B8BF5"
-DODGEVILLE_RED = "#F87171"
-DODGEVILLE_GOLD = "#C4A24A"
-DODGEVILLE_SUCCESS = "#34D399"
-SCHEDULE_TYPE_TRAINING = "#1ABC9C"
-SCHEDULE_TYPE_COURT = "#8E44AD"
-SCHEDULE_TYPE_LEAVE = "#5D6D7E"
-SCHEDULE_TYPE_COVERING = "#0096B8"
+# Enterprise LE command center — near-black ops floor, electric blue signal, badge gold
+DODGEVILLE_BLUE = "#152A4A"
+DODGEVILLE_ACCENT = "#3D8BFF"
+DODGEVILLE_RED = "#FF6B7A"
+DODGEVILLE_GOLD = "#D4AF37"
+DODGEVILLE_SUCCESS = "#2EE59D"
+SCHEDULE_TYPE_TRAINING = "#14B8A6"
+SCHEDULE_TYPE_COURT = "#A78BFA"
+SCHEDULE_TYPE_LEAVE = "#64748B"
+SCHEDULE_TYPE_COVERING = "#22D3EE"
 DODGEVILLE_DANGER = DODGEVILLE_RED
-DODGEVILLE_WARNING = "#F59E0B"
-DODGEVILLE_ORANGE = "#F97316"
+DODGEVILLE_WARNING = "#FBBF24"
+DODGEVILLE_ORANGE = "#FB923C"
 
 GANTT_COLORS = {
     "working": "#22C55E",
-    "off": "#475569",
-    "bumped": "#F97316",
-    "covering": "#B8952B",
-    "swapped": "#8B5CF6",
-    "training": "#14B8A6",
-    "court": "#A855F7",
+    "off": "#334155",
+    "bumped": "#FB923C",
+    "covering": "#D4AF37",
+    "swapped": "#A78BFA",
+    "training": "#2DD4BF",
+    "court": "#C084FC",
     "leave": "#64748B",
-    "night_window": "#3B82F6",
-    "unknown": "#64748B",
+    "night_window": "#3D8BFF",
+    "unknown": "#475569",
 }
 
-# UI theme extensions — enterprise command center (Mark43 / Linear)
-UI_BG = "#07090D"
-UI_SURFACE = "#0F1318"
-UI_SURFACE_LIGHT = "#161B22"
-UI_BORDER = "#21262D"
-UI_TEXT_PRIMARY = "#F0F3F7"
-UI_TEXT_MUTED = "#8B949E"
-UI_SIDEBAR = "#0A0D12"
-UI_ACCENT_GLOW = "#58A6FF"
-UI_ACCENT_SUBTLE = "#1F6FEB"
-UI_NAV_ACTIVE = "#161B22"
+# UI surfaces — layered depth (bg → sidebar → surface → elevated)
+UI_BG = "#05070B"
+UI_SURFACE = "#0C1017"
+UI_SURFACE_LIGHT = "#141A24"
+UI_SURFACE_ELEVATED = "#1A2230"
+UI_BORDER = "#243044"
+UI_BORDER_GLOW = "#2A4A7A"
+UI_TEXT_PRIMARY = "#F4F7FB"
+UI_TEXT_MUTED = "#8B9BB0"
+UI_SIDEBAR = "#070A10"
+UI_ACCENT_GLOW = "#5BA3FF"
+UI_ACCENT_SUBTLE = "#1A4F9C"
+UI_NAV_ACTIVE = "#122033"
+UI_SCANLINE = "#0E1624"
 
 # ==================== DATE FORMATS ====================
-# User-facing input/display (DD-MM-YYYY); SQLite storage remains ISO (YYYY-MM-DD).
-DATE_DISPLAY_FORMAT = "%d/%m/%Y"
-DATETIME_DISPLAY_FORMAT = "%d/%m/%Y %H:%M"
-DATE_INPUT_HINT = "DD/MM/YYYY"
+# User-facing: month/day (US) without leading zeros — e.g. 7/9/26 for 9 July 2026.
+# Never display day/month as 9/7/26 for July 9.
+# SQLite storage remains ISO (YYYY-MM-DD).
+DATE_DISPLAY_FORMAT = "%m/%d/%y"  # strftime still zero-pads; use format_date() for unpadded
+DATETIME_DISPLAY_FORMAT = "%m/%d/%y %H:%M"
+DATE_INPUT_HINT = "M/D/YY or M/D/YYYY (e.g. 7/9/26)"
 DATE_STORAGE_FORMAT = "%Y-%m-%d"
+# Parse order: month-first first, then ISO, then day-first legacy inputs
+DATE_PARSE_FORMATS = (
+    "%m/%d/%Y",
+    "%m/%d/%y",
+    "%m-%d-%Y",
+    "%m-%d-%y",
+    "%m.%d.%Y",
+    "%m.%d.%y",
+    "%Y-%m-%d",
+    "%d/%m/%Y",
+    "%d/%m/%y",
+    "%d-%m-%Y",
+    "%d-%m-%y",
+    "%d.%m.%Y",
+    "%d.%m.%y",
+)
+
+# Real-world local time for all user-facing clocks (Dodgeville WI default).
+# Override with SCHEDULER_TZ=America/New_York etc. if needed.
+DEPARTMENT_TIMEZONE = os.environ.get("SCHEDULER_TZ", "America/Chicago").strip() or "America/Chicago"
 
 # ==================== DEPARTMENT BRANDING ====================
 DEFAULT_DEPARTMENT_NAME = "Dodgeville Police Department"

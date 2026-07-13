@@ -28,12 +28,41 @@ def _check_rust_backend(errors: list[str]) -> None:
 
 
 def _check_window_layout_guard(errors: list[str]) -> None:
-    session_path = os.path.join(ROOT, "ui", "session_pages.py")
-    with open(session_path, encoding="utf-8") as fh:
-        source = fh.read()
-    if 'bind("<Map>"' in source and "apply_main_window_layout" in source:
-        _fail(errors, "session_pages binds <Map> to apply_main_window_layout (focus loop risk)")
+    """Guard against Map→maximize focus loop (historical Windows freeze).
+
+    Login may bind <Map> to *login* centering (apply_login_window_layout) — that is OK.
+    Hazard: bind <Map> (or a Map handler) that calls apply_main_window_layout / maximize.
+    """
+    import re
+
+    # Direct bind of Map to main maximize (the original session_pages bug)
+    hazard = re.compile(
+        r"""bind\(\s*['\"]<Map>['\"]\s*,\s*(?:lambda\s+[^:]*:\s*)?apply_main_window_layout\b""",
+        re.M,
+    )
+    # Map handler body that calls main maximize (not login layout)
+    map_handler_maximize = re.compile(
+        r"""def\s+\w*on_map\w*\s*\([^)]*\)\s*:[^\n]*\n(?:[ \t]+.+\n)*?[ \t]+apply_main_window_layout\b""",
+        re.M,
+    )
+    ui_dir = os.path.join(ROOT, "ui")
+    for dirpath, _dirs, files in os.walk(ui_dir):
+        if "__pycache__" in dirpath:
+            continue
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            path = os.path.join(dirpath, name)
+            with open(path, encoding="utf-8") as fh:
+                source = fh.read()
+            if hazard.search(source) or map_handler_maximize.search(source):
+                rel = os.path.relpath(path, ROOT).replace("\\", "/")
+                _fail(errors, f"{rel} binds <Map> to apply_main_window_layout (focus loop risk)")
+
     layout_path = os.path.join(ROOT, "ui", "window_layout.py")
+    if not os.path.isfile(layout_path):
+        _fail(errors, "window_layout.py missing")
+        return
     with open(layout_path, encoding="utf-8") as fh:
         layout_src = fh.read()
     if "_applied_for" not in layout_src:

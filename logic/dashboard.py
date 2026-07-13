@@ -28,6 +28,52 @@ def get_audit_log(limit: int = 50, action_filter: Optional[str] = None) -> List[
     return rows
 
 
+def get_dashboard_kpis_fast(officer_id: Optional[int] = None) -> Dict:
+    """Lightweight home KPIs for Chronos Command (avoids multi-second analytics scans).
+
+    Full labor/coverage intelligence remains on Ops Reports via get_dashboard_insights.
+    """
+    from logic.requests import get_pending_day_off_requests, get_pending_shift_swap_requests
+
+    try:
+        pending_all = get_pending_day_off_requests() or []
+    except Exception:
+        pending_all = []
+    try:
+        swaps_all = get_pending_shift_swap_requests() or []
+    except Exception:
+        swaps_all = []
+
+    if officer_id is not None:
+        pending = [r for r in pending_all if r.get("officer_id") == officer_id]
+        swaps = [s for s in swaps_all if s.get("officer1_id") == officer_id or s.get("officer2_id") == officer_id]
+    else:
+        pending = pending_all
+        swaps = swaps_all
+
+    # Cheap gap signal: count open manual-review leave only (not full coverage board)
+    try:
+        from config import REQUEST_STATUS
+        from logic.requests import get_day_off_requests
+
+        manual = get_day_off_requests(status_filter=REQUEST_STATUS.get("pending_manual", "Pending Manual Review"))
+        if officer_id is not None:
+            manual = [r for r in (manual or []) if r.get("officer_id") == officer_id]
+        manual_n = len(manual or [])
+    except Exception:
+        manual_n = 0
+
+    return {
+        "success": True,
+        "fast": True,
+        "pending_requests": len(pending),
+        "pending_swaps": len(swaps),
+        "coverage_gap_count": 0,
+        "coverage_issues": manual_n,
+        "pending_manual_review": manual_n,
+    }
+
+
 def get_coverage_report(start_date: date, end_date: date) -> Dict:
     from logic.analytics import get_coverage_report as _report
 

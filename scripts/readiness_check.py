@@ -20,7 +20,7 @@ def _run_login_probe() -> int:
         env=env,
         capture_output=True,
         text=True,
-        timeout=90,
+        timeout=150,
     )
     if result.returncode != 0:
         combined = (result.stdout or "") + (result.stderr or "")

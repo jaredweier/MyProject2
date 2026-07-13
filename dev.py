@@ -174,6 +174,38 @@ def cmd_token_improve(args):
     return run_token_improve(apply_fix=getattr(args, "apply", False), quiet=getattr(args, "quiet", False))
 
 
+def cmd_agent_kit(args):
+    from scripts.agent_kit import run_agent_kit
+
+    return run_agent_kit(
+        slice_id=getattr(args, "slice_id", "") or "",
+        task=getattr(args, "task", "") or "",
+        quiet=getattr(args, "quiet", False),
+    )
+
+
+def cmd_read_budget(args):
+    from scripts.read_budget import run_read_budget
+
+    return run_read_budget(list(getattr(args, "paths", []) or []), as_json=getattr(args, "json", False))
+
+
+def cmd_structure_lint(args):
+    from scripts.structure_lint import run_structure_lint
+
+    return run_structure_lint(strict=getattr(args, "strict", False))
+
+
+def cmd_graphify_gate(args):
+    from scripts.graphify_gate import run_graphify_gate
+
+    return run_graphify_gate(
+        force=getattr(args, "force", False),
+        strict=not getattr(args, "soft", False),
+        quiet=getattr(args, "quiet", False),
+    )
+
+
 def cmd_agent_pack(args):
     from scripts.agent_pack import run_agent_pack
 
@@ -344,8 +376,16 @@ def cmd_ui_functional(_args):
 
 def cmd_ui_exhaustive(_args):
     from scripts.ui_exhaustive_test import run_ui_exhaustive
+    from scripts.verify_policy import print_ui_exhaustive_banner
 
+    print_ui_exhaustive_banner()
     return run_ui_exhaustive()
+
+
+def cmd_verify_help(_args):
+    from scripts.verify_policy import print_verify_help
+
+    return print_verify_help()
 
 
 def cmd_ui_handler_coverage(_args):
@@ -426,6 +466,232 @@ def cmd_scenarios(_args):
     from scripts.scenarios import run_scenarios
 
     return run_scenarios()
+
+
+def cmd_math_scenarios(args):
+    from scripts.math_scenarios import run_math_scenarios
+
+    return run_math_scenarios(
+        with_cpsat=getattr(args, "with_cpsat", False),
+        require_cpsat=getattr(args, "require_cpsat", False),
+    )
+
+
+def cmd_local_dispatch(args):
+    from scripts.local_dispatch import run_local_dispatch
+
+    task = " ".join(getattr(args, "task", []) or [])
+    return run_local_dispatch(
+        task,
+        execute=getattr(args, "exec", False),
+        list_only=getattr(args, "list", False),
+    )
+
+
+def cmd_chronos_e2e(args):
+    from scripts.chronos_e2e import run_chronos_e2e
+
+    return run_chronos_e2e(
+        base_url=getattr(args, "base_url", None) or "http://127.0.0.1:8080",
+        username=getattr(args, "user", "admin"),
+        password=getattr(args, "password", "admin"),
+        headed=getattr(args, "headed", False),
+    )
+
+
+def cmd_leave_flow_smoke(_args):
+    """Logic path for Chronos leave approve/reject (no browser)."""
+    from scripts.leave_flow_smoke import run_leave_flow_smoke
+
+    return run_leave_flow_smoke()
+
+
+def cmd_payroll_flow_smoke(_args):
+    """Logic path for timecard save → lock → block → unlock."""
+    from scripts.payroll_flow_smoke import run_payroll_flow_smoke
+
+    return run_payroll_flow_smoke()
+
+
+def cmd_notification_flow_smoke(_args):
+    """Chronos Open→route map + create/get/mark_read smoke."""
+    from scripts.notification_flow_smoke import run_notification_flow_smoke
+
+    return run_notification_flow_smoke()
+
+
+def cmd_tool_stack(_args):
+    """Print external tool stack summary (math / UI / token-min)."""
+    path = os.path.join(os.path.dirname(__file__), "docs", "EXTERNAL_TOOL_STACK.md")
+    print("Dodgeville PD — external tool stack (implemented + catalog)")
+    print("=" * 64)
+    print("Full doc: docs/EXTERNAL_TOOL_STACK.md")
+    print()
+    print("Machine ($0 LLM):")
+    print("  python dev.py local-dispatch --list")
+    print('  python dev.py local-dispatch "run tests"')
+    print("  python dev.py math-scenarios [--with-cpsat]")
+    print("  python dev.py fuzz-scheduling")
+    print("  python dev.py parity-audit")
+    print("  python dev.py enterprise-kit thin|next|wire|recipe|scaffold")
+    print("  python dev.py source-deep sources|chronos|compare|lessons")
+    print("  python dev.py source-eval [implement]   # score all catalogued programs")
+    print("  python dev.py le-benchmark")
+    print("  python dev.py chronos-e2e")
+    print("  python dev.py leave-flow-smoke")
+    print("  python dev.py fr-domain explore|brainstorm|suggest --all|learn|dig")
+    print("  python dev.py ui-domain explore|brainstorm|research-queries|learn")
+    print("  python dev.py math-domain explore|brainstorm|research-queries|run-checks|learn")
+    print("  python dev.py math-scenarios --with-cpsat · fuzz-scheduling")
+    print("  python dev.py ui-review && python dev.py ui-diff --quick")
+    print("  python dev.py verify --tier fast|check")
+    print()
+    print("OPEN RESEARCH: any public web/GitHub/OR-paper/UX source — catalogs are starters only")
+    print("KB: first_responder_wfm.json · ui_sources.json · math_logic_sources.json")
+    if os.path.isfile(path):
+        print(f"\nDoc exists ({os.path.getsize(path)} bytes).")
+    return 0
+
+
+def cmd_parity_audit(args):
+    from scripts.parity_audit import run_parity_audit
+
+    return run_parity_audit(as_json=getattr(args, "json", False))
+
+
+def cmd_source_deep(args):
+    """How external solvers/UI systems are written — compare to Chronos."""
+    from scripts.source_deep import run_source_deep
+
+    cmd = getattr(args, "sd_command", None) or "show"
+    return run_source_deep([cmd] if cmd else ["show"])
+
+
+def cmd_source_eval(args):
+    """Evaluate all catalogued FR programs vs Chronos → implement queue."""
+    from scripts.source_eval import run_source_eval
+
+    argv = []
+    cmd = getattr(args, "se_command", None) or "show"
+    argv.append(cmd)
+    if getattr(args, "json", False):
+        argv.append("--json")
+    return run_source_eval(argv)
+
+
+def cmd_le_benchmark(_args):
+    from scripts.le_benchmark import run_le_benchmark
+
+    return run_le_benchmark()
+
+
+def cmd_fuzz_scheduling(args):
+    from scripts.fuzz_scheduling import run_fuzz_scheduling
+
+    return run_fuzz_scheduling(
+        examples=getattr(args, "examples", 80),
+        seed=getattr(args, "seed", 0),
+    )
+
+
+def cmd_fr_domain(args):
+    from scripts.fr_domain import run_fr_domain
+
+    parts = [getattr(args, "fr_command", None) or "show"]
+    if getattr(args, "query", None):
+        parts.extend(args.query)
+    extra = []
+    for flag, attr in (
+        ("--topic", "topic"),
+        ("--note", "note"),
+        ("--source", "source"),
+        ("--url", "url"),
+        ("--lane", "lane"),
+    ):
+        val = getattr(args, attr, None)
+        if val:
+            extra.extend([flag, str(val)])
+    if getattr(args, "all_ideas", False):
+        extra.append("--all")
+    if getattr(args, "limit", None) and args.limit != 80:
+        extra.extend(["--limit", str(args.limit)])
+    if getattr(args, "as_idea", False):
+        extra.append("--as-idea")
+    return run_fr_domain(parts + extra)
+
+
+def cmd_ui_domain(args):
+    from scripts.ui_domain import run_ui_domain
+
+    parts = [getattr(args, "ui_command", None) or "show"]
+    if getattr(args, "query", None):
+        parts.extend(args.query)
+    extra = []
+    for flag, attr in (
+        ("--topic", "topic"),
+        ("--note", "note"),
+        ("--source", "source"),
+        ("--url", "url"),
+        ("--lane", "lane"),
+    ):
+        val = getattr(args, attr, None)
+        if val:
+            extra.extend([flag, str(val)])
+    if getattr(args, "all_ideas", False):
+        extra.append("--all")
+    if getattr(args, "as_idea", False):
+        extra.append("--as-idea")
+    return run_ui_domain(parts + extra)
+
+
+def cmd_math_domain(args):
+    from scripts.math_domain import run_math_domain
+
+    parts = [getattr(args, "math_command", None) or "show"]
+    if getattr(args, "query", None):
+        parts.extend(args.query)
+    extra = []
+    for flag, attr in (
+        ("--topic", "topic"),
+        ("--note", "note"),
+        ("--source", "source"),
+        ("--url", "url"),
+        ("--lane", "lane"),
+    ):
+        val = getattr(args, attr, None)
+        if val:
+            extra.extend([flag, str(val)])
+    if getattr(args, "all_ideas", False):
+        extra.append("--all")
+    if getattr(args, "as_idea", False):
+        extra.append("--as-idea")
+    return run_math_domain(parts + extra)
+
+
+def cmd_open_shift_digest(args):
+    from scripts.open_shift_digest import run_open_shift_digest
+
+    return run_open_shift_digest(dry_run=getattr(args, "dry_run", False))
+
+
+def cmd_enterprise_kit(args):
+    from scripts.enterprise_kit import run_enterprise_kit
+
+    # Rebuild argv for nested argparse: command + optional positional + flags
+    argv = []
+    cmd = getattr(args, "ek_command", None) or "show"
+    argv.append(cmd)
+    if getattr(args, "ek_target", None):
+        argv.append(args.ek_target)
+    if getattr(args, "name", None):
+        argv.extend(["--name", args.name])
+    if getattr(args, "title", None):
+        argv.extend(["--title", args.title])
+    if getattr(args, "route", None):
+        argv.extend(["--route", args.route])
+    if getattr(args, "limit", None) is not None and cmd == "next":
+        argv.extend(["--limit", str(args.limit)])
+    return run_enterprise_kit(argv)
 
 
 def cmd_refactor_check(_args):
@@ -559,6 +825,31 @@ def main():
     )
     token_improve.add_argument("--apply", action="store_true", help="Auto-fix safe index gaps")
     token_improve.add_argument("--quiet", action="store_true", help="Only write logs/token_improve/latest.md")
+    agent_kit = sub.add_parser(
+        "agent-kit",
+        help="Free session bootstrap: route + usage-brief + token-improve + structure (→ logs/agent_kit)",
+    )
+    agent_kit.add_argument("--slice", default="", dest="slice_id")
+    agent_kit.add_argument("--task", default="", help="Task text for route-task")
+    agent_kit.add_argument("-q", "--quiet", action="store_true", help="Only print pack path")
+    read_budget = sub.add_parser(
+        "read-budget",
+        help="Estimate tokens before full-file reads (prefer outline if large)",
+    )
+    read_budget.add_argument("paths", nargs="+", help="Repo-relative paths")
+    read_budget.add_argument("--json", action="store_true")
+    structure_lint = sub.add_parser(
+        "structure-lint",
+        help="Free architecture lint (UI SQL, monoliths, mixins)",
+    )
+    structure_lint.add_argument("--strict", action="store_true", help="Treat warnings as failures")
+    graphify_gate = sub.add_parser(
+        "graphify-gate",
+        help="Ensure graphify knowledge graph exists and is not stale (code-only extract)",
+    )
+    graphify_gate.add_argument("--force", action="store_true", help="Always rebuild")
+    graphify_gate.add_argument("--soft", action="store_true", help="Warn only if rebuild fails")
+    graphify_gate.add_argument("-q", "--quiet", action="store_true")
     agent_pack = sub.add_parser(
         "agent-pack",
         help="Minimal pasteable context (route + slice + token estimates)",
@@ -663,7 +954,8 @@ def main():
     sub.add_parser("smoke", help="Fast integration smoke tests (no GUI)")
     sub.add_parser("ui-smoke", help="Build UI shell and visit every page (headless)")
     sub.add_parser("ui-functional", help="Exercise UI handlers on isolated test DB")
-    sub.add_parser("ui-exhaustive", help="Full tab-by-tab UI handler test (all features)")
+    sub.add_parser("ui-exhaustive", help="Full tab-by-tab UI handler test (82 steps — canonical GUI gate)")
+    sub.add_parser("verify-help", help="Verification tier ladder and anti-patterns (read this first)")
     sub.add_parser("ui-handler-coverage", help="Summary of UI handler vs exhaustive test steps")
     ui_review = sub.add_parser(
         "ui-review",
@@ -741,6 +1033,156 @@ def main():
     slice_check = sub.add_parser("slice-check", help="Verify slice registry bindings (logic, UI, tests)")
     slice_check.add_argument("--strict", action="store_true", help="Fail on warnings too")
     sub.add_parser("scenarios", help="Run SCHEDULING_RULES S-01..S-11 regression scenarios")
+    math_sc = sub.add_parser(
+        "math-scenarios",
+        help="Sophisticated scheduling math cases (local CPU; optional OR-Tools CP-SAT)",
+    )
+    math_sc.add_argument("--with-cpsat", action="store_true", help="Run optional CP-SAT cases")
+    math_sc.add_argument("--require-cpsat", action="store_true", help="Fail if ortools missing")
+    local_d = sub.add_parser(
+        "local-dispatch",
+        help="Route task to free local machine tools ($0 LLM) — save cloud tokens",
+    )
+    local_d.add_argument("task", nargs="*", help="Task text")
+    local_d.add_argument("--list", action="store_true", help="Show local lane catalog")
+    local_d.add_argument("--exec", action="store_true", help="Execute first free-machine command")
+    chronos_e2e = sub.add_parser(
+        "chronos-e2e",
+        help="Optional Playwright smoke for NiceGUI Chronos (install playwright separately)",
+    )
+    chronos_e2e.add_argument("--base-url", default="http://127.0.0.1:8080")
+    chronos_e2e.add_argument("--user", default="admin")
+    chronos_e2e.add_argument("--password", default="admin")
+    chronos_e2e.add_argument("--headed", action="store_true")
+    sub.add_parser(
+        "leave-flow-smoke",
+        help="Leave create→preview→approve/reject logic smoke (Chronos UI path, no browser)",
+    )
+    sub.add_parser(
+        "payroll-flow-smoke",
+        help="Timecard save→lock→block→unlock logic smoke (Chronos finance path)",
+    )
+    sub.add_parser(
+        "notification-flow-smoke",
+        help="Notification Open→Chronos path map + create/mark-read smoke",
+    )
+    sub.add_parser("tool-stack", help="Print external math/UI/token tool stack summary")
+    parity = sub.add_parser(
+        "parity-audit",
+        help="Logic vs Chronos gui/ wiring gaps (free local — find thin UI)",
+    )
+    parity.add_argument("--json", action="store_true", help="Compact JSON")
+    sdeep = sub.add_parser(
+        "source-deep",
+        help="How real solvers/UI code is written (OR-Tools, Timefold, Staffjoy, NiceGUI) vs Chronos",
+    )
+    sdeep.add_argument(
+        "sd_command",
+        nargs="?",
+        default="show",
+        help="show|sources|chronos|compare|lessons",
+    )
+    seval = sub.add_parser(
+        "source-eval",
+        help="Evaluate all catalogued FR programs vs Chronos (HAVE/PARTIAL/MISS → implement queue)",
+    )
+    seval.add_argument(
+        "se_command",
+        nargs="?",
+        default="show",
+        help="show|implement",
+    )
+    seval.add_argument("--json", action="store_true")
+    sub.add_parser(
+        "le-benchmark",
+        help="Honest LE commercial-feature checklist vs this product",
+    )
+    fuzz = sub.add_parser(
+        "fuzz-scheduling",
+        help="Property/fuzz battery for cycle/rest/date invariants (optional Hypothesis)",
+    )
+    fuzz.add_argument("--examples", type=int, default=80)
+    fuzz.add_argument("--seed", type=int, default=0)
+    fr = sub.add_parser(
+        "fr-domain",
+        help="First-responder WFM knowledge (explore/brainstorm/suggest --all — broad options)",
+    )
+    fr.add_argument(
+        "fr_command",
+        nargs="?",
+        default="show",
+        help="show|explore|brainstorm|suggest|lanes|products|ui-patterns|flsa|search|compare|learn|research-queries|add-idea",
+    )
+    fr.add_argument("query", nargs="*", help="Search terms or free text")
+    fr.add_argument("--topic", default="")
+    fr.add_argument("--note", default="")
+    fr.add_argument("--source", default="")
+    fr.add_argument("--url", default="")
+    fr.add_argument("--lane", default="", help="suggest/add-idea lane filter")
+    fr.add_argument("--all", action="store_true", dest="all_ideas", help="suggest: full backlog")
+    fr.add_argument("--limit", type=int, default=80)
+    fr.add_argument("--as-idea", action="store_true", help="learn also adds idea backlog row")
+    uidom = sub.add_parser(
+        "ui-domain",
+        help="UI open-research tool (explore/brainstorm — any public source)",
+    )
+    uidom.add_argument(
+        "ui_command",
+        nargs="?",
+        default="show",
+        help="show|explore|brainstorm|suggest|research-queries|chronos-map|learn|add-idea",
+    )
+    uidom.add_argument("query", nargs="*", help="Search / topic text")
+    uidom.add_argument("--topic", default="")
+    uidom.add_argument("--note", default="")
+    uidom.add_argument("--source", default="")
+    uidom.add_argument("--url", default="")
+    uidom.add_argument("--lane", default="")
+    uidom.add_argument("--all", action="store_true", dest="all_ideas")
+    uidom.add_argument("--as-idea", action="store_true")
+    mdom = sub.add_parser(
+        "math-domain",
+        help="Logic/math open research (OR-Tools, papers, any solver — not allowlisted)",
+    )
+    mdom.add_argument(
+        "math_command",
+        nargs="?",
+        default="show",
+        help="show|explore|brainstorm|suggest|research-queries|engines|run-checks|learn|add-idea",
+    )
+    mdom.add_argument("query", nargs="*", help="Search / topic text")
+    mdom.add_argument("--topic", default="")
+    mdom.add_argument("--note", default="")
+    mdom.add_argument("--source", default="")
+    mdom.add_argument("--url", default="")
+    mdom.add_argument("--lane", default="")
+    mdom.add_argument("--all", action="store_true", dest="all_ideas")
+    mdom.add_argument("--as-idea", action="store_true")
+    osd = sub.add_parser(
+        "open-shift-digest",
+        help="Notify all active officers of open vacancies (in-app digests)",
+    )
+    osd.add_argument("--dry-run", action="store_true", help="Print only")
+    ek = sub.add_parser(
+        "enterprise-kit",
+        help="Accelerate enterprise features: patterns, thin queue, wire sketches, scaffolds",
+    )
+    ek.add_argument(
+        "ek_command",
+        nargs="?",
+        default="show",
+        help="show|patterns|thin|next|wire|recipe|scaffold",
+    )
+    ek.add_argument(
+        "ek_target",
+        nargs="?",
+        default="",
+        help="recipe name or wire symbol",
+    )
+    ek.add_argument("--name", default="", help="scaffold page name")
+    ek.add_argument("--title", default="", help="scaffold page title")
+    ek.add_argument("--route", default="", help="scaffold route path")
+    ek.add_argument("--limit", type=int, default=8, help="next: max items")
     sub.add_parser(
         "verify-features",
         help="Full feature gate: slice-check, check, smoke, scenarios, ui-smoke, ui-exhaustive",
@@ -771,6 +1213,10 @@ def main():
         "token-scan": cmd_token_scan,
         "token-minimize": cmd_token_minimize,
         "token-improve": cmd_token_improve,
+        "agent-kit": cmd_agent_kit,
+        "read-budget": cmd_read_budget,
+        "structure-lint": cmd_structure_lint,
+        "graphify-gate": cmd_graphify_gate,
         "agent-pack": cmd_agent_pack,
         "outline": cmd_outline,
         "symbol": cmd_symbol,
@@ -787,6 +1233,7 @@ def main():
         "ui-smoke": cmd_ui_smoke,
         "ui-functional": cmd_ui_functional,
         "ui-exhaustive": cmd_ui_exhaustive,
+        "verify-help": cmd_verify_help,
         "ui-handler-coverage": cmd_ui_handler_coverage,
         "ui-review": cmd_ui_review,
         "ui-diff": cmd_ui_diff,
@@ -796,6 +1243,23 @@ def main():
         "slice-map": cmd_slice_map,
         "slice-check": cmd_slice_check,
         "scenarios": cmd_scenarios,
+        "math-scenarios": cmd_math_scenarios,
+        "local-dispatch": cmd_local_dispatch,
+        "chronos-e2e": cmd_chronos_e2e,
+        "leave-flow-smoke": cmd_leave_flow_smoke,
+        "payroll-flow-smoke": cmd_payroll_flow_smoke,
+        "notification-flow-smoke": cmd_notification_flow_smoke,
+        "tool-stack": cmd_tool_stack,
+        "parity-audit": cmd_parity_audit,
+        "source-deep": cmd_source_deep,
+        "source-eval": cmd_source_eval,
+        "le-benchmark": cmd_le_benchmark,
+        "fuzz-scheduling": cmd_fuzz_scheduling,
+        "fr-domain": cmd_fr_domain,
+        "ui-domain": cmd_ui_domain,
+        "math-domain": cmd_math_domain,
+        "open-shift-digest": cmd_open_shift_digest,
+        "enterprise-kit": cmd_enterprise_kit,
         "verify-features": cmd_verify_features,
         "refactor-check": cmd_refactor_check,
         "logic-imports": cmd_logic_imports,

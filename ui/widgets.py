@@ -1,4 +1,6 @@
-"""Reusable UI components — modern law-enforcement design system."""
+"""UI component library — single design system for the rebuilt app."""
+
+from __future__ import annotations
 
 import customtkinter as ctk
 
@@ -15,11 +17,12 @@ from ui.theme import (
     DODGEVILLE_DANGER,
     DODGEVILLE_SUCCESS,
     DODGEVILLE_WARNING,
-    FONT_FAMILY,
     STATUS_COLORS,
     SUBNAV_HEIGHT,
+    UI_ACCENT_GLOW,
     UI_ACCENT_SUBTLE,
     UI_BORDER,
+    UI_BORDER_GLOW,
     UI_NAV_ACTIVE,
     UI_SURFACE,
     UI_SURFACE_LIGHT,
@@ -27,13 +30,6 @@ from ui.theme import (
     UI_TEXT_PRIMARY,
     font,
 )
-
-
-def _card_border_kwargs(kwargs: dict) -> dict:
-    out = dict(kwargs)
-    out.setdefault("border_width", 1)
-    out.setdefault("border_color", UI_BORDER)
-    return out
 
 
 def _hover_accent() -> str:
@@ -48,13 +44,7 @@ class PrimaryButton(ctk.CTkButton):
         kwargs.setdefault("hover_color", _hover_accent())
         kwargs.setdefault("text_color", "#FFFFFF")
         kwargs.setdefault("border_width", 0)
-        super().__init__(
-            parent,
-            text=text,
-            command=command,
-            font=ctk.CTkFont(family=FONT_FAMILY, size=14, weight="bold"),
-            **kwargs,
-        )
+        super().__init__(parent, text=text, command=command, font=font("body"), **kwargs)
 
 
 class SecondaryButton(ctk.CTkButton):
@@ -66,6 +56,18 @@ class SecondaryButton(ctk.CTkButton):
         kwargs.setdefault("text_color", UI_TEXT_PRIMARY)
         kwargs.setdefault("border_width", 1)
         kwargs.setdefault("border_color", UI_BORDER)
+        super().__init__(parent, text=text, command=command, font=font("body"), **kwargs)
+
+
+class DangerButton(ctk.CTkButton):
+    def __init__(self, parent, text, command=None, **kwargs):
+        kwargs.setdefault("height", BTN_HEIGHT_PRIMARY)
+        kwargs.setdefault("corner_radius", BTN_RADIUS)
+        kwargs.setdefault("fg_color", "transparent")
+        kwargs.setdefault("hover_color", UI_SURFACE_LIGHT)
+        kwargs.setdefault("text_color", DODGEVILLE_DANGER)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", DODGEVILLE_DANGER)
         super().__init__(parent, text=text, command=command, font=font("body"), **kwargs)
 
 
@@ -91,46 +93,73 @@ class CompactButton(ctk.CTkButton):
         super().__init__(parent, text=text, command=command, font=font("small"), **kwargs)
 
 
+class Card(ctk.CTkFrame):
+    """Elevated panel. Content goes in `.body` (fills the card)."""
+
+    def __init__(self, parent, *, accent: bool = False, **kwargs):
+        kwargs.setdefault("fg_color", UI_SURFACE)
+        kwargs.setdefault("corner_radius", CORNER_RADIUS)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", UI_BORDER_GLOW if accent else UI_BORDER)
+        super().__init__(parent, **kwargs)
+        body_row = 1 if accent else 0
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(body_row, weight=1)
+        if accent:
+            stripe = ctk.CTkFrame(self, fg_color=UI_ACCENT_GLOW, height=2, corner_radius=0)
+            stripe.grid(row=0, column=0, sticky="ew")
+            stripe.grid_propagate(False)
+        self.body = ctk.CTkFrame(self, fg_color="transparent")
+        self.body.grid(row=body_row, column=0, sticky="nsew")
+        self.body.grid_columnconfigure(0, weight=1)
+        self.body.grid_rowconfigure(0, weight=1)
+
+
+class SectionHeader(ctk.CTkFrame):
+    def __init__(self, parent, title: str, subtitle: str | None = None, **kwargs):
+        super().__init__(parent, fg_color="transparent", **kwargs)
+        self._title_label = ctk.CTkLabel(self, text=title, font=font("heading"), text_color=UI_TEXT_PRIMARY, anchor="w")
+        self._title_label.pack(fill="x")
+        self._subtitle_label = None
+        if subtitle:
+            self._subtitle_label = ctk.CTkLabel(
+                self, text=subtitle, font=font("small"), text_color=UI_TEXT_MUTED, anchor="w"
+            )
+            self._subtitle_label.pack(fill="x", pady=(4, 0))
+
+    def configure(self, **kwargs):
+        if "title" in kwargs:
+            self._title_label.configure(text=kwargs.pop("title"))
+        if "subtitle" in kwargs and self._subtitle_label is not None:
+            self._subtitle_label.configure(text=kwargs.pop("subtitle"))
+        if kwargs:
+            super().configure(**kwargs)
+
+
 class StatCard(ctk.CTkFrame):
-    def __init__(
-        self,
-        parent,
-        label,
-        value,
-        accent=DODGEVILLE_ACCENT,
-        clickable=False,
-        badge_style=False,
-        **kwargs,
-    ):
-        super().__init__(
-            parent,
-            fg_color=UI_SURFACE,
-            corner_radius=CORNER_RADIUS,
-            **_card_border_kwargs(kwargs),
-        )
+    def __init__(self, parent, label, value, accent=DODGEVILLE_ACCENT, clickable=False, badge_style=False, **kwargs):
+        kwargs.setdefault("fg_color", UI_SURFACE)
+        kwargs.setdefault("corner_radius", CORNER_RADIUS)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", UI_BORDER)
+        super().__init__(parent, **kwargs)
         if clickable:
             self.configure(cursor="hand2")
+        ctk.CTkFrame(self, fg_color=accent, width=3, corner_radius=0).pack(side="left", fill="y")
         inner = ctk.CTkFrame(self, fg_color="transparent")
         inner.pack(fill="both", expand=True, padx=CARD_PAD, pady=14)
-        top = ctk.CTkFrame(inner, fg_color="transparent")
-        top.pack(fill="x")
         self.label_label = ctk.CTkLabel(
-            top,
-            text=label,
+            inner,
+            text=(label or "").upper() if badge_style else label,
             font=font("stat_label"),
             text_color=UI_TEXT_MUTED,
             anchor="w",
         )
-        self.label_label.pack(side="left")
-        ctk.CTkFrame(top, fg_color=accent, width=6, height=6, corner_radius=3).pack(side="right")
+        self.label_label.pack(fill="x")
         self.value_label = ctk.CTkLabel(
-            inner,
-            text=value,
-            font=font("stat_value"),
-            text_color=UI_TEXT_PRIMARY,
-            anchor="w",
+            inner, text=value, font=font("stat_value"), text_color=UI_TEXT_PRIMARY, anchor="w"
         )
-        self.value_label.pack(anchor="w", pady=(8, 0))
+        self.value_label.pack(fill="x", pady=(6, 0))
 
     def set_value(self, value):
         self.value_label.configure(text=value)
@@ -139,140 +168,58 @@ class StatCard(ctk.CTkFrame):
         self.label_label.configure(text=label)
 
 
-class SectionHeader(ctk.CTkFrame):
-    def __init__(self, parent, title, subtitle=None, **kwargs):
-        super().__init__(parent, fg_color="transparent", **kwargs)
-        self._title_label = ctk.CTkLabel(
-            self,
-            text=title,
-            font=font("heading"),
-            text_color=UI_TEXT_PRIMARY,
-            anchor="w",
-        )
-        self._title_label.pack(fill="x")
-        self._subtitle_label = None
-        if subtitle:
-            self._subtitle_label = ctk.CTkLabel(
-                self,
-                text=subtitle,
-                font=font("small"),
-                text_color=UI_TEXT_MUTED,
-                anchor="w",
-            )
-            self._subtitle_label.pack(fill="x", pady=(4, 0))
-
-    def configure(self, **kwargs):
-        title = kwargs.pop("title", None)
-        subtitle = kwargs.pop("subtitle", None)
-        if title is not None:
-            self._title_label.configure(text=title)
-        if subtitle is not None and self._subtitle_label is not None:
-            self._subtitle_label.configure(text=subtitle)
-        if kwargs:
-            super().configure(**kwargs)
-
-
 class StatusBadge(ctk.CTkLabel):
-    def __init__(self, parent, status, **kwargs):
+    def __init__(self, parent, status: str, **kwargs):
         color = STATUS_COLORS.get(status, UI_TEXT_MUTED)
         super().__init__(
             parent,
             text=status,
             font=font("small"),
-            fg_color=color,
             text_color="#FFFFFF",
-            corner_radius=6,
-            padx=10,
-            pady=4,
+            fg_color=color,
+            corner_radius=8,
             **kwargs,
         )
 
 
 class CoverageBadge(ctk.CTkLabel):
-    def __init__(self, parent, auto_ok: bool, **kwargs):
-        if auto_ok:
-            text, color = "Auto OK", DODGEVILLE_SUCCESS
-        else:
-            text, color = "Needs Review", DODGEVILLE_WARNING
+    def __init__(self, parent, text: str, ok: bool = True, **kwargs):
+        color = DODGEVILLE_SUCCESS if ok else DODGEVILLE_WARNING
         super().__init__(
             parent,
             text=text,
             font=font("small"),
-            fg_color=color,
             text_color="#FFFFFF",
-            corner_radius=20,
-            padx=10,
-            pady=4,
+            fg_color=color,
+            corner_radius=8,
             **kwargs,
         )
 
 
-class ExpandableSection(ctk.CTkFrame):
-    def __init__(self, parent, title="More Details", start_expanded=False, **kwargs):
-        super().__init__(parent, fg_color="transparent", **kwargs)
-        self._title = title
-        self._expanded = start_expanded
-        self._toggle_btn = ctk.CTkButton(
-            self,
-            text=self._toggle_text(),
-            anchor="w",
-            fg_color="transparent",
-            hover_color=UI_SURFACE_LIGHT,
-            text_color=UI_TEXT_MUTED,
-            height=28,
-            font=font("small"),
-            command=self._toggle,
-        )
-        self._toggle_btn.pack(fill="x")
-        self.body = ctk.CTkFrame(self, fg_color=UI_SURFACE_LIGHT, corner_radius=BTN_RADIUS)
-        if start_expanded:
-            self.body.pack(fill="x", pady=(4, 0))
-
-    def _toggle_text(self) -> str:
-        arrow = "▼" if self._expanded else "▶"
-        return f"{arrow}  {self._title}"
-
-    def _toggle(self):
-        self._expanded = not self._expanded
-        if self._expanded:
-            self.body.pack(fill="x", pady=(4, 0))
-        else:
-            self.body.pack_forget()
-        self._toggle_btn.configure(text=self._toggle_text())
-
-
-class Card(ctk.CTkFrame):
-    """Elevated surface card. Place content in `.body`."""
-
-    def __init__(self, parent, accent: bool = False, **kwargs):
-        kwargs.setdefault("fg_color", UI_SURFACE)
-        kwargs.setdefault("corner_radius", CORNER_RADIUS)
-        super().__init__(parent, **_card_border_kwargs(kwargs))
-        self.grid_rowconfigure(0, weight=1)
-        self.grid_columnconfigure(0, weight=1)
-        self.body = ctk.CTkFrame(self, fg_color="transparent")
-        self.body.grid(row=0, column=0, sticky="nsew")
-
-
 class FormField(ctk.CTkFrame):
-    def __init__(self, parent, label, widget_factory, **kwargs):
+    """Labeled control that auto-packs into parent (fill=x). Returns self; use `.widget` for the control."""
+
+    def __init__(
+        self, parent, label, widget_factory, *, auto_pack: bool = True, pack_opts: dict | None = None, **kwargs
+    ):
         super().__init__(parent, fg_color="transparent", **kwargs)
-        ctk.CTkLabel(
-            self,
-            text=label,
-            font=font("small"),
-            text_color=UI_TEXT_MUTED,
-            anchor="w",
-        ).pack(fill="x", pady=(0, 6))
+        ctk.CTkLabel(self, text=label, font=font("small"), text_color=UI_TEXT_MUTED, anchor="w").pack(
+            fill="x", pady=(0, 6)
+        )
         self.widget = widget_factory(self)
         self.widget.pack(fill="x")
+        if auto_pack:
+            opts = {"fill": "x", "pady": (0, 10)}
+            if pack_opts:
+                opts.update(pack_opts)
+            self.pack(**opts)
 
 
 class NavSectionLabel(ctk.CTkLabel):
     def __init__(self, parent, text, **kwargs):
         super().__init__(
             parent,
-            text=text,
+            text=(text or "").upper(),
             font=font("nav_section"),
             text_color=UI_TEXT_MUTED,
             anchor="w",
@@ -292,7 +239,9 @@ class SegmentBar(ctk.CTkFrame):
         self._buttons.clear()
         if not segments:
             return
-        shell = ctk.CTkFrame(self, fg_color=UI_SURFACE_LIGHT, corner_radius=BTN_RADIUS)
+        shell = ctk.CTkFrame(
+            self, fg_color=UI_SURFACE_LIGHT, corner_radius=BTN_RADIUS, border_width=1, border_color=UI_BORDER
+        )
         shell.pack(fill="x")
         inner = ctk.CTkFrame(shell, fg_color="transparent")
         inner.pack(fill="x", padx=3, pady=3)
@@ -305,9 +254,9 @@ class SegmentBar(ctk.CTkFrame):
                 height=30,
                 corner_radius=BTN_RADIUS,
                 font=font("small"),
-                fg_color=UI_NAV_ACTIVE if active else "transparent",
-                hover_color=UI_BORDER,
-                text_color=UI_TEXT_PRIMARY if active else UI_TEXT_MUTED,
+                fg_color=DODGEVILLE_ACCENT if active else "transparent",
+                hover_color=UI_ACCENT_SUBTLE if active else UI_BORDER,
+                text_color="#FFFFFF" if active else UI_TEXT_MUTED,
                 command=lambda k=key: self._on_select(k),
             )
             btn.grid(row=0, column=idx, sticky="ew", padx=2)
@@ -317,8 +266,9 @@ class SegmentBar(ctk.CTkFrame):
         for tab_key, btn in self._buttons.items():
             active = tab_key == key
             btn.configure(
-                fg_color=UI_NAV_ACTIVE if active else "transparent",
-                text_color=UI_TEXT_PRIMARY if active else UI_TEXT_MUTED,
+                fg_color=DODGEVILLE_ACCENT if active else "transparent",
+                hover_color=UI_ACCENT_SUBTLE if active else UI_BORDER,
+                text_color="#FFFFFF" if active else UI_TEXT_MUTED,
             )
 
 
@@ -335,7 +285,9 @@ class SubNavBar(ctk.CTkFrame):
         self._buttons.clear()
         if not tabs:
             return
-        row = ctk.CTkFrame(self, fg_color=UI_SURFACE_LIGHT, corner_radius=BTN_RADIUS)
+        row = ctk.CTkFrame(
+            self, fg_color=UI_SURFACE_LIGHT, corner_radius=BTN_RADIUS, border_width=1, border_color=UI_BORDER
+        )
         row.pack(fill="x", padx=CONTENT_PAD, pady=(0, 10))
         inner = ctk.CTkFrame(row, fg_color="transparent")
         inner.pack(fill="x", padx=3, pady=3)
@@ -348,9 +300,9 @@ class SubNavBar(ctk.CTkFrame):
                 height=30,
                 corner_radius=BTN_RADIUS,
                 font=font("small"),
-                fg_color=UI_NAV_ACTIVE if active else "transparent",
-                hover_color=UI_BORDER,
-                text_color=UI_TEXT_PRIMARY if active else UI_TEXT_MUTED,
+                fg_color=DODGEVILLE_ACCENT if active else "transparent",
+                hover_color=UI_ACCENT_SUBTLE if active else UI_BORDER,
+                text_color="#FFFFFF" if active else UI_TEXT_MUTED,
                 command=lambda k=key: self._on_select(k),
             )
             btn.grid(row=0, column=idx, sticky="ew", padx=2)
@@ -360,77 +312,63 @@ class SubNavBar(ctk.CTkFrame):
         for tab_key, btn in self._buttons.items():
             active = tab_key == key
             btn.configure(
-                fg_color=UI_NAV_ACTIVE if active else "transparent",
-                text_color=UI_TEXT_PRIMARY if active else UI_TEXT_MUTED,
+                fg_color=DODGEVILLE_ACCENT if active else "transparent",
+                hover_color=UI_ACCENT_SUBTLE if active else UI_BORDER,
+                text_color="#FFFFFF" if active else UI_TEXT_MUTED,
             )
 
 
 class NavButton(ctk.CTkFrame):
-    """Sidebar row with stroke icon + label."""
-
     def __init__(self, parent, text, icon, command, nav_key: str = "", **kwargs):
-        super().__init__(parent, fg_color="transparent", height=36, **kwargs)
+        super().__init__(parent, fg_color="transparent", height=40, **kwargs)
         self._base_text = text
         self._command = command
-        self._active = False
         self._nav_key = nav_key
-
         self._row = ctk.CTkFrame(self, fg_color="transparent", corner_radius=BTN_RADIUS, cursor="hand2")
-        self._row.pack(fill="x", padx=4, pady=1)
-        self._row.bind("<Button-1>", lambda _e: self._invoke())
-        self._row.grid_columnconfigure(1, weight=1)
-
+        self._row.pack(fill="x", padx=6, pady=1)
+        self._row.grid_columnconfigure(2, weight=1)
+        self._rail = ctk.CTkFrame(self._row, fg_color="transparent", width=3)
+        self._rail.grid(row=0, column=0, sticky="ns", pady=6)
         self._icon_label = ctk.CTkLabel(self._row, text="", width=20)
-        self._icon_label.grid(row=0, column=0, padx=(10, 8), pady=8)
-        self._icon_label.bind("<Button-1>", lambda _e: self._invoke())
-
-        self._label = ctk.CTkLabel(
-            self._row,
-            text=text,
-            font=font("nav"),
-            text_color=UI_TEXT_MUTED,
-            anchor="w",
-        )
-        self._label.grid(row=0, column=1, sticky="ew", pady=8)
-        self._label.bind("<Button-1>", lambda _e: self._invoke())
-
+        self._icon_label.grid(row=0, column=1, padx=(10, 8), pady=9)
+        self._label = ctk.CTkLabel(self._row, text=text, font=font("nav"), text_color=UI_TEXT_MUTED, anchor="w")
+        self._label.grid(row=0, column=2, sticky="ew", pady=9)
         self._count_label = ctk.CTkLabel(
             self._row,
             text="",
             font=font("small"),
             text_color="#FFFFFF",
             fg_color=DODGEVILLE_ACCENT,
-            corner_radius=8,
-            width=20,
+            corner_radius=9,
+            width=22,
             height=18,
         )
-        self._count_label.grid(row=0, column=2, padx=(4, 10))
+        self._count_label.grid(row=0, column=3, padx=(4, 10))
         self._count_label.grid_remove()
-        self._count_label.bind("<Button-1>", lambda _e: self._invoke())
+        for w in (self._row, self._rail, self._icon_label, self._label, self._count_label):
+            w.bind("<Button-1>", lambda _e: self._invoke())
+        self.set_active(False)
 
-        self._set_icon(active=False)
-
-    def _invoke(self) -> None:
+    def _invoke(self):
         if self._command:
             self._command()
 
-    def _set_icon(self, *, active: bool) -> None:
-        color = DODGEVILLE_ACCENT if active else UI_TEXT_MUTED
-        icon_img = render_icon(self._nav_key, size=18, color=color)
-        if icon_img:
-            self._icon_label.configure(image=icon_img)
-        else:
-            self._icon_label.configure(image=None, text="·", text_color=color)
-
     def set_active(self, active: bool):
-        self._active = active
         if active:
             self._row.configure(fg_color=UI_NAV_ACTIVE)
-            self._label.configure(text_color=UI_TEXT_PRIMARY, font=font("nav"))
+            self._rail.configure(fg_color=UI_ACCENT_GLOW)
+            self._label.configure(text_color=UI_TEXT_PRIMARY)
+            color = UI_ACCENT_GLOW
         else:
             self._row.configure(fg_color="transparent")
-            self._label.configure(text_color=UI_TEXT_MUTED, font=font("nav"))
-        self._set_icon(active=active)
+            self._rail.configure(fg_color="transparent")
+            self._label.configure(text_color=UI_TEXT_MUTED)
+            color = UI_TEXT_MUTED
+        icon_img = render_icon(self._nav_key, size=18, color=color)
+        if icon_img:
+            self._icon_label.configure(image=icon_img, text="")
+        else:
+            self._icon_label.configure(image=None, text="·", text_color=color)
 
     def set_badge(self, count: int = 0):
         if count > 0:
@@ -438,21 +376,16 @@ class NavButton(ctk.CTkFrame):
             self._count_label.grid()
         else:
             self._count_label.grid_remove()
-        self._label.configure(text=self._base_text)
 
 
 class SearchBar(ctk.CTkEntry):
     def __init__(self, parent, placeholder="Search...", **kwargs):
-        super().__init__(
-            parent,
-            placeholder_text=placeholder,
-            height=36,
-            corner_radius=BTN_RADIUS,
-            border_color=UI_BORDER,
-            fg_color=UI_SURFACE_LIGHT,
-            text_color=UI_TEXT_PRIMARY,
-            **kwargs,
-        )
+        kwargs.setdefault("height", 32)
+        kwargs.setdefault("corner_radius", BTN_RADIUS)
+        kwargs.setdefault("border_color", UI_BORDER)
+        kwargs.setdefault("fg_color", UI_SURFACE_LIGHT)
+        kwargs.setdefault("text_color", UI_TEXT_PRIMARY)
+        super().__init__(parent, placeholder_text=placeholder, **kwargs)
 
 
 class AlertBanner(ctk.CTkFrame):
@@ -462,21 +395,165 @@ class AlertBanner(ctk.CTkFrame):
         "info": DODGEVILLE_ACCENT,
         "success": DODGEVILLE_SUCCESS,
     }
+    _LABELS = {"critical": "CRITICAL", "warning": "WATCH", "info": "INFO", "success": "CLEAR"}
 
     def __init__(self, parent, message: str, severity: str = "info", **kwargs):
         color = self._COLORS.get(severity, DODGEVILLE_ACCENT)
         kwargs.setdefault("corner_radius", BTN_RADIUS)
-        kwargs.setdefault("border_width", 0)
-        super().__init__(parent, fg_color=UI_SURFACE, **kwargs)
-        bar = ctk.CTkFrame(self, fg_color=color, width=4, corner_radius=2)
-        bar.pack(side="left", fill="y")
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", color)
+        kwargs.setdefault("fg_color", UI_SURFACE)
+        super().__init__(parent, **kwargs)
+        ctk.CTkFrame(self, fg_color=color, width=5, corner_radius=0).pack(side="left", fill="y")
+        body = ctk.CTkFrame(self, fg_color="transparent")
+        body.pack(side="left", fill="both", expand=True, padx=12, pady=10)
         ctk.CTkLabel(
+            body, text=self._LABELS.get(severity, "INFO"), font=font("micro"), text_color=color, anchor="w"
+        ).pack(fill="x")
+        ctk.CTkLabel(
+            body, text=message, font=font("body"), text_color=UI_TEXT_PRIMARY, anchor="w", wraplength=720
+        ).pack(fill="x", pady=(2, 0))
+
+
+class ActionTile(ctk.CTkFrame):
+    def __init__(self, parent, title: str, subtitle: str = "", command=None, accent=None, **kwargs):
+        accent = accent or DODGEVILLE_ACCENT
+        kwargs.setdefault("fg_color", UI_SURFACE_LIGHT)
+        kwargs.setdefault("corner_radius", CORNER_RADIUS)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", UI_BORDER)
+        kwargs.setdefault("cursor", "hand2")
+        super().__init__(parent, **kwargs)
+        self._command = command
+        ctk.CTkFrame(self, fg_color=accent, width=3, corner_radius=0).pack(side="left", fill="y")
+        inner = ctk.CTkFrame(self, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=12, pady=10)
+        ctk.CTkLabel(inner, text=title, font=font("subheading"), text_color=UI_TEXT_PRIMARY, anchor="w").pack(fill="x")
+        if subtitle:
+            ctk.CTkLabel(inner, text=subtitle, font=font("small"), text_color=UI_TEXT_MUTED, anchor="w").pack(
+                fill="x", pady=(2, 0)
+            )
+        for w in (self, inner, *inner.winfo_children()):
+            w.bind("<Button-1>", lambda _e: self._invoke())
+
+    def _invoke(self):
+        if self._command:
+            self._command()
+
+
+class EmptyState(ctk.CTkFrame):
+    def __init__(self, parent, title: str, hint: str = "", *, cta_text: str = "", cta_command=None, **kwargs):
+        kwargs.setdefault("fg_color", UI_SURFACE)
+        kwargs.setdefault("corner_radius", CORNER_RADIUS)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", UI_BORDER)
+        super().__init__(parent, **kwargs)
+        inner = ctk.CTkFrame(self, fg_color="transparent")
+        inner.pack(fill="both", expand=True, padx=CARD_PAD, pady=28)
+        ctk.CTkLabel(inner, text=title, font=font("subheading"), text_color=UI_TEXT_PRIMARY).pack()
+        if hint:
+            ctk.CTkLabel(
+                inner, text=hint, font=font("small"), text_color=UI_TEXT_MUTED, wraplength=420, justify="center"
+            ).pack(pady=(6, 0))
+        if cta_text and cta_command:
+            PrimaryButton(inner, text=cta_text, command=cta_command, height=BTN_HEIGHT_TOOLBAR).pack(pady=(14, 0))
+
+
+class StatusLegend(ctk.CTkFrame):
+    def __init__(self, parent, items: list[tuple[str, str]], **kwargs):
+        kwargs.setdefault("fg_color", UI_SURFACE_LIGHT)
+        kwargs.setdefault("corner_radius", BTN_RADIUS)
+        kwargs.setdefault("border_width", 1)
+        kwargs.setdefault("border_color", UI_BORDER)
+        super().__init__(parent, **kwargs)
+        row = ctk.CTkFrame(self, fg_color="transparent")
+        row.pack(fill="x", padx=10, pady=8)
+        for label, color in items:
+            chip = ctk.CTkFrame(row, fg_color=UI_SURFACE, corner_radius=12, border_width=1, border_color=UI_BORDER)
+            chip.pack(side="left", padx=(0, 8))
+            ctk.CTkFrame(chip, fg_color=color, width=8, height=8, corner_radius=4).pack(
+                side="left", padx=(8, 4), pady=6
+            )
+            ctk.CTkLabel(chip, text=label, font=font("small"), text_color=UI_TEXT_MUTED).pack(side="left", padx=(0, 10))
+
+
+class ToastHost(ctk.CTkFrame):
+    _LEVEL_BORDER = {
+        "info": DODGEVILLE_ACCENT,
+        "success": DODGEVILLE_SUCCESS,
+        "warning": DODGEVILLE_WARNING,
+        "error": DODGEVILLE_DANGER,
+    }
+
+    def __init__(self, parent, **kwargs):
+        super().__init__(
+            parent,
+            fg_color=UI_SURFACE,
+            corner_radius=CORNER_RADIUS,
+            border_width=1,
+            border_color=UI_BORDER,
+            **kwargs,
+        )
+        self._after_id = None
+        self._bar = ctk.CTkFrame(self, fg_color=DODGEVILLE_ACCENT, width=4, corner_radius=2)
+        self._bar.pack(side="left", fill="y", padx=(8, 0), pady=8)
+        self._label = ctk.CTkLabel(
+            self, text="", font=font("small"), text_color=UI_TEXT_PRIMARY, anchor="w", wraplength=360
+        )
+        self._label.pack(side="left", fill="both", expand=True, padx=12, pady=12)
+        self.place_forget()
+
+    def show(self, message: str, *, level: str = "info", ms: int = 3200) -> None:
+        text = (message or "").strip()
+        if not text:
+            return
+        color = self._LEVEL_BORDER.get(level, DODGEVILLE_ACCENT)
+        self._bar.configure(fg_color=color)
+        self.configure(border_color=color)
+        self._label.configure(text=text)
+        self.lift()
+        self.place(relx=1.0, rely=1.0, x=-20, y=-44, anchor="se")
+        if self._after_id is not None:
+            try:
+                self.after_cancel(self._after_id)
+            except Exception:
+                pass
+        self._after_id = self.after(ms, self.hide)
+
+    def hide(self) -> None:
+        self._after_id = None
+        self.place_forget()
+
+
+class ExpandableSection(ctk.CTkFrame):
+    def __init__(self, parent, title: str, **kwargs):
+        super().__init__(parent, fg_color="transparent", **kwargs)
+        self._open = True
+        self._toggle_btn = ctk.CTkButton(
             self,
-            text=message,
-            font=font("body"),
+            text=self._toggle_text(title),
+            fg_color="transparent",
+            hover_color=UI_SURFACE_LIGHT,
             text_color=UI_TEXT_PRIMARY,
             anchor="w",
-        ).pack(side="left", fill="x", expand=True, padx=14, pady=12)
+            command=self._toggle,
+        )
+        self._toggle_btn.pack(fill="x")
+        self.body = ctk.CTkFrame(self, fg_color=UI_SURFACE_LIGHT, corner_radius=BTN_RADIUS)
+        self.body.pack(fill="x", pady=(4, 0))
+        self._title = title
+
+    def _toggle_text(self, title=None):
+        t = title or getattr(self, "_title", "")
+        return f"{'▾' if self._open else '▸'}  {t}"
+
+    def _toggle(self):
+        self._open = not self._open
+        self._toggle_btn.configure(text=self._toggle_text())
+        if self._open:
+            self.body.pack(fill="x", pady=(4, 0))
+        else:
+            self.body.pack_forget()
 
 
 class MetricRow(ctk.CTkFrame):
@@ -487,15 +564,5 @@ class MetricRow(ctk.CTkFrame):
                 self, fg_color=UI_SURFACE, corner_radius=BTN_RADIUS, border_width=1, border_color=UI_BORDER
             )
             chip.pack(side="left", padx=(0, 10), pady=2)
-            ctk.CTkLabel(
-                chip,
-                text=str(value),
-                font=font("subheading"),
-                text_color=accent,
-            ).pack(padx=16, pady=(10, 0))
-            ctk.CTkLabel(
-                chip,
-                text=label,
-                font=font("small"),
-                text_color=UI_TEXT_MUTED,
-            ).pack(padx=16, pady=(0, 10))
+            ctk.CTkLabel(chip, text=str(value), font=font("subheading"), text_color=accent).pack(padx=16, pady=(10, 0))
+            ctk.CTkLabel(chip, text=label, font=font("small"), text_color=UI_TEXT_MUTED).pack(padx=16, pady=(0, 10))

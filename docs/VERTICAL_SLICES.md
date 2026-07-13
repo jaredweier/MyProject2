@@ -62,7 +62,7 @@ Keep slices **small and actionable** for agents and humans:
 
 ## Strategy: previous work
 
-All shipped features are registered as **`status: complete`** slices. No code moves required retroactively.
+Slices were registered as **`status: complete`**, but as of 2026-07-09 many UI paths are **stale** (deleted `ui/*_pages.py`). Treat status as **untrusted** until `docs/TRUST_REPAIR_CHECKLIST.md` P0 passes and `python dev.py slice-check` is clean. Prefer dual status: logic vs Chronos UI.
 
 1. **Agents** — When fixing or extending a feature, read the slice entry first; edit only `touch_together` files (+ shared kernel if truly cross-cutting).
 2. **Humans** — Use `slice-map` to see coverage; use `slice-check` before merge.
@@ -93,7 +93,7 @@ Suggested order (highest churn / clearest boundaries first):
 1. `day-off-requests` + `shift-swaps` → `logic/requests.py`
 2. `roster` → `logic/officers.py`
 3. `schedules` → `logic/snapshots.py`
-4. `payroll-timecard` → `logic/payroll.py`
+4. `payroll-timecard` → `logic/payroll/` (package)
 5. `user-accounts` → `logic/users.py`
 6. `reports-analytics` + `exports-ical` → `logic/exports.py`
 7. `availability` + `open-shifts` + `simulator` + `database-backup` → `logic/operations.py`

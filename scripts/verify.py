@@ -3,7 +3,7 @@ Unified verification — single source of truth for all gates.
 
 Tiers are strict supersets (no conflicting signals):
   fast      → imports, audit, readiness          (~25s)  — after each edit
-  preflight → fast + slice-check                  (~35s)  — pre-commit / handoff
+  preflight → fast + slice-check + graphify       (~40s)  — pre-commit / handoff
   check     → preflight + test + scenarios        (~3m)   — ship / CI
   full      → check + smoke + ui-smoke             (~5m)   — release candidate
   release   → full + ui-exhaustive                 (~15m)  — full regression
@@ -40,7 +40,7 @@ IMPORT_MODULES = [
 
 # Concrete steps only — tiers expand these lists (no duplicate steps).
 STEP_FAST: List[str] = ["imports", "audit", "readiness"]
-STEP_PREFLIGHT: List[str] = ["imports", "slice-check", "audit", "readiness"]
+STEP_PREFLIGHT: List[str] = ["imports", "slice-check", "audit", "readiness", "graphify"]
 STEP_CHECK: List[str] = STEP_PREFLIGHT + ["rust-backend", "test", "scenarios"]
 STEP_FULL: List[str] = STEP_CHECK + ["smoke", "ui-workflow", "ui-smoke"]
 STEP_RELEASE: List[str] = STEP_FULL + ["ui-exhaustive"]
@@ -170,6 +170,13 @@ def _step_refactor_check() -> int:
     return run_refactor_check()
 
 
+def _step_graphify() -> int:
+    """Keep central knowledge graph current (code-only AST; free)."""
+    from scripts.graphify_gate import run_graphify_gate
+
+    return run_graphify_gate(force=False, strict=True, quiet=False)
+
+
 _STEP_RUNNERS: dict[str, Callable[[], int]] = {
     "imports": _step_imports,
     "audit": _step_audit,
@@ -184,6 +191,7 @@ _STEP_RUNNERS: dict[str, Callable[[], int]] = {
     "rust-backend": _step_rust_backend,
     "ui-exhaustive": _step_ui_exhaustive,
     "refactor-check": _step_refactor_check,
+    "graphify": _step_graphify,
 }
 
 

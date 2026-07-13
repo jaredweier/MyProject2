@@ -71,3 +71,6 @@ graphify-out/.graphify_analysis.json
 graphify-out/manifest.json
 graphify-out/.graphify_labels.json
 graphify-out/.graphify_labels.json.sig
+
+storage_secret.txt
+.nicegui/

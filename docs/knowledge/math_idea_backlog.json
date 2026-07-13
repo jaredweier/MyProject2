@@ -1,0 +1,40 @@
+{
+  "ideas": [
+    {
+      "lane": "flsa_payroll",
+      "idea": "Hours vs 7k-style threshold meter on timecards using work_period_days scaling 171*(days/28)",
+      "why": "",
+      "added": "2026-07-09T08:49:50.438023+00:00"
+    },
+    {
+      "lane": "plan-explain",
+      "idea": "logic/plan_explain.explain_coverage_plans formats multi-plan scores/steps for supervisors (OR explainability)",
+      "why": "https://developers.google.com/optimization",
+      "added": "2026-07-09T08:52:26.095292+00:00"
+    },
+    {
+      "lane": "math",
+      "idea": "Hard/soft constraint split is standard in modern roster solvers (Timefold, OR-Tools CP-SAT). Chronos: hard = night min, rest, squad duty; soft = junior-first bump score, plan ranking. Keep explain_cov",
+      "why": "https://docs.timefold.ai/",
+      "added": "2026-07-09T09:08:26.435463+00:00"
+    },
+    {
+      "lane": "math",
+      "idea": "Read google/or-tools shift_scheduling_sat.py: work[e,s,d] bools; exactly_one per day; soft sequence via negated_bounded_span + penalty literals; soft sum with IntVar excess; night→morning forbidden (c",
+      "why": "https://github.com/google/or-tools/blob/stable/examples/python/shift_scheduling_sat.py",
+      "added": "2026-07-09T09:10:25.370613+00:00"
+    },
+    {
+      "lane": "math",
+      "idea": "Read EmployeeSchedulingConstraintProvider.java: defineConstraints returns HARD then SOFT array. HARD: requiredSkill, noOverlappingShifts, atLeast10HoursBetweenTwoShifts, oneShiftPerDay, unavailableEmp",
+      "why": "https://github.com/TimefoldAI/timefold-quickstarts/blob/stable/java/employee-scheduling/src/main/java/org/acme/employeescheduling/solver/EmployeeSchedulingConstraintProvider.java",
+      "added": "2026-07-09T09:10:25.776171+00:00"
+    },
+    {
+      "lane": "math",
+      "idea": "Ported shift_scheduling_sat patterns into logic/cp_sat_bridge: hard cover minima, soft excess cover, Timefold-style load_balance unfairness (max-min days), night→early transition forbids, named penalt",
+      "why": "https://github.com/google/or-tools/blob/stable/examples/python/shift_scheduling_sat.py",
+      "added": "2026-07-09T09:20:30.883483+00:00"
+    }
+  ]
+}

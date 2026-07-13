@@ -2,14 +2,23 @@
 
 How external OSS tools complement Cursor/Grok agents, skills, and `dev.py` for this project.
 
+**Hub:** [`AGENT_TOOLKIT.md`](AGENT_TOOLKIT.md) · **Bootstrap:** `python dev.py agent-kit`
+**Chronos UI stack (NiceGUI/Quasar/calendar/security links):** [`CHRONOS_SOURCES.md`](CHRONOS_SOURCES.md) — **use before inventing UI patterns**
+
 ## In-repo agent stack (already wired)
 
 | Tool | Purpose |
 |------|---------|
 | `AGENTS.md` + `.grok/skills/` | Cursor/Grok skills and rules |
+| `python dev.py agent-kit` | Free session bootstrap (token-first pack) |
+| `python dev.py read-budget` | Token estimate before full-file reads |
+| `python dev.py structure-lint` | Architecture layer / monolith soft checks |
 | `python dev.py ui-observe` | Observation bundle for vision agents |
 | `python dev.py ui-diff` | Pillow visual regression vs baselines |
 | `python dev.py preflight` / `check` | Fast and full verification |
+| `.grok/rules/ui-modern.md` | Modern UI design-system rules |
+| `.grok/rules/scheduling-math.md` | Rotation / bump / pay-period math card |
+| `.grok/skills/token-discipline/` | Token minimization skill |
 
 ## OpenCode ([anomalyco/opencode](https://github.com/anomalyco/opencode))
 
@@ -88,11 +97,41 @@ Dependabot: `.github/dependabot.yml` — weekly pip + monthly GitHub Actions upd
 
 ## Usage minimization (zero Agent usage)
 
-See [`docs/ZERO_AGENT_USAGE.md`](ZERO_AGENT_USAGE.md), [`docs/USAGE_MINIMIZATION.md`](USAGE_MINIMIZATION.md), `.cursor/rules/token-minimization.mdc`, and `.grok/skills/cost-efficient-workflow/SKILL.md`. Audit: `python dev.py token-audit`.
+See [`docs/ZERO_AGENT_USAGE.md`](ZERO_AGENT_USAGE.md), [`docs/USAGE_MINIMIZATION.md`](USAGE_MINIMIZATION.md), `.cursor/rules/token-minimization.mdc`, `.grok/skills/token-discipline/SKILL.md`, and `.grok/skills/cost-efficient-workflow/SKILL.md`. Audit: `python dev.py token-audit`.
 
-Free commands: `cheap-check`, `lint`, `deps-audit`, `usage-brief`, `fix-hint`, `preflight`, `check`, CI on push.
+Free commands: `agent-kit`, `read-budget`, `structure-lint`, `cheap-check`, `lint`, `deps-audit`, `usage-brief`, `fix-hint`, `preflight`, `check`, CI on push.
 
 Cheapest UI path: `ui-review` → `ui-diff --quick` → `ui-diff` (full) → `ui-observe` → `ui-observe --live`.
+
+## External OSS worth knowing (2026)
+
+| Project | Stars / role | Project fit |
+|---------|----------------|-------------|
+| [CustomTkinter](https://github.com/TomSchimansky/CustomTkinter) | Modern Tk | Legacy UI |
+| [NiceGUI](https://github.com/zauberzeug/nicegui) | Web+native | Chronos primary |
+| [astral-sh/ruff](https://github.com/astral-sh/ruff) | Fast linter | `dev.py lint` |
+| [anomalyco/opencode](https://github.com/anomalyco/opencode) | OSS coding agent | Terminal + Ollama |
+| [Aider](https://github.com/Aider-AI/aider) | Terminal agent | Cheap multi-file + local models |
+| [Continue.dev](https://github.com/continuedev/continue) | IDE agent | Local/cheap models |
+| [microsoft/playwright](https://github.com/microsoft/playwright) | Browser E2E | `dev.py chronos-e2e` |
+| [OR-Tools CP-SAT](https://developers.google.com/optimization) | Constraint math | `logic/cp_sat_bridge.py` (optional) |
+| [PyO3/pyo3](https://github.com/PyO3/pyo3) + maturin | Rust↔Python | `scheduler_core` |
+| [pre-commit/pre-commit](https://github.com/pre-commit/pre-commit) | Git hooks | Local gates |
+| [ollama/ollama](https://github.com/ollama/ollama) | Local models | Trivial tasks $0 cloud |
+| [BerriAI/litellm](https://github.com/BerriAI/litellm) | LLM proxy/cache | Optional spend control |
+| [langfuse/langfuse](https://github.com/langfuse/langfuse) | LLM observability | Optional eval metrics |
+
+### Implemented helpers (token + math + UI)
+
+| Command | Role |
+|---------|------|
+| `python dev.py local-dispatch "…"` | Route task → free machine tools ($0 LLM) |
+| `python dev.py math-scenarios` | Sophisticated scheduling math (optional CP-SAT) |
+| `python dev.py chronos-e2e` | Playwright Chronos smoke (optional install) |
+| `python dev.py tool-stack` | Print stack summary |
+| Full catalog | [`EXTERNAL_TOOL_STACK.md`](EXTERNAL_TOOL_STACK.md) |
+
+Do **not** add LangChain/agents frameworks into the scheduler runtime — keep product code free of LLM deps.
 
 ## Recommended multi-agent workflow
 

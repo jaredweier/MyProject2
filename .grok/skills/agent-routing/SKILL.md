@@ -1,29 +1,43 @@
 ---
 name: agent-routing
 description: >
-  Route Dodgeville PD tasks to the right AI agent, subagent, and model tier by
-  complexity and domain. Auto-context is OFF — load skills on demand. Any agent
-  or LLM may be used for any task; routing is advisory.
+  Route Chronos/Dodgeville tasks by complexity to the cheapest fit agent and model.
+  Includes multi-UI-agent chains (static, Chronos NiceGUI, vision, browser OSS).
+  Auto-context OFF — load skills on demand.
 ---
 
 # Agent Routing
 
 ## Policy
 
-1. **Auto-context OFF** — do not preload HANDOFF, all skills, or full docs unless user @-mentions them or runs `python dev.py route-task`.
-2. **Any agent/LLM allowed** for any task — pick by fit, not restriction.
-3. **Route first** — `python dev.py route-task "<task>"` → complexity, skill, Cursor mode, model tier.
+1. **Auto-context OFF** — no full HANDOFF/skills dump unless routed or @-mentioned.
+2. **Any agent/LLM allowed** — pick by fit; prefer **lowest cost_tier**.
+3. **Route first** — `python dev.py route-task "<task>"`.
+4. **UI work** — follow printed **ui_lane** and **agent chain** (cheap→expensive). Catalog: `docs/UI_AGENTS_CATALOG.md`.
 
-## Complexity tiers
+## Complexity → cost (auto)
 
-| Tier | When | Cursor | Model tier | Subagents |
-|------|------|--------|------------|-----------|
-| trivial | typo, format, import | Tab | fast / none | none |
-| low | explain, locate symbol | Ask | Auto / mini | optional |
-| medium | one slice bug/feature | Agent | Sonnet / Grok | domain skill |
-| high | arch, multi-slice, rust | Plan → Agent | Opus / reasoning | 2+ skills |
-| vision | UI wrong visually | Agent + images | vision model | ui-vision + ui-dev |
-| verify | tests/audit pass? | terminal or Agent | any | qa-free optional |
+| Tier | Cost | Mode | Model |
+|------|------|------|-------|
+| verify | free | terminal | none |
+| trivial | free | Tab | none |
+| low | cheap | Ask | mini / Flash / Haiku / Grok Fast |
+| medium | balanced | Agent | Sonnet / Grok / Composer |
+| high | flagship | Plan→Agent | Opus / reasoning |
+| vision | vision | Agent+1PNG | vision **after** ui-review |
+| browser | vision | Playwright first | then browser-use / Skyvern |
+
+## UI agents (built-in chain)
+
+| Lane | OpenCode agent | Escalate (OSS) |
+|------|----------------|----------------|
+| copy | `ui-static-reviewer` | — |
+| chronos | `ui-chronos` | Playwright → browser-use |
+| layout | primary + ui-development | Cline |
+| vision | `ui-vision-reviewer` | OmniParser → browser-use |
+| browser | ui-chronos + catalog | Stagehand → Skyvern |
+
+Never vision for typo/Title Case. Never flagship for verify.
 
 ## Domain → skill
 
@@ -32,15 +46,16 @@ description: >
 | bump, rotation, day-off | `scheduling-logic` |
 | payroll, timecard | `payroll-timecard` |
 | auth, permissions | `security` |
-| UI tabs/widgets | `ui-development` |
-| look/feel, PNGs | `ui-vision-review` |
+| Chronos gui / NiceGUI | `ui-development` |
+| copy / theme | `ui-aesthetics-review` |
+| screenshots | `ui-vision-review` |
 | cli, dev.py | `cli-operations` |
 | build, .exe | `build-deploy` |
-| refactor, split | `refactor` |
+| refactor | `refactor` |
 | unsure | `dodgeville-scheduler` |
+
+**UI visual design XOR:** for look/layout aesthetics, also load **either** `frontend-design` **or** one taste-skill (e.g. `design-taste-frontend` / `redesign-existing-projects`) — **never both** unless the user says so. Defaults: Chronos polish → taste; greenfield brand → frontend-design. See `AGENTS.md` § UI design skills.
 
 ## Context
 
-`logs/agent_pack/latest.md` (dynamic) · `docs/AGENT_STABLE.md` (policy) · `python dev.py route-task "<task>"`
-
-Detail: `docs/AGENT_ROUTING.md`
+`logs/agent_pack/latest.md` · `docs/AGENT_STABLE.md` · `docs/AGENT_ROUTING.md` · `docs/UI_AGENTS_CATALOG.md` · `docs/TOKEN_PERFORMANCE.md`

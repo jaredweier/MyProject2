@@ -53,8 +53,12 @@ def save_flsa_settings(
     base_date_text: Optional[str] = None,
     *,
     user_id: Optional[int] = None,
+    dual_workforce: Optional[bool] = None,
+    civilian_weekly_threshold: Optional[float] = None,
+    sworn_comp_cap: Optional[float] = None,
+    civilian_comp_cap: Optional[float] = None,
 ) -> Dict:
-    """Persist FLSA §207(k) work-period length and anchor date."""
+    """Persist FLSA §207(k) work-period length, anchor, and dual-workforce knobs (Netchex pattern)."""
     from logic.operations import set_department_setting
     from logic.users import log_audit_action
 
@@ -70,10 +74,30 @@ def save_flsa_settings(
         except ValueError as exc:
             return {"success": False, "message": str(exc)}
 
-    for key, value in (
+    pairs = [
         ("flsa_work_period_days", str(days)),
         ("flsa_207k_base_date", storage_date_str(base_date.isoformat())),
-    ):
+    ]
+    if dual_workforce is not None:
+        pairs.append(("flsa_dual_workforce", "1" if dual_workforce else "0"))
+    if civilian_weekly_threshold is not None:
+        try:
+            thr = max(1.0, min(float(civilian_weekly_threshold), 80.0))
+        except (TypeError, ValueError):
+            return {"success": False, "message": "Civilian weekly threshold must be numeric"}
+        pairs.append(("flsa_civilian_weekly_threshold", str(thr)))
+    if sworn_comp_cap is not None:
+        try:
+            pairs.append(("flsa_comp_cap_sworn", str(max(1.0, float(sworn_comp_cap)))))
+        except (TypeError, ValueError):
+            return {"success": False, "message": "Sworn comp cap must be numeric"}
+    if civilian_comp_cap is not None:
+        try:
+            pairs.append(("flsa_comp_cap_civilian", str(max(1.0, float(civilian_comp_cap)))))
+        except (TypeError, ValueError):
+            return {"success": False, "message": "Civilian comp cap must be numeric"}
+
+    for key, value in pairs:
         result = set_department_setting(key, value, user_id=user_id)
         if not result.get("success"):
             return result
@@ -89,10 +113,29 @@ def save_flsa_settings(
 
 
 def get_flsa_settings() -> Dict:
-    """Current FLSA §207(k) configuration for payroll UI."""
+    """Current FLSA §207(k) configuration for payroll UI (+ dual workforce Netchex knobs)."""
+    from config import FLSA_COMP_TIME_MAX_HOURS
+    from logic.operations import get_department_setting
+
     days = get_flsa_work_period_days()
     base = get_flsa_base_date()
     start, end = get_flsa_work_period()
+    dual_raw = get_department_setting("flsa_dual_workforce", "0").strip()
+    dual = dual_raw in ("1", "true", "yes", "on")
+    try:
+        civ_thr = float(get_department_setting("flsa_civilian_weekly_threshold", "40") or 40)
+    except ValueError:
+        civ_thr = 40.0
+    try:
+        sworn_cap = float(
+            get_department_setting("flsa_comp_cap_sworn", str(FLSA_COMP_TIME_MAX_HOURS)) or FLSA_COMP_TIME_MAX_HOURS
+        )
+    except ValueError:
+        sworn_cap = float(FLSA_COMP_TIME_MAX_HOURS or 480)
+    try:
+        civ_cap = float(get_department_setting("flsa_comp_cap_civilian", "240") or 240)
+    except ValueError:
+        civ_cap = 240.0
     return {
         "success": True,
         "work_period_days": days,
@@ -101,6 +144,10 @@ def get_flsa_settings() -> Dict:
         "current_period_start": format_date(start),
         "current_period_end": format_date(end),
         "hours_threshold": flsa_threshold_for_period_days(days),
+        "dual_workforce": dual,
+        "civilian_weekly_threshold": civ_thr,
+        "sworn_comp_cap": sworn_cap,
+        "civilian_comp_cap": civ_cap,
     }
 
 
