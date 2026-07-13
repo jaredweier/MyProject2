@@ -12,7 +12,7 @@
 - [ ] **LDAP optional** — `logic/ldap_auth.py` when configured; **not department-tested** — leave off unless field-validated
 - [x] **CTk maximize freeze** — `apply_main_window_layout` once-only via `_applied_for` in `ui/window_layout.py`; do **not** bind `<Map>` to maximize (login `<Map>` may only re-center login window)
 - [x] **Chronos leave approve UX** — confirm + multi-plan pick + reject notes in `gui/pages/leave.py` (2026-07-09); still partial until browser e2e
-- [ ] **Date display contract** — user-visible calendar dates via `validators.format_date` (US M/D/YY); storage ISO. Intentional exceptions: clock times (`gui/clock.py`), CSV export stamps (`gui/tables.py`), weekday abbr next to `format_date` on matrix headers
+- [x] **Date display contract** — user-visible calendar dates via `validators.format_date` (**M/D/YY** mm-dd-yy, `/` or `-`, year 2 or 4 digits); storage ISO. Intentional exceptions: clock times (`gui/clock.py`), CSV export stamps (`gui/tables.py`), weekday abbr next to `format_date` on matrix headers
 
 ## Open (agent / process) — fixed 2026-07-08
 

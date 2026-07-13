@@ -24,6 +24,10 @@ MIN_TARGET_OFFICERS = 1
 MAX_TARGET_OFFICERS = 200
 MIN_ANNUAL_HOURS = 1000.0
 MAX_ANNUAL_HOURS = 3000.0
+DEFAULT_ANNUAL_HOURS_VARIANCE = 40.0
+MIN_ANNUAL_HOURS_VARIANCE = 0.0
+MAX_ANNUAL_HOURS_VARIANCE = 500.0
+SHIFT_LENGTH_STEP_HOURS = 0.5
 
 
 def _get_setting(key: str, default: str = "") -> str:
@@ -90,6 +94,22 @@ def get_active_annual_hours_target() -> float:
         return max(MIN_ANNUAL_HOURS, min(hours, MAX_ANNUAL_HOURS))
     except ValueError:
         return DEFAULT_ANNUAL_HOURS
+
+
+def get_active_annual_hours_variance() -> float:
+    """Allowed ± hours around annual target for optimizer band."""
+    raw = _get_setting("department_annual_hours_variance", str(DEFAULT_ANNUAL_HOURS_VARIANCE))
+    try:
+        v = float(raw)
+        return max(MIN_ANNUAL_HOURS_VARIANCE, min(v, MAX_ANNUAL_HOURS_VARIANCE))
+    except ValueError:
+        return DEFAULT_ANNUAL_HOURS_VARIANCE
+
+
+def snap_shift_length_hours(hours: float) -> float:
+    """Round to nearest 0.5 hour step within allowed range."""
+    stepped = round(float(hours) / SHIFT_LENGTH_STEP_HOURS) * SHIFT_LENGTH_STEP_HOURS
+    return max(MIN_SHIFT_LENGTH, min(stepped, MAX_SHIFT_LENGTH))
 
 
 def get_active_shift_count() -> int:
@@ -233,6 +253,7 @@ def get_staffing_config() -> Dict:
     return {
         "shift_length_hours": get_active_shift_length_hours(),
         "annual_hours_target": get_active_annual_hours_target(),
+        "annual_hours_variance": get_active_annual_hours_variance(),
         "shift_count": get_active_shift_count(),
         "target_officer_count": get_target_officer_count(),
         "shift_starts": get_active_shift_starts(),
@@ -250,6 +271,7 @@ def save_staffing_settings(
     shift_count: int,
     target_officer_count: int,
     shift_starts_text: str = "",
+    annual_hours_variance: Optional[float] = None,
     user_id: Optional[int] = None,
 ) -> Dict:
     from validators import validate_staffing_settings
@@ -266,18 +288,25 @@ def save_staffing_settings(
 
     from logic.operations import set_department_setting
 
+    length = snap_shift_length_hours(float(shift_length_hours))
     starts = parse_shift_starts_text(shift_starts_text) or DEFAULT_SHIFT_STARTS[:shift_count]
-    shift_times = build_shift_times(shift_count, shift_length_hours, starts)
+    shift_times = build_shift_times(shift_count, length, starts)
     shift_json = json.dumps([[s, e] for s, e in shift_times.values()])
 
-    updates = (
-        ("shift_length_hours", str(shift_length_hours)),
+    updates = [
+        ("shift_length_hours", str(length)),
         ("department_annual_hours_target", str(annual_hours_target)),
         ("shift_count", str(shift_count)),
         ("target_officer_count", str(target_officer_count)),
         ("department_shift_starts", ", ".join(starts[:shift_count])),
         ("department_shift_times", shift_json),
-    )
+    ]
+    if annual_hours_variance is not None:
+        try:
+            var = max(MIN_ANNUAL_HOURS_VARIANCE, min(float(annual_hours_variance), MAX_ANNUAL_HOURS_VARIANCE))
+        except (TypeError, ValueError):
+            return {"success": False, "message": "Annual hours variance must be a number"}
+        updates.append(("department_annual_hours_variance", str(var)))
     for key, value in updates:
         result = set_department_setting(key, value, user_id=user_id)
         if not result.get("success"):
@@ -289,7 +318,8 @@ def save_staffing_settings(
         "success": True,
         "message": (
             f"Staffing saved: {config['shift_count']} shifts × {config['shift_length_hours']:.1f}h, "
-            f"{config['annual_hours_target']:.0f}h/year target, {config['target_officer_count']} officer target · {bands}"
+            f"{config['annual_hours_target']:.0f}h/year ±{config.get('annual_hours_variance', 0):.0f}h, "
+            f"{config['target_officer_count']} officer target · {bands}"
         ),
         "config": config,
     }

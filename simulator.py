@@ -26,7 +26,7 @@ except ImportError:
 @dataclass
 class SimulatorConfig:
     rotation_type: str
-    num_officers: int
+    num_officers: int  # 0 or negative → auto minimum officers
     shift_length_hours: float
     annual_hours_target: float
     shift_starts: List[str]
@@ -34,6 +34,18 @@ class SimulatorConfig:
     min_per_shift: int = 1
     simulation_days: int = 28
     night_minimum: int = NIGHT_MINIMUM_OFFICERS
+    # Extended customizable constraints (all optional / toggleable)
+    annual_hours_variance: float = 40.0
+    annual_hours_hard: bool = False
+    coverage_247: int = 0  # 0 = off; else min officers every moment
+    avoid_flsa_overtime: bool = False
+    flsa_work_period_days: int = 28
+    rotation_style: str = ""  # fixed | rotating | empty (use rotation_type preset)
+    rotation_variations: List[str] = field(default_factory=list)  # e.g. ["5-3,6-2", "5-2,6-3"]
+    stagger_phases: bool = True
+    use_extra_windows: bool = False
+    extra_windows: List[Dict] = field(default_factory=list)  # {dow|date, start, end, min}
+    auto_min_officers: bool = True
 
 
 @dataclass
@@ -188,20 +200,116 @@ def _optimize_assignments(
     return slots
 
 
+def _snap_half_hour(hours: float) -> float:
+    """Nearest 0.5h using half-up (avoid banker's round of 10.25 → 10.0)."""
+    return math.floor(float(hours) * 2 + 0.5) / 2.0
+
+
+def _patterns_for_config(config: SimulatorConfig):
+    """Optional multi-block / fixed-rotating patterns; empty list → use squad preset path."""
+    from logic.rotation_patterns import build_pattern, validate_variation_set
+
+    texts = [t for t in (config.rotation_variations or []) if (t or "").strip()]
+    if not texts:
+        return []
+    style = (config.rotation_style or "").strip().lower() or None
+    patterns = []
+    for t in texts:
+        patterns.append(build_pattern(t, style=style if style in ("fixed", "rotating") else None))
+    ok, msg = validate_variation_set(patterns)
+    if not ok:
+        raise ValueError(msg)
+    return patterns
+
+
+def _flsa_period_hours_ok(
+    work_day_flags: List[bool],
+    shift_hours: float,
+    period_days: int,
+    threshold: float,
+) -> bool:
+    """True if no contiguous FLSA window of period_days exceeds threshold hours."""
+    if period_days < 1 or not work_day_flags:
+        return True
+    n = len(work_day_flags)
+    # Extend by one period for wrap-free sliding windows over finite sim
+    for start in range(0, max(1, n - period_days + 1)):
+        hours = sum(1 for d in work_day_flags[start : start + period_days] if d) * shift_hours
+        if hours > threshold + 1e-6:
+            return False
+    return True
+
+
+def _auto_min_officer_search(config: SimulatorConfig, max_n: int = 80) -> Tuple[int, Optional["SimulatorResult"]]:
+    """Binary-ish search for smallest N that yields successful simulation under hard constraints."""
+    best_n = max_n
+    best_result: Optional[SimulatorResult] = None
+    # Linear from 1 with early stop once coverage+FLSA ok — simpler and reliable
+    for n in range(1, max_n + 1):
+        trial = SimulatorConfig(**{**config.__dict__, "num_officers": n, "auto_min_officers": False})
+        result = _simulate_schedule_fixed_n(trial)
+        if not result.success:
+            continue
+        if result.metrics.get("hard_constraints_ok", True):
+            return n, result
+        best_n = n
+        best_result = result
+    return best_n, best_result
+
+
 def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
-    preset = ROTATION_PRESETS.get(config.rotation_type)
-    if not preset:
-        return SimulatorResult(success=False, message=f"Unknown rotation type: {config.rotation_type}")
+    try:
+        raw_len = float(config.shift_length_hours)
+    except (TypeError, ValueError):
+        return SimulatorResult(success=False, message="Shift length must be a number")
+    if raw_len <= 0:
+        return SimulatorResult(success=False, message="Shift length must be positive")
+    # Require exact 0.5h steps (10.5 ok; 10.25 rejected)
+    if abs(raw_len * 2 - round(raw_len * 2)) > 1e-6:
+        return SimulatorResult(success=False, message="Shift length must be in 0.5 hour steps")
+    config.shift_length_hours = _snap_half_hour(raw_len)
+
+    if config.num_officers < 1 and config.auto_min_officers:
+        min_n, result = _auto_min_officer_search(config)
+        if result is None:
+            return SimulatorResult(
+                success=False,
+                message="Could not find any officer count that meets hard constraints",
+            )
+        result.metrics["min_officers_required"] = min_n
+        result.metrics["auto_sized"] = True
+        result.message = f"Simulation complete (auto min officers = {min_n})"
+        return result
 
     if config.num_officers < 1:
-        return SimulatorResult(success=False, message="At least one officer is required")
-    if config.shift_length_hours <= 0:
-        return SimulatorResult(success=False, message="Shift length must be positive")
+        return SimulatorResult(success=False, message="At least one officer is required (or leave blank for auto min)")
+
+    return _simulate_schedule_fixed_n(config)
+
+
+def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
+    preset = ROTATION_PRESETS.get(config.rotation_type)
+    if not preset:
+        # Allow custom multi-block only runs with a fallback equal_split preset
+        if config.rotation_variations:
+            preset = {
+                "cycle_length": 14,
+                "squads": 2,
+                "work_days_per_cycle": 7,
+                "label": "custom-variations",
+            }
+        else:
+            return SimulatorResult(success=False, message=f"Unknown rotation type: {config.rotation_type}")
+
+    try:
+        custom_patterns = _patterns_for_config(config)
+    except ValueError as exc:
+        return SimulatorResult(success=False, message=str(exc))
 
     shift_templates = generate_shift_templates(
         config.shift_length_hours,
         config.shift_starts,
-        use_department_shifts=config.apply_department_rules,
+        use_department_shifts=config.apply_department_rules and not config.shift_starts,
     )
     if not shift_templates:
         return SimulatorResult(success=False, message="Could not build shift templates")
@@ -212,7 +320,17 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
 
         roster_officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
     slots = _assign_officers(config.num_officers, shift_templates, preset, roster_officers)
-    if config.apply_department_rules:
+
+    # Attach rotation variation + phase when multi-block patterns provided
+    slot_patterns = []
+    if custom_patterns:
+        for i, slot in enumerate(slots):
+            base_p = custom_patterns[i % len(custom_patterns)]
+            phase = (i // len(custom_patterns)) if config.stagger_phases else 0
+            slot_patterns.append(base_p.with_phase(phase))
+        cycle_length = custom_patterns[0].cycle_length
+        squad_a_days = set()
+    elif config.apply_department_rules:
         from logic.rotation_config import get_active_rotation_cycle_length, get_active_squad_a_days
 
         cycle_length = get_active_rotation_cycle_length()
@@ -224,7 +342,15 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
 
     compute_backend = rust_bridge.backend_name() if rust_bridge else "python"
 
-    if rust_bridge and rust_bridge.available():
+    # Rust path only when not using custom multi-block / FLSA hard / 24/7 continuous
+    use_rust = (
+        rust_bridge
+        and rust_bridge.available()
+        and not custom_patterns
+        and not config.avoid_flsa_overtime
+        and not config.coverage_247
+    )
+    if use_rust:
         rust_config = {
             "rotation_type": config.rotation_type,
             "num_officers": config.num_officers,
@@ -266,6 +392,8 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
     max_coverage = 0
     night_risk_gaps = 0
     total_gap_hours = 0
+    day_assignments: List[Tuple[date, str, str]] = []
+    per_slot_work_flags: List[List[bool]] = [[] for _ in slots]
 
     for day_offset in range(config.simulation_days):
         target = sim_start + timedelta(days=day_offset)
@@ -273,17 +401,23 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
         shift_counts: Dict[str, int] = {t[0]: 0 for t in shift_templates}
         working_officers = []
 
-        for slot in slots:
-            if config.apply_department_rules:
+        for si, slot in enumerate(slots):
+            working = False
+            if custom_patterns:
+                working = slot_patterns[si].is_working(cycle_day)
+            elif config.apply_department_rules:
                 from logic.rotation_config import is_squad_working
 
-                if not is_squad_working(slot.squad, cycle_day, preset):
-                    continue
-            elif not _squad_working(config.rotation_type, slot.squad, cycle_day, preset):
+                working = is_squad_working(slot.squad, cycle_day, preset)
+            else:
+                working = _squad_working(config.rotation_type, slot.squad, cycle_day, preset)
+            per_slot_work_flags[si].append(working)
+            if not working:
                 continue
             slot.work_days_in_sim += 1
             shift_counts[slot.shift_start] = shift_counts.get(slot.shift_start, 0) + 1
             working_officers.append(slot)
+            day_assignments.append((target, slot.shift_start, slot.shift_end))
 
         day_min = min(shift_counts.values()) if shift_counts else 0
         day_max = max(shift_counts.values()) if shift_counts else 0
@@ -354,7 +488,7 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
         hours_variance = max(hours_list) / avg_hours - min(hours_list) / avg_hours
 
     slots_per_day = len(shift_templates)
-    weekly_hours_needed = 24 * 7 * config.min_per_shift
+    weekly_hours_needed = 24 * 7 * max(config.min_per_shift, config.coverage_247 or 1)
     annual_hours_needed = weekly_hours_needed * 52
     fte_required = annual_hours_needed / max(config.annual_hours_target, 1)
 
@@ -363,6 +497,55 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
         total_required = config.simulation_days * slots_per_day * config.min_per_shift
         total_met = total_required - sum(gap_counter.values())
         coverage_pct = round(100 * total_met / max(total_required, 1), 1)
+
+    # --- Hard constraint evaluation ---
+    hard_ok = True
+    flsa_violations = 0
+    flsa_threshold = 0.0
+    if config.avoid_flsa_overtime:
+        from logic.labor_compliance import flsa_threshold_for_period_days
+
+        period_days = max(7, min(int(config.flsa_work_period_days or 28), 28))
+        try:
+            flsa_threshold = flsa_threshold_for_period_days(period_days)
+        except Exception:
+            flsa_threshold = round((171.0 / 28.0) * period_days, 1)
+        for flags in per_slot_work_flags:
+            if not _flsa_period_hours_ok(flags, config.shift_length_hours, period_days, flsa_threshold):
+                flsa_violations += 1
+                hard_ok = False
+
+    coverage_247_ok = True
+    coverage_247_failures = 0
+    if config.coverage_247 and config.coverage_247 > 0:
+        from logic.coverage_timeline import evaluate_day_coverage
+
+        for day_offset in range(config.simulation_days):
+            day = sim_start + timedelta(days=day_offset)
+            day_asg = [a for a in day_assignments if a[0] == day or a[0] == day - timedelta(days=1)]
+            result = evaluate_day_coverage(day_asg, day, min_247=config.coverage_247)
+            if not result["ok"]:
+                coverage_247_ok = False
+                coverage_247_failures += 1
+                hard_ok = False
+
+    annual_band_outside = 0
+    from logic.rotation_patterns import annual_hours_within_band
+
+    for slot in slots:
+        ok_band, _lo, _hi, dist = annual_hours_within_band(
+            slot.projected_annual_hours,
+            config.annual_hours_target,
+            variance_hours=config.annual_hours_variance,
+        )
+        if not ok_band:
+            annual_band_outside += 1
+            if config.annual_hours_hard:
+                hard_ok = False
+
+    if gap_counter and config.min_per_shift > 0:
+        # Band min gaps are hard when min_per_shift enforced
+        hard_ok = False
 
     metrics = {
         "coverage_percent": coverage_pct,
@@ -376,13 +559,44 @@ def simulate_schedule(config: SimulatorConfig) -> SimulatorResult:
         "total_gap_hours": round(total_gap_hours, 1),
         "shifts_per_day": slots_per_day,
         "compute_backend": compute_backend,
+        "hard_constraints_ok": hard_ok,
+        "flsa_violations": flsa_violations,
+        "flsa_threshold_hours": flsa_threshold,
+        "coverage_247_ok": coverage_247_ok,
+        "coverage_247_failures": coverage_247_failures,
+        "annual_band_outside": annual_band_outside,
+        "annual_hours_variance": config.annual_hours_variance,
+        "min_officers_required": config.num_officers,
+        "custom_patterns": len(custom_patterns),
     }
 
     suggestions = _build_suggestions(config, metrics, shift_templates, gap_counter)
+    if config.avoid_flsa_overtime and flsa_violations:
+        suggestions.append(
+            SimulatorSuggestion(
+                severity="critical",
+                title="FLSA overtime would be generated",
+                message=f"{flsa_violations} slot(s) exceed §207(k) cap ({flsa_threshold}h / period).",
+                recommendation="Reduce days on, shorten shifts, or add officers / stagger variations.",
+            )
+        )
+    if config.coverage_247 and not coverage_247_ok:
+        suggestions.append(
+            SimulatorSuggestion(
+                severity="critical",
+                title="24/7 continuous coverage short",
+                message=f"{coverage_247_failures} day(s) drop below {config.coverage_247} officer(s) on duty.",
+                recommendation="Add officers, stagger rotations, or add overlapping shift starts.",
+            )
+        )
+
+    message = "Simulation complete"
+    if config.avoid_flsa_overtime and flsa_violations:
+        message = "Simulation complete — FLSA hard filter failed (plan not compliant)"
 
     return SimulatorResult(
         success=True,
-        message="Simulation complete",
+        message=message,
         compute_backend=compute_backend,
         shift_templates=shift_templates,
         officer_slots=slots,

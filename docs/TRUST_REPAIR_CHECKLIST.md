@@ -53,7 +53,7 @@ Primary UI is **`gui/`** (NiceGUI). Legacy **`ui/`** is reference/tests unless a
 
 | # | Repair | Files / targets | Success proof |
 |---|--------|-----------------|---------------|
-| P1.1 | **Date contract** (US M/D/YY display; storage ISO) | `validators.py`, `tests/test_validators.py` | `parse_date` / `format_date` / `format_datetime` tests match **documented** policy; no EU day-first expectation unless policy is dual-parse and tested both ways |
+| P1.1 | **Date contract** (M/D/YY mm-dd-yy display; storage ISO) | `validators_dates.py`, `tests/test_validators.py` | `parse_date` / `format_date` / `format_datetime` match month-first (`7/9/26` = July 9); `/` or `-`; year 2 or 4 digits |
 | P1.2 | Officer contact validation tests | `validators.py`, `tests/test_validators.py` | Test matches current validators |
 | P1.3 | Pay-period search | `logic/payroll.py` (or related), `tests/test_timecard_schedules.py` | `test_search_pay_period_by_date` passes **for the right reason** (fix logic or fix fixture/base date — not delete assert) |
 | P1.4 | Rotation settings apply | `logic/rotation_config.py`, scheduling bridge, test | `test_save_rotation_settings_applies_to_scheduling` passes |

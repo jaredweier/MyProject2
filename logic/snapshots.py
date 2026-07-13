@@ -542,7 +542,35 @@ def ensure_original_monthly_schedule(
     month: int,
     user_id: Optional[int] = None,
 ) -> Dict:
-    """Create and lock the original monthly schedule from rotation rules if not yet generated."""
+    """Create and lock the original monthly schedule from rotation rules if not yet generated.
+
+    Always seeds/refreshes the live (updated) snapshot after base is present (dual-publish).
+    Applies saved optimized-plan builder defaults once before first generation for the month.
+    """
+    # Use optimized schedule defaults for staffing if present (next generator run)
+    try:
+        from logic.optimized_schedule_apply import (
+            apply_schedule_builder_defaults_to_department,
+            get_schedule_builder_defaults,
+            next_generator_should_use_defaults,
+        )
+
+        if next_generator_should_use_defaults():
+            # Only re-apply if department shift starts differ from defaults
+            defaults = get_schedule_builder_defaults()
+            if defaults.get("source") == "optimized_plan":
+                from logic.staffing_config import get_active_shift_starts
+
+                want = defaults.get("shift_starts") or []
+                have = get_active_shift_starts()
+                if want and list(want) != list(have):
+                    apply_schedule_builder_defaults_to_department(user_id=user_id)
+    except Exception:
+        pass
+
+    created = False
+    snapshot_id: Optional[int] = None
+    base_message = "Original monthly schedule already generated"
     conn = get_connection()
     cursor = conn.cursor()
     try:
@@ -555,19 +583,88 @@ def ensure_original_monthly_schedule(
         )
         existing = cursor.fetchone()
         if existing and existing["locked"]:
-            return {
-                "success": True,
-                "snapshot_id": existing["id"],
-                "created": False,
-                "message": "Original monthly schedule already generated",
-            }
-
-        if existing:
             snapshot_id = existing["id"]
+            created = False
+            base_message = "Original monthly schedule already generated"
+        else:
+            if existing:
+                snapshot_id = existing["id"]
+                cursor.execute(
+                    """
+                    UPDATE schedule_snapshots
+                    SET generated_at = CURRENT_TIMESTAMP, generated_by_user_id = ?, locked = 1
+                    WHERE id = ?
+                """,
+                    (user_id, snapshot_id),
+                )
+            else:
+                cursor.execute(
+                    """
+                    INSERT INTO schedule_snapshots (year, month, schedule_type, locked, generated_by_user_id)
+                    VALUES (?, ?, 'base', 1, ?)
+                """,
+                    (year, month, user_id),
+                )
+                snapshot_id = cursor.lastrowid
+
+            _insert_snapshot_rows(cursor, snapshot_id, year, month, use_overrides=False)
+            conn.commit()
+            created = True
+            base_message = "Original monthly schedule generated"
+    except Exception as e:
+        conn.rollback()
+        return {"success": False, "message": str(e)}
+    finally:
+        conn.close()
+
+    if snapshot_id is None:
+        return {"success": False, "message": "Failed to resolve base snapshot"}
+
+    # Dual-publish: seed live schedule (sync_updated re-enters ensure_original → locked short path)
+    live = _sync_updated_schedule_only(year, month, user_id, notify=False)
+    live_id = live.get("snapshot_id") if live.get("success") else None
+    if created and live.get("success"):
+        msg = f"{base_message}; live schedule seeded"
+    elif live.get("success"):
+        msg = base_message
+    else:
+        msg = f"{base_message}; live seed deferred: {live.get('message', 'unknown')}"
+    return {
+        "success": True,
+        "snapshot_id": snapshot_id,
+        "live_snapshot_id": live_id,
+        "created": created,
+        "message": msg,
+    }
+
+
+def _sync_updated_schedule_only(
+    year: int,
+    month: int,
+    user_id: Optional[int] = None,
+    *,
+    notify: bool = True,
+) -> Dict:
+    """Build/update live snapshot without re-entering ensure_original (avoids recursion)."""
+    from logic.requests import _notify_schedule_published
+
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT id FROM schedule_snapshots
+            WHERE year = ? AND month = ? AND schedule_type = 'updated'
+        """,
+            (year, month),
+        )
+        row = cursor.fetchone()
+        if row:
+            snapshot_id = row["id"]
             cursor.execute(
                 """
                 UPDATE schedule_snapshots
-                SET generated_at = CURRENT_TIMESTAMP, generated_by_user_id = ?, locked = 1
+                SET generated_at = CURRENT_TIMESTAMP, generated_by_user_id = ?
                 WHERE id = ?
             """,
                 (user_id, snapshot_id),
@@ -575,21 +672,29 @@ def ensure_original_monthly_schedule(
         else:
             cursor.execute(
                 """
-                INSERT INTO schedule_snapshots (year, month, schedule_type, locked, generated_by_user_id)
-                VALUES (?, ?, 'base', 1, ?)
+                INSERT INTO schedule_snapshots (year, month, schedule_type, generated_by_user_id)
+                VALUES (?, ?, 'updated', ?)
             """,
                 (year, month, user_id),
             )
             snapshot_id = cursor.lastrowid
 
-        _insert_snapshot_rows(cursor, snapshot_id, year, month, use_overrides=False)
+        cursor.execute(
+            """
+            SELECT assignment_date, officer_id, status, shift_start, shift_end, notes
+            FROM schedule_snapshot_rows
+            WHERE snapshot_id = ? AND is_manual = 1
+        """,
+            (snapshot_id,),
+        )
+        preserve = {(r["assignment_date"], r["officer_id"]): dict(r) for r in cursor.fetchall()}
+
+        _insert_snapshot_rows(cursor, snapshot_id, year, month, use_overrides=True, preserve_manual=preserve)
         conn.commit()
-        return {
-            "success": True,
-            "snapshot_id": snapshot_id,
-            "created": True,
-            "message": "Original monthly schedule generated",
-        }
+        if notify:
+            _notify_schedule_published(year, month, snapshot_id)
+        message = "Live schedule published and staff notified" if notify else "Live schedule updated"
+        return {"success": True, "snapshot_id": snapshot_id, "message": message}
     except Exception as e:
         conn.rollback()
         return {"success": False, "message": str(e)}
@@ -609,7 +714,8 @@ def publish_base_schedule(year: int, month: int, user_id: int) -> Dict:
     return {
         "success": True,
         "snapshot_id": result["snapshot_id"],
-        "message": "Original monthly schedule generated",
+        "live_snapshot_id": result.get("live_snapshot_id"),
+        "message": result.get("message") or "Original monthly schedule generated",
     }
 
 
@@ -707,61 +813,9 @@ def sync_updated_schedule(
     *,
     notify: bool = True,
 ) -> Dict:
-    from logic.requests import _notify_schedule_published
-
+    # Ensure base exists (locked) without relying on dual-publish side effects only
     base_result = ensure_original_monthly_schedule(year, month, user_id)
     if not base_result.get("success"):
         return base_result
-
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            """
-            SELECT id FROM schedule_snapshots
-            WHERE year = ? AND month = ? AND schedule_type = 'updated'
-        """,
-            (year, month),
-        )
-        row = cursor.fetchone()
-        if row:
-            snapshot_id = row["id"]
-            cursor.execute(
-                """
-                UPDATE schedule_snapshots
-                SET generated_at = CURRENT_TIMESTAMP, generated_by_user_id = ?
-                WHERE id = ?
-            """,
-                (user_id, snapshot_id),
-            )
-        else:
-            cursor.execute(
-                """
-                INSERT INTO schedule_snapshots (year, month, schedule_type, generated_by_user_id)
-                VALUES (?, ?, 'updated', ?)
-            """,
-                (year, month, user_id),
-            )
-            snapshot_id = cursor.lastrowid
-
-        cursor.execute(
-            """
-            SELECT assignment_date, officer_id, status, shift_start, shift_end, notes
-            FROM schedule_snapshot_rows
-            WHERE snapshot_id = ? AND is_manual = 1
-        """,
-            (snapshot_id,),
-        )
-        preserve = {(r["assignment_date"], r["officer_id"]): dict(r) for r in cursor.fetchall()}
-
-        _insert_snapshot_rows(cursor, snapshot_id, year, month, use_overrides=True, preserve_manual=preserve)
-        conn.commit()
-        if notify:
-            _notify_schedule_published(year, month, snapshot_id)
-        message = "Live schedule published and staff notified" if notify else "Live schedule updated"
-        return {"success": True, "snapshot_id": snapshot_id, "message": message}
-    except Exception as e:
-        conn.rollback()
-        return {"success": False, "message": str(e)}
-    finally:
-        conn.close()
+    # ensure_original already seeds live once; re-sync when notify requested or always refresh live
+    return _sync_updated_schedule_only(year, month, user_id, notify=notify)

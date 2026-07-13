@@ -63,7 +63,7 @@ def matrix_html(matrix, days, *, show_cycle: bool = False) -> str:
     for d in days:
         col = "#22d3ee" if d == today else "#5e6f8a"
         glow = "text-shadow:0 0 8px rgba(34,211,238,0.5);" if d == today else ""
-        # User-facing calendar date: format_date (US M/D/YY). Weekday abbr is locale label only.
+        # User-facing calendar date: format_date (M/D/YY). Weekday abbr is locale label only.
         full = format_date(d)
         weekday = d.strftime("%a")  # intentional: day-name, not a date policy field
         parts.append(
@@ -324,7 +324,7 @@ def _render_manual_coverage_panel(on_done) -> None:
         )
         orig = ui.select(names, value=names[0], label="Original (off / covered)").classes("w-full")
         repl = ui.select(names, value=names[1] if len(names) > 1 else names[0], label="Replacement").classes("w-full")
-        d_in = ui.input(label="Date", value=today_local().isoformat(), placeholder="YYYY-MM-DD or M/D/YY").classes(
+        d_in = ui.input(label="Date", value=format_date(today_local()), placeholder="M/D/YY or M-D-YYYY").classes(
             "w-full"
         )
         reason = ui.input(label="Reason", value="Manual Coverage").classes("w-full")

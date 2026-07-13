@@ -61,7 +61,7 @@ def chronos_path_for_notification(n: dict) -> str:
 
 
 def _format_when(raw) -> str:
-    """US short date for inbox timestamps when parseable; else trim ISO."""
+    """M/D short date for inbox timestamps when parseable; else trim ISO."""
     if raw is None or raw == "":
         return ""
     s = str(raw).strip()

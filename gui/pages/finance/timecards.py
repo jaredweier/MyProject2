@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from nicegui import ui
+from nicegui import app, ui
 
 from gui import session
 from gui.pages.finance.banks import _banks
@@ -28,6 +28,25 @@ from logic import (
 )
 from validators import format_date, parse_date
 
+_TIMECARD_PERIOD_KEY = "timecard_period_start"
+
+
+def _resolve_timecard_period():
+    """Active pay period — optional user-storage jump from Find period."""
+    raw = None
+    try:
+        raw = app.storage.user.get(_TIMECARD_PERIOD_KEY)
+    except Exception:
+        raw = None
+    if raw:
+        try:
+            d = parse_date(str(raw).strip())
+            if d:
+                return get_pay_period(d)
+        except Exception:
+            pass
+    return get_pay_period()
+
 
 def render_timecards() -> None:
     def body() -> None:
@@ -37,7 +56,7 @@ def render_timecards() -> None:
             kicker="Finance",
         )
         finance_subnav("timecards")
-        start, end = get_pay_period()
+        start, end = _resolve_timecard_period()
         locked = bool(is_pay_period_locked(start))
         cur = " · current" if is_current_pay_period(start) else ""
         lock_mark = " · LOCKED" if locked else ""
@@ -53,19 +72,32 @@ def render_timecards() -> None:
 
         # Period tools + 7(k)-style hours meter
         with ui.row().classes("gap-2 q-mb-sm flex-wrap items-end"):
-            q_period = ui.input(label="Jump to period (date)", placeholder="7/9/26 or ISO").classes("w-48")
+            q_period = ui.input(label="Jump to period (date)", placeholder="7/9/26 or 07-09-2026").classes("w-48")
 
             def jump_period():
                 r = search_pay_period_by_date((q_period.value or "").strip())
-                if r.get("success"):
+                if r.get("success") and r.get("period_start"):
+                    try:
+                        app.storage.user[_TIMECARD_PERIOD_KEY] = r["period_start"]
+                    except Exception:
+                        pass
                     ui.notify(
-                        f"Period {r.get('period_start')} – {r.get('period_end')}",
+                        f"Period {format_date(r.get('period_start'))} – {format_date(r.get('period_end'))}",
                         type="info",
                     )
+                    ui.navigate.to("/timecards")
                 else:
                     ui.notify(r.get("message", "Not found"), type="warning")
 
+            def jump_current():
+                try:
+                    app.storage.user.pop(_TIMECARD_PERIOD_KEY, None)
+                except Exception:
+                    pass
+                ui.navigate.to("/timecards")
+
             ui.button("Find period", on_click=jump_period).classes("btn-ghost").props("no-caps outline dense")
+            ui.button("Current period", on_click=jump_current).classes("btn-ghost").props("no-caps outline dense")
 
             def do_prefill():
                 if is_pay_period_locked(start):

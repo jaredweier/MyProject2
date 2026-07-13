@@ -76,28 +76,20 @@ def run_session_start() -> int:
     print("Automatic agent context: logs/agent_pack/latest.md (see logs/last_agent_gate.json)")
     print("  Skip: set SCHEDULER_SKIP_STARTUP_GATES=1")
 
-    # Always refresh free agent-kit so the next/this session has a pasteable pack.
-    slice_id = os.environ.get("SCHEDULER_SLICE", "").strip() or "general"
-    task = os.environ.get("SCHEDULER_AGENT_TASK", "").strip() or "Session resume — follow agent-kit"
-    print(f"\nAgent kit (auto): slice={slice_id}")
+    print("\nSession auto-bootstrap:")
     try:
-        from scripts.agent_kit import run_agent_kit
+        os.environ.setdefault("SCHEDULER_FORCE_BOOTSTRAP", "1")
+        from scripts.session_auto_bootstrap import run_bootstrap
 
-        run_agent_kit(slice_id=slice_id, task=task, quiet=True)
-        kit = os.path.join(ROOT, "logs", "agent_kit", "latest.md")
-        print(f"  → @{os.path.relpath(kit, ROOT).replace(chr(92), '/')}")
-        print("  Paste: @logs/agent_kit/latest.md  (not the whole repo)")
+        run_bootstrap(quiet=False)
+        print("  Rules: AGENTS.md + logs/SESSION_CONTRACT.md (no paste required)")
     except Exception as exc:
-        print(f"  (agent-kit failed: {exc})")
+        print(f"  (bootstrap failed: {exc})")
 
-    print("\nMinimize (caveman):")
-    print("  @logs/agent_kit/latest.md + @logs/agent_pack/latest.md")
+    print("\nMinimize (caveman) — already binding:")
     print('  python dev.py route-task "…"          # once; obey cost_tier')
-    print("  python dev.py usage-brief <slice>      # before reads")
-    print("  python dev.py outline <file>           # before full read")
     print("  python dev.py verify --tier fast       # after edits")
     print("  python dev.py verify --tier check      # ship + honest_gate")
-    print("  OSS/graphify/vision: only if user asks")
     print("\nQuick:")
     print("  python main.py · python dev.py preflight · python dev.py agent-pack --slice <id>")
     print("=" * 60)

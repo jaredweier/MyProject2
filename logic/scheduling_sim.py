@@ -21,13 +21,23 @@ def run_schedule_simulation(
     min_per_shift: int = 1,
     simulation_days: int = 28,
     night_minimum: int | None = None,
+    *,
+    annual_hours_variance: float = 40.0,
+    annual_hours_hard: bool = False,
+    coverage_247: int = 0,
+    avoid_flsa_overtime: bool = False,
+    flsa_work_period_days: int = 28,
+    rotation_style: str = "",
+    rotation_variations: Optional[List[str]] = None,
+    stagger_phases: bool = True,
+    auto_min_officers: bool = True,
 ) -> Dict:
     from config import NIGHT_MINIMUM_OFFICERS
     from simulator import SimulatorConfig, simulate_schedule
 
     config = SimulatorConfig(
         rotation_type=rotation_type,
-        num_officers=num_officers,
+        num_officers=num_officers if num_officers is not None else 0,
         shift_length_hours=shift_length_hours,
         annual_hours_target=annual_hours_target,
         shift_starts=shift_starts,
@@ -35,6 +45,15 @@ def run_schedule_simulation(
         min_per_shift=min_per_shift,
         simulation_days=simulation_days,
         night_minimum=night_minimum if night_minimum is not None else NIGHT_MINIMUM_OFFICERS,
+        annual_hours_variance=annual_hours_variance,
+        annual_hours_hard=annual_hours_hard,
+        coverage_247=coverage_247,
+        avoid_flsa_overtime=avoid_flsa_overtime,
+        flsa_work_period_days=flsa_work_period_days,
+        rotation_style=rotation_style,
+        rotation_variations=list(rotation_variations or []),
+        stagger_phases=stagger_phases,
+        auto_min_officers=auto_min_officers,
     )
     result = simulate_schedule(config)
     if not result.success:

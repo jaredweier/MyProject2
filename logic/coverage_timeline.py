@@ -1,0 +1,203 @@
+"""Continuous wall-clock occupancy for coverage constraints.
+
+Bands (shift starts) remain assignment + bump legality.
+This module answers: how many officers are on duty at time t,
+and whether 24/7 + date/time window minima are met.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
+
+
+def _parse_hhmm(value: str) -> int:
+    parts = (value or "").strip().split(":")
+    if len(parts) < 2:
+        raise ValueError(f"Invalid time: {value}")
+    return int(parts[0]) * 60 + int(parts[1])
+
+
+def assignment_intervals(
+    work_date: date,
+    shift_start: str,
+    shift_end: str,
+) -> List[Tuple[datetime, datetime]]:
+    """Expand one duty day into half-open [start, end) datetimes (overnight splits)."""
+    start_m = _parse_hhmm(shift_start)
+    end_m = _parse_hhmm(shift_end)
+    day0 = datetime(work_date.year, work_date.month, work_date.day)
+    start_dt = day0 + timedelta(minutes=start_m)
+    if end_m > start_m:
+        end_dt = day0 + timedelta(minutes=end_m)
+        return [(start_dt, end_dt)]
+    # Overnight: work_date start → midnight next day, then midnight → end on next calendar day
+    midnight_next = day0 + timedelta(days=1)
+    end_dt = midnight_next + timedelta(minutes=end_m)
+    return [(start_dt, midnight_next), (midnight_next, end_dt)]
+
+
+def build_occupancy_events(
+    assignments: Sequence[Tuple[date, str, str]],
+) -> List[Tuple[datetime, int]]:
+    """Return sorted (timestamp, delta) events for sweep-line (+1 start, -1 end)."""
+    events: List[Tuple[datetime, int]] = []
+    for work_date, start, end in assignments:
+        for a, b in assignment_intervals(work_date, start, end):
+            events.append((a, 1))
+            events.append((b, -1))
+    events.sort(key=lambda x: (x[0], -x[1]))
+    return events
+
+
+def occupancy_at(
+    assignments: Sequence[Tuple[date, str, str]],
+    when: datetime,
+) -> int:
+    """How many officers on duty at exact instant (end exclusive)."""
+    count = 0
+    for work_date, start, end in assignments:
+        for a, b in assignment_intervals(work_date, start, end):
+            if a <= when < b:
+                count += 1
+    return count
+
+
+def min_occupancy_in_range(
+    assignments: Sequence[Tuple[date, str, str]],
+    range_start: datetime,
+    range_end: datetime,
+    *,
+    step_minutes: int = 15,
+) -> int:
+    """Minimum headcount over [range_start, range_end) sampled every step_minutes."""
+    if range_end <= range_start:
+        return 0
+    step = max(1, int(step_minutes))
+    events = build_occupancy_events(assignments)
+    # Sample grid points and event times inside [range_start, range_end)
+    points: List[datetime] = []
+    t = range_start
+    while t < range_end:
+        points.append(t)
+        t += timedelta(minutes=step)
+    for ts, _ in events:
+        if range_start <= ts < range_end:
+            points.append(ts)
+    if not points:
+        return occupancy_at(assignments, range_start)
+
+    # occupancy_at uses half-open intervals — do not seed from pre-range count
+    # (starts exactly at range_start must count as on duty for the window).
+    unique_points = sorted(set(points))
+    return min(occupancy_at(assignments, pt) for pt in unique_points)
+
+
+@dataclass
+class CoverageWindow:
+    """Additional minimum coverage for a date or weekday time range."""
+
+    min_officers: int
+    start_time: str  # HH:MM
+    end_time: str  # HH:MM
+    # Exactly one of specific_date or weekday (0=Mon..6=Sun) should apply when matching
+    specific_date: Optional[date] = None
+    weekday: Optional[int] = None  # Python weekday()
+    label: str = ""
+
+    def matches_date(self, d: date) -> bool:
+        if self.specific_date is not None:
+            return d == self.specific_date
+        if self.weekday is not None:
+            return d.weekday() == self.weekday
+        return True
+
+    def window_datetimes(self, d: date) -> Tuple[datetime, datetime]:
+        start_m = _parse_hhmm(self.start_time)
+        end_m = _parse_hhmm(self.end_time)
+        day0 = datetime(d.year, d.month, d.day)
+        start_dt = day0 + timedelta(minutes=start_m)
+        if end_m > start_m:
+            end_dt = day0 + timedelta(minutes=end_m)
+        else:
+            end_dt = day0 + timedelta(days=1, minutes=end_m)
+        return start_dt, end_dt
+
+
+def check_coverage_247(
+    assignments: Sequence[Tuple[date, str, str]],
+    day: date,
+    min_officers: int,
+    *,
+    step_minutes: int = 15,
+) -> Dict:
+    """Require at least min_officers every step across the full calendar day (and overnight spill into next)."""
+    start = datetime(day.year, day.month, day.day)
+    end = start + timedelta(days=1)
+    # Include prior-day overnight tails by allowing assignments dated day-1
+    min_c = min_occupancy_in_range(assignments, start, end, step_minutes=step_minutes)
+    ok = min_c >= min_officers
+    return {
+        "ok": ok,
+        "min_occupancy": min_c,
+        "required": min_officers,
+        "day": day.isoformat(),
+        "message": (
+            f"24/7 coverage OK (min {min_c} ≥ {min_officers})"
+            if ok
+            else f"24/7 coverage short (min {min_c} < {min_officers}) on {day.isoformat()}"
+        ),
+    }
+
+
+def check_coverage_window(
+    assignments: Sequence[Tuple[date, str, str]],
+    window: CoverageWindow,
+    anchor_date: date,
+    *,
+    step_minutes: int = 15,
+) -> Dict:
+    if not window.matches_date(anchor_date):
+        return {"ok": True, "skipped": True, "message": "Window does not apply to this date"}
+    start_dt, end_dt = window.window_datetimes(anchor_date)
+    min_c = min_occupancy_in_range(assignments, start_dt, end_dt, step_minutes=step_minutes)
+    ok = min_c >= window.min_officers
+    label = window.label or f"{window.start_time}–{window.end_time}"
+    return {
+        "ok": ok,
+        "min_occupancy": min_c,
+        "required": window.min_officers,
+        "label": label,
+        "range_start": start_dt.isoformat(sep=" "),
+        "range_end": end_dt.isoformat(sep=" "),
+        "message": (
+            f"Window {label} OK (min {min_c} ≥ {window.min_officers})"
+            if ok
+            else f"Window {label} short (min {min_c} < {window.min_officers})"
+        ),
+    }
+
+
+def evaluate_day_coverage(
+    assignments: Sequence[Tuple[date, str, str]],
+    day: date,
+    *,
+    min_247: int = 0,
+    windows: Optional[Iterable[CoverageWindow]] = None,
+    step_minutes: int = 15,
+) -> Dict:
+    """Aggregate 24/7 + extra windows for one calendar day."""
+    results = []
+    all_ok = True
+    if min_247 > 0:
+        r = check_coverage_247(assignments, day, min_247, step_minutes=step_minutes)
+        results.append(r)
+        all_ok = all_ok and r["ok"]
+    for w in windows or []:
+        r = check_coverage_window(assignments, w, day, step_minutes=step_minutes)
+        if r.get("skipped"):
+            continue
+        results.append(r)
+        all_ok = all_ok and r["ok"]
+    return {"ok": all_ok, "checks": results, "day": day.isoformat()}

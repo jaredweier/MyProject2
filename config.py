@@ -142,14 +142,13 @@ UI_NAV_ACTIVE = "#122033"
 UI_SCANLINE = "#0E1624"
 
 # ==================== DATE FORMATS ====================
-# User-facing: month/day (US) without leading zeros — e.g. 7/9/26 for 9 July 2026.
-# Never display day/month as 9/7/26 for July 9.
-# SQLite storage remains ISO (YYYY-MM-DD).
-DATE_DISPLAY_FORMAT = "%m/%d/%y"  # strftime still zero-pads; use format_date() for unpadded
+# User-facing: month/day (mm-dd-yy style) without leading zeros — e.g. 7/9/26 or 7-9-2026 for July 9, 2026.
+# Separators: / or - (or .). Year: 2 or 4 digits. SQLite storage remains ISO (YYYY-MM-DD).
+DATE_DISPLAY_FORMAT = "%m/%d/%y"  # strftime zero-pads; use format_date() for unpadded
 DATETIME_DISPLAY_FORMAT = "%m/%d/%y %H:%M"
-DATE_INPUT_HINT = "M/D/YY or M/D/YYYY (e.g. 7/9/26)"
+DATE_INPUT_HINT = "M/D/YY or M-D-YYYY (e.g. 7/9/26 or 07-09-2026)"
 DATE_STORAGE_FORMAT = "%Y-%m-%d"
-# Parse order: month-first first, then ISO, then day-first legacy inputs
+# Parse order: month-first first, then ISO, then day-first only as fallback
 DATE_PARSE_FORMATS = (
     "%m/%d/%Y",
     "%m/%d/%y",

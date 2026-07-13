@@ -19,8 +19,7 @@ def get_officers_by_seniority() -> List[Dict]:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, name, seniority_rank, squad, shift_start, shift_end,
-               pay_rate, night_differential_rate, photo_path, active, job_title
+        SELECT *
         FROM officers
         ORDER BY seniority_rank ASC, name ASC
     """)
@@ -238,6 +237,10 @@ def update_officer(officer_id: int, **fields) -> Dict:
         "overtime_multiplier",
         "station",
         "workforce_class",
+        "rotation_pattern",
+        "rotation_phase",
+        "max_turn_downs_year",
+        "max_ordered_in_year",
     }
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:

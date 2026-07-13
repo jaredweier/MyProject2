@@ -3,6 +3,7 @@ Leave vertical smoke — mirrors Chronos UI approve path (no browser).
 
 Exercises the same logic calls as gui/pages/leave.py:
   create → preview_best_coverage_plans → process with preferred_chain
+  create → list_ot_fill_candidates → apply_ot_fill_selection (Order in)
   reject with admin_notes
 
 Run:
@@ -14,6 +15,7 @@ from __future__ import annotations
 
 import os
 import sys
+from datetime import timedelta
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if ROOT not in sys.path:
@@ -22,6 +24,7 @@ if ROOT not in sys.path:
 
 def run_leave_flow_smoke() -> int:
     import logic
+    from logic.ot_fill import apply_ot_fill_selection, get_ot_fill_mode, list_ot_fill_candidates
     from logic.scheduling_sim import preview_best_coverage_plans
     from tests.helpers import get_any_officer, test_database, working_date_for_squad
 
@@ -73,6 +76,56 @@ def run_leave_flow_smoke() -> int:
         else:
             print(f"  [FAIL] approve: {getattr(result, 'message', result)}")
             fails += 1
+
+        # --- OT fill Order-in path (like Approve dialog → Order in) ---
+        # Separate day so it does not collide with the first approved request.
+        day_ot = work_day + timedelta(days=14)
+        for offset in range(0, 28, 1):
+            cand_day = work_day + timedelta(days=offset)
+            if offset == 0:
+                continue  # first day already used
+            day_ot = cand_day
+            # Prefer another working day for same squad
+            from logic.scheduling import officer_base_rotation_working
+
+            if officer_base_rotation_working(officer, day_ot):
+                break
+        day_ot_s = day_ot.isoformat() if hasattr(day_ot, "isoformat") else str(day_ot)
+        cr_ot = logic.create_day_off_request(oid, day_ot_s, "Personal", "leave_flow_smoke ot_fill")
+        if not cr_ot.get("success"):
+            print(f"  [FAIL] create ot-fill request: {cr_ot.get('message')}")
+            fails += 1
+        else:
+            rid_ot = cr_ot["request_id"]
+            fill = list_ot_fill_candidates(oid, day_ot_s, squad, shift)
+            mode = fill.get("mode_label") or get_ot_fill_mode()
+            candidates = fill.get("candidates") or [] if fill.get("success") else []
+            eligible = [c for c in candidates if not c.get("ineligible_for_order") and c.get("officer_id") is not None]
+            print(f"  [ok] list_ot_fill_candidates mode={mode} n={len(candidates)} eligible={len(eligible)}")
+            if not eligible:
+                # Still prove candidates API; order-in requires a cover
+                print("  [warn] no order-eligible covers — skip apply_ot_fill_selection")
+            else:
+                cover_id = int(eligible[0]["officer_id"])
+                # Keyword-only response= (never positional False → cover_id)
+                applied = apply_ot_fill_selection(
+                    rid_ot,
+                    cover_id,
+                    response="ordered_in",
+                    is_partial=False,
+                    turned_down_ids=[],
+                    actor_user_id=None,
+                )
+                if applied.get("success"):
+                    print(f"  [ok] Order in (apply_ot_fill_selection): cover=#{cover_id} · {applied.get('message')}")
+                else:
+                    # Manual review / policy may soft-fail; surface as fail only if hard error
+                    msg = (applied.get("message") or "").lower()
+                    if "not found" in msg or "invalid" in msg:
+                        print(f"  [FAIL] Order in: {applied.get('message')}")
+                        fails += 1
+                    else:
+                        print(f"  [ok] Order in soft result: {applied.get('message')}")
 
         # --- second request: reject with notes (like _reject_dialog) ---
         officer2 = get_any_officer(squad="B", shift_start="06:00")

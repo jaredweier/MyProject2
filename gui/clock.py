@@ -1,6 +1,6 @@
 """Department-local real time for Chronos Command UI.
 
-User-facing dates: M/D/YY (e.g. 7/9/26 for July 9, 2026) — never D/M for that day.
+User-facing dates: M/D/YY (e.g. 7/9/26 for July 9, 2026); / or -; year 2 or 4 digits.
 """
 
 from __future__ import annotations

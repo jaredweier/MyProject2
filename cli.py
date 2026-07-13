@@ -1,998 +1,114 @@
 #!/usr/bin/env python3
 """
 Dodgeville Police Department Scheduler - Admin CLI
+
+Handlers live under cli/*_cmds.py. This module owns argparse + dispatch.
 """
 
-import argparse
-from datetime import date
+from __future__ import annotations
 
+import argparse
+
+from cli.bid_cmds import (
+    assignments_shift_bid_cmd,
+    finalize_shift_bid_cmd,
+    import_sim_shift_bid_cmd,
+    list_shift_bids_cmd,
+    participation_shift_bid_cmd,
+    post_shift_bid_event_cmd,
+    preview_shift_bid_cmd,
+    reassign_shift_bid_cmd,
+    show_shift_bid_cmd,
+    submit_shift_bid_cmd,
+)
+from cli.callback_cmds import (
+    fatigue_report_cmd,
+    list_callbacks_cmd,
+    next_callback_cmd,
+    record_callback_cmd,
+)
+from cli.export_cmds import (
+    export_coverage,
+    export_ical_cmd,
+    export_pay_period_history_csv_cmd,
+    export_payroll,
+    export_payroll_csv_cmd,
+    export_requests,
+    export_requests_csv_cmd,
+    export_roster,
+    export_schedule,
+    export_shift_swaps_csv_cmd,
+    export_swaps_pdf_cmd,
+    export_timecard_csv_cmd,
+    schedule_diff_cmd,
+)
+from cli.notification_cmds import (
+    list_notifications,
+    read_all_notifications,
+    read_notification,
+)
+from cli.ops_cmds import (
+    add_availability_cmd,
+    add_holiday_cmd,
+    assign_override_cmd,
+    availability_conflicts_cmd,
+    backup_create,
+    backup_list_cmd,
+    backup_restore_cmd,
+    delete_availability_cmd,
+    delete_holiday_cmd,
+    fill_open_shift_cmd,
+    get_setting_cmd,
+    list_availability,
+    list_holidays,
+    list_open_shifts,
+    post_open_shift,
+    rotation_settings_cmd,
+    set_setting_cmd,
+    staffing_settings_cmd,
+)
+from cli.payroll_cmds import (
+    pay_period_history_cmd,
+    pay_period_lock,
+    pay_period_status,
+    pay_period_unlock,
+)
+from cli.report_cmds import reports_coverage, reports_labor_compliance, reports_summary
+from cli.request_cmds import (
+    approve_request,
+    list_pending_requests,
+    list_requests,
+    reject_request,
+    submit_request_cmd,
+)
 from cli.roster_cmds import dispatch_officers, register_officers_parser
+from cli.swap_cmds import (
+    approve_swap,
+    create_swap_cmd,
+    list_pending_swaps,
+    list_swaps,
+    reject_swap,
+)
+from cli.user_cmds import (
+    create_user_cmd,
+    list_users_cmd,
+    reset_user_password_cmd,
+    set_user_active_cmd,
+    update_user_cmd,
+)
 from config import DAY_OFF_REQUEST_TYPES
-from database import backup_database, list_backup_files, restore_database
 from logic import (
-    add_holiday,
-    add_officer_availability,
-    admin_reset_user_password,
     bulk_approve_auto_ok_requests,
     bulk_reject_pending_requests,
-    cancel_shift_bid_event,
-    compare_base_updated_schedule,
-    create_app_user,
-    create_day_off_request,
-    create_manual_coverage_override,
-    create_open_shift,
-    create_shift_bid_event,
-    create_shift_bid_from_simulation,
-    create_shift_swap_request,
-    delete_holiday,
-    delete_officer_availability,
     export_audit_csv,
-    export_coverage_pdf,
-    export_officer_schedule_ical,
-    export_pay_period_history_csv,
-    export_payroll_csv,
-    export_payroll_pdf,
-    export_requests_csv,
-    export_requests_pdf,
-    export_roster_csv,
-    export_schedule_diff_csv,
-    export_schedule_pdf,
-    export_shift_swaps_csv,
-    export_shift_swaps_pdf,
-    export_timecard_csv,
-    fill_open_shift,
-    finalize_shift_bid_event,
-    format_bid_event_summary,
     get_audit_log,
-    get_callback_events,
-    get_callback_rotation,
-    get_coverage_report,
     get_current_cycle_window,
-    get_dashboard_insights,
-    get_day_off_requests,
-    get_department_setting,
-    get_fatigue_scoreboard,
-    get_holidays,
-    get_labor_compliance_report,
-    get_next_callback_candidate,
-    get_notifications,
-    get_officer_availability,
-    get_open_shifts,
     get_overtime_alerts,
-    get_pay_period_history,
-    get_pending_day_off_requests,
-    get_pending_shift_swap_requests,
     get_schedule_conflicts,
-    get_shift_bid_event,
-    get_shift_bid_events,
-    get_shift_bid_participation_report,
-    get_shift_bid_rankings_for_event,
-    get_shift_swap_requests,
-    get_unread_notification_count,
-    is_pay_period_locked,
-    list_all_users,
-    load_simulator_scenario_for_bid,
-    lock_pay_period,
-    mark_all_notifications_read,
-    mark_notification_read,
-    preview_shift_bid_awards,
-    process_day_off_request,
-    process_shift_swap,
-    publish_shift_bid_event,
-    reassign_shift_bid_option,
-    record_callback_event,
-    resolve_notification_navigation,
-    set_app_user_active,
-    set_department_setting,
-    submit_shift_bid_rankings,
     sync_callback_rotation_from_roster,
-    unlock_pay_period,
-    update_app_user,
-    update_shift_bid_assignments,
 )
 from permissions import USER_ROLES
-from validators import format_date, parse_date
-
-
-def _print_requests_table(requests, empty_msg: str = "No requests."):
-    if not requests:
-        print(empty_msg)
-        return
-    print(f"{'ID':<5} {'Date':<12} {'Type':<18} {'Officer':<25} {'Squad':<6} {'Status':<20}")
-    print("-" * 90)
-    for r in requests:
-        print(
-            f"{r['id']:<5} {format_date(r['request_date']):<12} {r['request_type']:<18} "
-            f"{r['officer_name']:<25} {r['squad']:<6} {r['status']:<20}"
-        )
-
-
-def list_pending_requests():
-    _print_requests_table(get_pending_day_off_requests(), "No pending requests.")
-
-
-def list_requests(args):
-    status = None if args.status in (None, "all") else args.status
-    requests = get_day_off_requests(
-        status_filter=status,
-        date_from=args.from_date,
-        date_to=args.to_date,
-    )
-    _print_requests_table(requests, "No matching requests.")
-
-
-def approve_request(request_id: int):
-    result = process_day_off_request(request_id, action="approve")
-    if result.success:
-        print(result.message)
-    elif result.requires_manual:
-        print(f"Manual review required: {result.message}")
-    else:
-        print(f"Failed: {result.message}")
-
-
-def reject_request(request_id: int):
-    result = process_day_off_request(request_id, action="reject")
-    print(result.message if result.success else f"Failed: {result.message}")
-
-
-def submit_request_cmd(args):
-    result = create_day_off_request(
-        args.officer_id,
-        args.date,
-        args.type,
-        notes=args.notes or "",
-    )
-    if result.get("success"):
-        print(f"Request submitted (ID: {result['request_id']})")
-    else:
-        print(f"Error: {result.get('message', 'Unknown error')}")
-
-
-def create_swap_cmd(args):
-    result = create_shift_swap_request(args.officer1_id, args.officer2_id, args.date)
-    if result.get("success"):
-        print(f"Swap submitted (ID: {result['swap_id']}, status: {result.get('status')})")
-    else:
-        print(f"Error: {result.get('message', 'Unknown error')}")
-
-
-def fill_open_shift_cmd(args):
-    result = fill_open_shift(args.shift_id, args.officer_id)
-    print("Open shift filled." if result.get("success") else f"Error: {result.get('message')}")
-
-
-def delete_holiday_cmd(args):
-    result = delete_holiday(args.holiday_id)
-    print("Holiday deleted." if result.get("success") else f"Error: {result.get('message')}")
-
-
-def delete_availability_cmd(args):
-    result = delete_officer_availability(args.entry_id)
-    print("Availability entry deleted." if result.get("success") else f"Error: {result.get('message')}")
-
-
-def get_setting_cmd(args):
-    value = get_department_setting(args.key, "")
-    print(value if value else "(not set)")
-
-
-def set_setting_cmd(args):
-    result = set_department_setting(args.key, args.value)
-    print("Setting saved." if result.get("success") else f"Error: {result.get('message')}")
-
-
-def staffing_settings_cmd(args):
-    from logic.staffing_config import get_staffing_config, save_staffing_settings
-
-    if args.staffing_action == "show":
-        config = get_staffing_config()
-        print(f"Shift length: {config['shift_length_hours']} hours")
-        print(f"Annual hours target: {config['annual_hours_target']}")
-        print(f"Shift count: {config['shift_count']}")
-        print(f"Target officers: {config['target_officer_count']} (active roster: {config['active_officer_count']})")
-        print(f"Shift starts: {', '.join(config['shift_starts'])}")
-        for band in config["shift_times"]:
-            print(f"  {band['start']} – {band['end']}")
-        return
-    if args.staffing_action == "set":
-        result = save_staffing_settings(
-            shift_length_hours=args.shift_length,
-            annual_hours_target=args.annual_hours,
-            shift_count=args.shift_count,
-            target_officer_count=args.target_officers,
-            shift_starts_text=args.shift_starts or "",
-        )
-        if result.get("success"):
-            print(result.get("message", "Staffing saved."))
-        else:
-            print(f"Error: {result.get('message')}")
-
-
-def rotation_settings_cmd(args):
-    from logic.rotation_config import get_rotation_config, save_rotation_settings
-
-    if args.rotation_action == "show":
-        config = get_rotation_config()
-        print(f"Preset: {config['preset']}")
-        print(f"Cycle length: {config['cycle_length']} days")
-        print(f"Base date: {config['base_date']}")
-        print(f"Squad A days: {config['squad_a_days']}")
-        print(f"Schedule mode: {config.get('rust_schedule_mode')}")
-        start, end = get_current_cycle_window()
-        print(f"Current cycle: {format_date(start)} – {format_date(end)}")
-        return
-    if args.rotation_action == "set":
-        result = save_rotation_settings(
-            cycle_length=args.cycle_length,
-            preset=args.preset,
-            base_date_text=args.base_date or "",
-            squad_a_days_text=args.squad_a_days or "",
-        )
-        if result.get("success"):
-            print(result.get("message", "Rotation saved."))
-        else:
-            print(f"Error: {result.get('message')}")
-
-
-def backup_create():
-    path = backup_database()
-    print(f"Database backed up to: {path}")
-
-
-def backup_list_cmd():
-    files = list_backup_files()
-    if not files:
-        print("No backup files found.")
-        return
-    for path in files:
-        print(path)
-
-
-def backup_restore_cmd(path: str):
-    from logic import restore_database_from_backup
-
-    result = restore_database_from_backup(path)
-    if result.get("success"):
-        print(result.get("message", "Restored."))
-        print(f"Safety copy: {result.get('safety_backup')}")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def _print_swaps_table(swaps, empty_msg: str = "No shift swaps."):
-    if not swaps:
-        print(empty_msg)
-        return
-    print(f"{'ID':<5} {'Date':<12} {'Officer 1':<22} {'Officer 2':<22} {'Status':<20}")
-    print("-" * 85)
-    for s in swaps:
-        print(
-            f"{s['id']:<5} {format_date(s['swap_date']):<12} {s['officer1_name']:<22} "
-            f"{s['officer2_name']:<22} {s['status']:<20}"
-        )
-
-
-def list_pending_swaps():
-    _print_swaps_table(get_pending_shift_swap_requests(), "No pending shift swaps.")
-
-
-def list_swaps(args):
-    if args.status == "pending":
-        swaps = get_pending_shift_swap_requests(date_from=args.from_date, date_to=args.to_date)
-    elif args.status in (None, "all"):
-        swaps = get_shift_swap_requests(date_from=args.from_date, date_to=args.to_date)
-    else:
-        swaps = get_shift_swap_requests(
-            status_filter=args.status,
-            date_from=args.from_date,
-            date_to=args.to_date,
-        )
-    _print_swaps_table(swaps, "No matching shift swaps.")
-
-
-def approve_swap(swap_id: int):
-    result = process_shift_swap(swap_id, action="approve")
-    if result.success:
-        print(result.message)
-    elif result.requires_manual:
-        print(f"Manual review required: {result.message}")
-    else:
-        print(f"Failed: {result.message}")
-
-
-def reject_swap(swap_id: int):
-    result = process_shift_swap(swap_id, action="reject")
-    print(result.message if result.success else f"Failed: {result.message}")
-
-
-def list_notifications(unread_only: bool = False, officer_id: int = None):
-    notes = get_notifications(officer_id=officer_id, unread_only=unread_only)
-    unread = get_unread_notification_count(officer_id=officer_id)
-    if not notes:
-        print(f"No notifications ({unread} unread).")
-        return
-
-    print(f"Notifications ({unread} unread):")
-    print(f"{'ID':<5} {'To':<20} {'Type':<12} {'Title':<24} {'Nav':<14} {'Read':<6}")
-    print("-" * 85)
-    for n in notes:
-        read_flag = "yes" if n.get("is_read") else "no"
-        nav = (resolve_notification_navigation(n) or {}).get("page", "—")
-        print(
-            f"{n['id']:<5} {n.get('recipient_name', ''):<20} {n.get('type', ''):<12} "
-            f"{n.get('title', '')[:24]:<24} {nav:<14} {read_flag:<6}"
-        )
-
-
-def read_notification(notification_id: int):
-    result = mark_notification_read(notification_id)
-    print("Marked read." if result.get("success") else f"Failed: {result.get('message')}")
-
-
-def read_all_notifications(officer_id: int = None):
-    result = mark_all_notifications_read(officer_id=officer_id)
-    if result.get("success"):
-        print(f"Marked {result.get('updated', 0)} notification(s) read.")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def export_coverage(args):
-    if args.start and args.end:
-        start, end = parse_date(args.start), parse_date(args.end)
-    else:
-        start, end = get_current_cycle_window()
-    result = export_coverage_pdf(start, end, output_path=args.output)
-    if result.get("success"):
-        print(f"Coverage PDF: {result['path']}")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def export_schedule(args):
-    if args.start and args.end:
-        start = parse_date(args.start)
-        end = parse_date(args.end)
-    else:
-        start, end = get_current_cycle_window()
-    result = export_schedule_pdf(
-        start,
-        end,
-        officer_id=args.officer_id,
-        output_path=args.output,
-    )
-    if result.get("success"):
-        print(f"Schedule PDF: {result['path']}")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def export_payroll(args):
-    period_start = parse_date(args.period_start) if args.period_start else None
-    result = export_payroll_pdf(
-        officer_id=args.officer_id,
-        period_start=period_start,
-        output_path=args.output,
-    )
-    if result.get("success"):
-        print(f"Payroll PDF: {result['path']}")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def export_requests(args):
-    result = export_requests_pdf(
-        status_filter=args.status,
-        date_from=args.from_date,
-        date_to=args.to_date,
-        officer_id=args.officer_id,
-        output_path=args.output,
-    )
-    if result.get("success"):
-        print(f"Requests PDF: {result['path']}")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def export_swaps_pdf_cmd(args):
-    status = None
-    pending_only = False
-    if args.status:
-        val = args.status.lower()
-        if val == "all":
-            status = None
-        elif val == "pending":
-            pending_only = True
-        else:
-            status = args.status
-    result = export_shift_swaps_pdf(
-        status_filter=status,
-        date_from=args.from_date,
-        date_to=args.to_date,
-        officer_id=args.officer_id,
-        pending_only=pending_only,
-        output_path=args.output,
-    )
-    if result.get("success"):
-        print(f"Shift swaps PDF: {result['path']}")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def list_holidays(args):
-    holidays = get_holidays(args.year)
-    if not holidays:
-        print("No holidays found.")
-        return
-    for h in holidays:
-        paid = "paid" if h.get("is_paid") else "unpaid"
-        print(f"{format_date(h['holiday_date']):<12} {h['name']:<24} {paid}")
-
-
-def add_holiday_cmd(args):
-    result = add_holiday(args.name, args.date, is_paid=not args.unpaid)
-    if result.get("success"):
-        print(f"Holiday added (ID: {result['holiday_id']})")
-    else:
-        print(f"Error: {result.get('message')}")
-
-
-def reports_labor_compliance(args):
-    report = get_labor_compliance_report(officer_id=args.officer_id)
-    scope = f" (officer {args.officer_id})" if args.officer_id else ""
-    print(f"Labor compliance{scope}")
-    print(
-        f"§207(k) {report.get('flsa_207k_period_days')}-day period "
-        f"{report.get('flsa_207k_period_start')} – {report.get('flsa_207k_period_end')} "
-        f"(threshold {report.get('flsa_207k_threshold')}h, rotation {report.get('rotation_cycle_length')}d)"
-    )
-    print(
-        f"Comp cap: {report.get('comp_cap_hours')}h  |  Max consecutive days: {report.get('max_consecutive_work_days')}"
-    )
-    print(f"Issues: {report.get('issue_count', 0)}")
-    for item in report.get("issues", []):
-        print(f"  [{item.get('severity', '?').upper()}] {item['officer_name']}: {item['message']}")
-
-
-def reports_summary(args):
-    insights = get_dashboard_insights(officer_id=args.officer_id)
-    scope = f" (officer {args.officer_id})" if args.officer_id else ""
-    print(f"Dashboard summary{scope}")
-    print(f"Coverage issues (cycle): {insights.get('coverage_issues', 0)}")
-    print(f"Overtime alerts: {insights.get('overtime_alerts', 0)}")
-    print(f"Schedule conflicts: {insights.get('schedule_conflicts', 0)}")
-    print(f"Schedule changes (month): {insights.get('schedule_diff_count', 0)}")
-    print(f"Pending requests: {insights.get('pending_requests', 0)}")
-    print(f"Pending swaps: {insights.get('pending_swaps', 0)}")
-    print(f"Labor compliance issues: {insights.get('labor_compliance_count', 0)}")
-    if insights.get("officer_scoped"):
-        print(f"Pending manual review: {insights.get('pending_manual_review', 0)}")
-        print(f"Claimable open shifts: {insights.get('claimable_open_shifts', 0)}")
-    else:
-        print(f"Open shifts posted: {insights.get('open_shifts', 0)}")
-        print(f"Monthly labor (proj.): ${insights.get('monthly_labor_cost', 0):,.0f}")
-        budget = insights.get("labor_budget") or {}
-        if budget.get("configured"):
-            print(
-                f"Labor budget YTD: ${budget['ytd_spent']:,.0f} / ${budget['annual_budget']:,.0f} "
-                f"({budget['ytd_pct']:.0f}%)"
-            )
-
-
-def reports_coverage(args):
-    if args.start and args.end:
-        start, end = parse_date(args.start), parse_date(args.end)
-    else:
-        start, end = get_current_cycle_window()
-    report = get_coverage_report(start, end)
-    print(f"Coverage {report['start_date']} – {report['end_date']}: {report['issue_count']} issue(s)")
-    for issue in report.get("issues", []):
-        print(f"  {issue['date']} Squad {issue['squad_on_duty']}: {issue['night_issues']}")
-
-
-def export_roster(args):
-    result = export_roster_csv(output_path=args.output)
-    if result.get("success"):
-        print(f"Roster CSV: {result['path']} ({result['count']} rows)")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def schedule_diff_cmd(args):
-    year = args.year or date.today().year
-    month = args.month or date.today().month
-    if args.output:
-        result = export_schedule_diff_csv(
-            year,
-            month,
-            args.output,
-            officer_id=args.officer_id,
-        )
-        if result.get("success"):
-            print(f"Schedule diff CSV: {result['path']} ({result['count']} rows)")
-        else:
-            print(f"Failed: {result.get('message')}")
-        return
-    result = compare_base_updated_schedule(year, month, officer_id=args.officer_id)
-    if not result.get("success"):
-        print(f"Failed: {result.get('message')}")
-        return
-    print(f"Base vs Updated — {year}-{month:02d}: {result['diff_count']} change(s)")
-    for item in result.get("diffs", [])[: args.limit]:
-        print(
-            f"  {item['assignment_date']}  {item['officer_name']:<20}  "
-            f"{item['base_status'] or '—'} → {item['updated_status'] or '—'}"
-        )
-
-
-def export_payroll_csv_cmd(args):
-    period = parse_date(args.period_start) if args.period_start else None
-    result = export_payroll_csv(
-        period_start=period,
-        officer_id=args.officer_id,
-        output_path=args.output,
-    )
-    if result.get("success"):
-        print(f"Payroll CSV: {result['path']} ({result['count']} rows)")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def export_requests_csv_cmd(args):
-    status = None if not args.status or args.status.lower() == "all" else args.status
-    result = export_requests_csv(
-        status_filter=status,
-        date_from=args.from_date,
-        date_to=args.to_date,
-        officer_id=args.officer_id,
-        output_path=args.output,
-    )
-    if result.get("success"):
-        print(f"Requests CSV: {result['path']} ({result['count']} rows)")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def export_pay_period_history_csv_cmd(args):
-    result = export_pay_period_history_csv(
-        limit=args.limit,
-        officer_id=args.officer_id,
-        output_path=args.output,
-    )
-    if result.get("success"):
-        print(f"Pay period history CSV: {result['path']} ({result['count']} rows)")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def export_timecard_csv_cmd(args):
-    period = parse_date(args.period_start) if args.period_start else None
-    result = export_timecard_csv(
-        period_start=period,
-        officer_id=args.officer_id,
-        output_path=args.output,
-    )
-    if result.get("success"):
-        print(f"Timecard CSV: {result['path']} ({result['count']} rows)")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def export_shift_swaps_csv_cmd(args):
-    status = None
-    pending_only = False
-    if args.status:
-        val = args.status.lower()
-        if val == "all":
-            status = None
-        elif val == "pending":
-            pending_only = True
-        else:
-            status = args.status
-    result = export_shift_swaps_csv(
-        status_filter=status,
-        date_from=args.from_date,
-        date_to=args.to_date,
-        officer_id=args.officer_id,
-        pending_only=pending_only,
-        output_path=args.output,
-    )
-    if result.get("success"):
-        print(f"Shift swaps CSV: {result['path']} ({result['count']} rows)")
-    else:
-        print(f"Failed: {result.get('message')}")
-
-
-def pay_period_status(_args):
-    locked = is_pay_period_locked()
-    start, end = get_current_cycle_window()
-    state = "LOCKED" if locked else "open"
-    print(f"Pay period {format_date(start)} – {format_date(end)}: {state}")
-
-
-def pay_period_lock(_args):
-    result = lock_pay_period()
-    if result.get("success"):
-        print(f"Locked pay period {format_date(result['period_start'])} – {format_date(result['period_end'])}")
-    else:
-        print(f"Error: {result.get('message')}")
-
-
-def pay_period_unlock(_args):
-    result = unlock_pay_period()
-    if result.get("success"):
-        print("Pay period unlocked")
-    else:
-        print(f"Error: {result.get('message')}")
-
-
-def pay_period_history_cmd(args):
-    data = get_pay_period_history(args.limit)
-    if not data.get("periods"):
-        print("No pay period history.")
-        return
-    for p in data["periods"]:
-        lock = " locked" if p.get("locked") else ""
-        print(
-            f"{format_date(p['period_start'])} – {format_date(p['period_end'])}  "
-            f"{p['total_hours']:.1f}h  ${p['total_pay']:,.2f}  "
-            f"({p['officer_count']} officers){lock}"
-        )
-
-
-def list_open_shifts(args):
-    shifts = get_open_shifts(officer_id=args.officer_id)
-    if not shifts:
-        print("No open shifts.")
-        return
-    for s in shifts:
-        squad = f"Squad {s['squad']} " if s.get("squad") else ""
-        print(f"{s['id']:<4} {format_date(s['shift_date']):<12} {squad}{s['shift_start']}-{s['shift_end']}")
-
-
-def post_open_shift(args):
-    result = create_open_shift(args.date, args.shift_start, args.shift_end, squad=args.squad)
-    if result.get("success"):
-        print(f"Open shift posted (ID: {result['shift_id']})")
-    else:
-        print(f"Error: {result.get('message')}")
-
-
-def list_shift_bids_cmd(args):
-    if args.officer_id:
-        events = get_shift_bid_events(officer_id=args.officer_id)
-    else:
-        events = get_shift_bid_events(include_drafts=True)
-    if not events:
-        print("No shift bid events.")
-        return
-    for ev in events:
-        squad = f"Squad {ev['squad']} " if ev.get("squad") else ""
-        print(
-            f"{ev['id']:<4} [{ev['status']:<10}] {ev.get('title') or 'Shift Bid':<24} {squad}"
-            f"due {ev.get('bids_due_by') or '—'}  ({ev.get('respondent_count', 0)} responses)"
-        )
-
-
-def post_shift_bid_event_cmd(args):
-    result = create_shift_bid_event(
-        title=args.title or "Shift Bid",
-        number_of_shifts=args.number_of_shifts or "",
-        shift_length=args.shift_length or "",
-        rotation=args.rotation or "",
-        shift_start_times=args.shift_start_times or "",
-        shifts_begin=args.shifts_begin or "",
-        bids_due_by=args.bids_due_by or "",
-        squad=args.squad,
-        notes=args.notes or "",
-    )
-    if not result.get("success"):
-        print(f"Error: {result.get('message')}")
-        return
-    event_id = result["event_id"]
-    if args.publish:
-        pub = publish_shift_bid_event(event_id)
-        if not pub.get("success"):
-            print(f"Created draft {event_id} but publish failed: {pub.get('message')}")
-            return
-        print(f"Shift bid published (ID: {event_id}, {pub.get('option_count', 0)} shifts)")
-    else:
-        print(f"Shift bid draft created (ID: {event_id})")
-
-
-def submit_shift_bid_cmd(args):
-    rankings = []
-    for rank_str in args.rankings:
-        if ":" not in rank_str:
-            print(f"Invalid ranking '{rank_str}' — use option_id:rank")
-            return
-        opt_s, rank_s = rank_str.split(":", 1)
-        rankings.append({"option_id": int(opt_s), "preference_rank": int(rank_s)})
-    result = submit_shift_bid_rankings(args.event_id, args.officer_id, rankings)
-    if result.get("success"):
-        print(f"Rankings submitted ({result.get('ranked_count', 0)} preferences)")
-    else:
-        print(f"Error: {result.get('message')}")
-
-
-def reassign_shift_bid_cmd(args):
-    officer_id = None if args.clear else args.officer_id
-    if not args.clear and officer_id is None:
-        print("Error: provide --officer-id or --clear")
-        return
-    result = reassign_shift_bid_option(args.event_id, args.option_id, officer_id)
-    if result.get("success"):
-        print(f"Updated {result.get('changed', 0)} assignment(s)")
-    else:
-        print(f"Error: {result.get('message')}")
-
-
-def finalize_shift_bid_cmd(args):
-    result = finalize_shift_bid_event(args.event_id)
-    if result.get("success"):
-        for award in result.get("awards", []):
-            print(f"  {award['officer_name']} -> {award['option_label']}")
-        print(f"Finalized ({result.get('award_count', 0)} awards)")
-    else:
-        print(f"Error: {result.get('message')}")
-
-
-def show_shift_bid_cmd(args):
-    print(format_bid_event_summary(args.event_id))
-    event = get_shift_bid_event(args.event_id)
-    if event and event.get("options"):
-        print("\nShifts:")
-        for opt in event["options"]:
-            awarded = f" -> {opt.get('awarded_officer_name')}" if opt.get("awarded_officer_id") else ""
-            print(f"  {opt['id']}: {opt['label']} [{opt['status']}]{awarded}")
-    rankings = get_shift_bid_rankings_for_event(args.event_id)
-    if rankings:
-        print("\nRankings:")
-        for row in rankings:
-            print(
-                f"  {row['officer_name']:<22} {row['option_label']:<10} "
-                f"pref #{row['preference_rank']}  seniority {row['seniority_rank']}"
-            )
-
-
-def preview_shift_bid_cmd(args):
-    result = preview_shift_bid_awards(args.event_id)
-    if not result.get("success"):
-        print(f"Error: {result.get('message')}")
-        return
-    for award in result.get("awards", []):
-        print(f"  {award['officer_name']} -> {award['option_label']} (pref #{award['preference_rank']})")
-    for opt in result.get("unassigned_options", []):
-        print(f"  Unassigned: {opt.get('label')}")
-    print(f"Preview: {result.get('award_count', 0)} award(s)")
-
-
-def participation_shift_bid_cmd(args):
-    report = get_shift_bid_participation_report(args.event_id)
-    if not report.get("success"):
-        print(f"Error: {report.get('message')}")
-        return
-    print(f"{report.get('title') or 'Shift Bid'} [{report.get('status')}]")
-    print(f"Eligible: {report.get('eligible_count', 0)}  Responded: {report.get('respondent_count', 0)}")
-    missing = report.get("missing_officers") or []
-    if missing:
-        print("No response:")
-        for row in missing:
-            print(f"  {row['name']}")
-
-
-def assignments_shift_bid_cmd(args):
-    assignments = []
-    for spec in args.assignments:
-        if ":" not in spec:
-            print(f"Invalid assignment '{spec}' — use option_id:officer_id or option_id:none")
-            return
-        opt_s, off_s = spec.split(":", 1)
-        officer_id = None if off_s.lower() in ("none", "clear", "0") else int(off_s)
-        assignments.append({"option_id": int(opt_s), "officer_id": officer_id})
-    result = update_shift_bid_assignments(args.event_id, assignments)
-    if result.get("success"):
-        print(f"Updated {result.get('changed', 0)} assignment(s)")
-    else:
-        print(f"Error: {result.get('message')}")
-
-
-def import_sim_shift_bid_cmd(args):
-    if args.scenario_id:
-        sim = load_simulator_scenario_for_bid(args.scenario_id)
-    else:
-        from logic import run_schedule_simulation
-
-        sim = run_schedule_simulation(
-            args.rotation or "4-on-4-off",
-            args.officers or 8,
-            args.shift_length or 10.0,
-            args.annual_hours or 2080.0,
-            [s.strip() for s in (args.shift_starts or "06:00,16:00").split(",") if s.strip()],
-            apply_department_rules=False,
-            min_per_shift=1,
-        )
-    if not sim.get("success"):
-        print(f"Error: {sim.get('message', 'Simulation failed')}")
-        return
-    result = create_shift_bid_from_simulation(
-        sim,
-        publish=args.publish,
-        title=args.title,
-        squad=args.squad,
-        bids_due_by=args.bids_due_by or "",
-        shifts_begin=args.shifts_begin or "",
-    )
-    if result.get("success"):
-        print(f"Shift bid created (ID: {result['event_id']})" + (" and published" if args.publish else ""))
-    else:
-        print(f"Error: {result.get('message')}")
-
-
-def list_callbacks_cmd(_args):
-    rotation = get_callback_rotation()
-    if not rotation:
-        print("Callback rotation empty. Run: python cli.py callbacks sync")
-        return
-    for row in rotation:
-        print(f"#{row['sort_order']:<3} {row['officer_name']:<22} Squad {row.get('squad') or '—'}")
-
-
-def next_callback_cmd(_args):
-    result = get_next_callback_candidate()
-    cand = result.get("candidate")
-    if not cand:
-        print("No callback candidate (sync rotation first).")
-        return
-    print(f"Next: {cand['officer_name']} (ID {cand['officer_id']})")
-
-
-def record_callback_cmd(args):
-    result = record_callback_event(args.officer_id, args.date, args.hours, notes=args.notes or "")
-    if result.get("success"):
-        print(f"Callback recorded (ID: {result['event_id']})")
-    else:
-        print(f"Error: {result.get('message')}")
-
-
-def fatigue_report_cmd(_args):
-    board = get_fatigue_scoreboard(limit=15)
-    print(f"Fatigue threshold: {board.get('threshold', 70):.0f}")
-    for row in board.get("officers", []):
-        flag = row.get("severity") or "ok"
-        print(f"{row['officer_name']:<22} {row['score']:5.1f}  [{flag}]")
-
-
-def list_availability(args):
-    entries = get_officer_availability(officer_id=args.officer_id)
-    if not entries:
-        print("No availability entries.")
-        return
-    for e in entries:
-        reason = f"  {e.get('reason')}" if e.get("reason") else ""
-        print(f"{e['id']:<4} {e['officer_name']:<22} {format_date(e['unavailable_date']):<12}{reason}")
-
-
-def add_availability_cmd(args):
-    result = add_officer_availability(args.officer_id, args.date, args.reason or "")
-    if result.get("success"):
-        print(f"Availability recorded (ID: {result['entry_id']})")
-        if result.get("warning"):
-            print(f"Warning: {result['warning']}")
-    else:
-        print(f"Error: {result.get('message')}")
-
-
-def availability_conflicts_cmd(args):
-    if args.start and args.end:
-        start, end = parse_date(args.start), parse_date(args.end)
-    else:
-        start, end = get_current_cycle_window()
-    data = get_schedule_conflicts(start, end, officer_id=args.officer_id)
-    print(f"Conflicts {data['start_date']} – {data['end_date']}: {data['conflict_count']} issue(s)")
-    for c in data.get("conflicts", []):
-        print(f"  {c['unavailable_date']}  {c['officer_name']}  ({c['schedule_status']})  {c.get('reason') or ''}")
-
-
-def list_users_cmd(args):
-    users = list_all_users(include_inactive=not args.active_only)
-    if not users:
-        print("No users found.")
-        return
-    print(f"{'ID':<5} {'Username':<18} {'Role':<16} {'Officer':<22} {'Active':<7} {'MustChg':<8}")
-    print("-" * 90)
-    for u in users:
-        active = "Yes" if u.get("active") == 1 else "No"
-        must_chg = "Yes" if u.get("must_change_password") == 1 else "No"
-        print(
-            f"{u['id']:<5} {u['username']:<18} {u['role']:<16} "
-            f"{(u.get('officer_name') or '—'):<22} {active:<7} {must_chg:<8}"
-        )
-
-
-def create_user_cmd(args):
-    result = create_app_user(
-        args.username,
-        args.password,
-        args.role,
-        officer_id=args.officer_id,
-        must_change_password=not args.no_force_change,
-    )
-    if result.get("success"):
-        print(f"User '{args.username}' created (ID: {result['user_id']})")
-    else:
-        print(f"Error: {result.get('message', 'Unknown error')}")
-
-
-def update_user_cmd(args):
-    if args.clear_officer_link:
-        result = update_app_user(args.user_id, clear_officer_link=True)
-    else:
-        fields = {}
-        if args.role is not None:
-            fields["role"] = args.role
-        if args.officer_id is not None:
-            fields["officer_id"] = args.officer_id
-        if not fields:
-            print("Error: No fields to update")
-            return
-        result = update_app_user(args.user_id, **fields)
-    if result.get("success"):
-        print(f"User {args.user_id} updated")
-    else:
-        print(f"Error: {result.get('message', 'Unknown error')}")
-
-
-def reset_user_password_cmd(args):
-    result = admin_reset_user_password(
-        args.user_id,
-        args.password,
-        must_change_password=not args.no_force_change,
-    )
-    if result.get("success"):
-        print(f"Password reset for user {args.user_id}")
-    else:
-        print(f"Error: {result.get('message', 'Unknown error')}")
-
-
-def set_user_active_cmd(args, active: bool):
-    result = set_app_user_active(args.user_id, active)
-    if result.get("success"):
-        print(result.get("message", "Done"))
-    else:
-        print(f"Error: {result.get('message', 'Unknown error')}")
-
-
-def assign_override_cmd(args):
-    result = create_manual_coverage_override(
-        args.original_officer_id,
-        args.replacement_officer_id,
-        args.date,
-        reason=args.reason or "Manual Coverage",
-    )
-    if result.get("success"):
-        print(result.get("message", "Coverage assigned"))
-    else:
-        print(f"Error: {result.get('message', 'Unknown error')}")
-
-
-def export_ical_cmd(args):
-    if args.start and args.end:
-        start = parse_date(args.start)
-        end = parse_date(args.end)
-    else:
-        start, end = get_current_cycle_window()
-    result = export_officer_schedule_ical(
-        args.officer_id,
-        start_date=start,
-        end_date=end,
-        output_path=args.output,
-    )
-    if result.get("success"):
-        print(f"iCal: {result['path']}")
-    else:
-        print(f"Failed: {result.get('message')}")
+from validators import parse_date
 
 
 def main():

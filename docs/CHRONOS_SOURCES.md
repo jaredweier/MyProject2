@@ -89,16 +89,16 @@
 
 ---
 
-## 5. Timezones & date display (US M/D/YY)
+## 5. Timezones & date display (M/D/YY)
 
 | Resource | URL | Use for Chronos |
 |----------|-----|-----------------|
 | **zoneinfo (stdlib)** | https://docs.python.org/3/library/zoneinfo.html | `America/Chicago` for Dodgeville; `SCHEDULER_TZ` override |
 | **IANA tzdb** | https://www.iana.org/time-zones | Canonical zone names |
-| **strftime reference** | https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes | `%m/%d/%y` pads zeros — **use** `validators.format_date` for unpadded `7/9/26` |
+| **strftime reference** | https://docs.python.org/3/library/datetime.html#strftime-and-strptime-format-codes | zero-pads — **use** `validators.format_date` for unpadded `7/9/26` (July 9) |
 | **ISO 8601 storage** | https://www.iso.org/iso-8601-date-and-time-format.html | Keep SQLite as `YYYY-MM-DD`; never “fix” storage to display format |
 
-**Product rule:** display **month/day** US short (`7/9/26`); never day-first for US UI. Inventory all display paths before claiming fixed.
+**Product rule:** display **month/day** short (`7/9/26` or `7-9-2026`); `/` or `-`; year 2 or 4 digits. Storage ISO. Inventory all display paths before claiming fixed.
 
 **In-repo application:** `config.DATE_*`, `validators.format_date` / `parse_date`, `gui/clock.py`.
 

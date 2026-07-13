@@ -16,8 +16,10 @@ from logic import (
     get_officers_by_seniority,
     get_pay_period,
     get_pay_period_hours_by_officer,
+    get_title_callin_limits,
     import_roster_from_csv,
     monthly_pay_to_per_pay_period,
+    set_title_callin_limit,
     suggested_hourly_rate_for_title,
     update_officer,
 )
@@ -144,6 +146,19 @@ def render_roster() -> None:
                     value="sworn",
                     label="Workforce class (Netchex dual OT)",
                 ).classes("w-full")
+                rot_pattern = ui.input(
+                    label="Rotation pattern (blank=squad A/B; e.g. 5-2 or 5-3,6-2)",
+                    value="",
+                ).classes("w-full")
+                rot_phase = ui.input(label="Rotation phase (days offset)", value="0").classes("w-full")
+                max_td = ui.input(
+                    label="Max turn-downs / year (blank = title default / unlimited)",
+                    value="",
+                ).classes("w-full")
+                max_oi = ui.input(
+                    label="Max ordered-in / year (blank = title default / unlimited)",
+                    value="",
+                ).classes("w-full")
                 active = ui.checkbox("Active On Roster", value=True)
 
                 def show_photo(oid):
@@ -176,6 +191,14 @@ def render_roster() -> None:
                     rank.value = str(o.get("seniority_rank") or "")
                     station.value = o.get("station") or ""
                     workforce.value = o.get("workforce_class") or "sworn"
+                    rot_pattern.value = o.get("rotation_pattern") or ""
+                    rot_phase.value = str(o.get("rotation_phase") or 0)
+                    max_td.value = (
+                        "" if o.get("max_turn_downs_year") in (None, "") else str(o.get("max_turn_downs_year"))
+                    )
+                    max_oi.value = (
+                        "" if o.get("max_ordered_in_year") in (None, "") else str(o.get("max_ordered_in_year"))
+                    )
                     active.value = o.get("active") == 1
                     show_photo(oid)
 
@@ -188,6 +211,10 @@ def render_roster() -> None:
                     rank.value = ""
                     station.value = ""
                     workforce.value = "sworn"
+                    rot_pattern.value = ""
+                    rot_phase.value = "0"
+                    max_td.value = ""
+                    max_oi.value = ""
                     active.value = True
                     show_photo(None)
 
@@ -202,6 +229,24 @@ def render_roster() -> None:
                     except ValueError:
                         ui.notify("Seniority Must Be A Number", type="negative")
                         return
+                    try:
+                        phase = int((rot_phase.value or "0").strip() or "0")
+                    except ValueError:
+                        ui.notify("Rotation phase must be a number", type="negative")
+                        return
+
+                    def _opt_int(raw):
+                        s = (raw or "").strip()
+                        if not s:
+                            return None
+                        return int(s)
+
+                    try:
+                        td_val = _opt_int(max_td.value)
+                        oi_val = _opt_int(max_oi.value)
+                    except ValueError:
+                        ui.notify("Max turn-downs / ordered-in must be whole numbers or blank", type="negative")
+                        return
                     fields = {
                         "name": n,
                         "job_title": title.value,
@@ -211,6 +256,10 @@ def render_roster() -> None:
                         "seniority_rank": r,
                         "station": (station.value or "").strip() or None,
                         "workforce_class": workforce.value or "sworn",
+                        "rotation_pattern": (rot_pattern.value or "").strip() or None,
+                        "rotation_phase": phase,
+                        "max_turn_downs_year": td_val,
+                        "max_ordered_in_year": oi_val,
                     }
                     if state["selected"]:
                         fields["active"] = 1 if active.value else 0
@@ -305,6 +354,52 @@ def render_roster() -> None:
                                 ui.navigate.to("/roster")
 
                         ui.button("Add title", on_click=add_title).classes("btn-ghost").props("no-caps outline dense")
+
+                    with ui.expansion("Title defaults · max turn-downs / ordered-in per year", icon="rule").classes(
+                        "w-full q-mt-sm"
+                    ):
+                        ui.label(
+                            "Applied when officer fields are blank. Used by call list next-up and OT order board."
+                        ).classes("text-xs text-gray-500 q-mb-sm")
+                        t_limits = get_title_callin_limits()
+                        cur = t_limits.get(title.value or "") or {}
+                        t_max_td = ui.input(
+                            label="Title max turn-downs / year",
+                            value="" if cur.get("max_turn_downs_year") is None else str(cur.get("max_turn_downs_year")),
+                        ).classes("w-full")
+                        t_max_oi = ui.input(
+                            label="Title max ordered-in / year",
+                            value="" if cur.get("max_ordered_in_year") is None else str(cur.get("max_ordered_in_year")),
+                        ).classes("w-full")
+
+                        def save_title_limits():
+                            def _opt(raw):
+                                s = (raw or "").strip()
+                                if not s:
+                                    return None
+                                return int(s)
+
+                            try:
+                                td = _opt(t_max_td.value)
+                                oi = _opt(t_max_oi.value)
+                            except ValueError:
+                                ui.notify("Limits must be whole numbers or blank", type="negative")
+                                return
+                            uid = (session.current_user() or {}).get("id")
+                            r = set_title_callin_limit(
+                                title.value or "Officer",
+                                max_turn_downs_year=td,
+                                max_ordered_in_year=oi,
+                                user_id=uid,
+                            )
+                            ui.notify(
+                                r.get("message", "Saved") if r.get("success") else r.get("message", "Fail"),
+                                type="positive" if r.get("success") else "negative",
+                            )
+
+                        ui.button("Save title call-in limits", on_click=save_title_limits).classes("btn-ghost").props(
+                            "no-caps outline dense"
+                        )
 
                 with ui.row().classes("gap-2 q-mt-sm"):
                     ui.button("Save", on_click=save).classes("btn-primary").props("no-caps unelevated")

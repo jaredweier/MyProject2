@@ -9,6 +9,7 @@ from gui import session
 from gui.clock import today_local
 from gui.shell import layout, page_header, panel
 from logic import (
+    apply_ot_fill_selection,
     bulk_approve_auto_ok_requests,
     bulk_reject_pending_requests,
     create_day_off_request,
@@ -18,9 +19,11 @@ from logic import (
     get_day_off_requests,
     get_day_off_requests_for_viewer,
     get_officers_by_seniority,
+    get_ot_fill_mode,
     get_pending_day_off_requests,
     get_pending_shift_swap_requests,
     get_shift_swap_requests,
+    list_ot_fill_candidates,
     plan_bump_chain,
     preview_best_coverage_plans,
     process_day_off_request,
@@ -276,115 +279,257 @@ def _run_approve(req, preferred_chain=None, plan_score=None) -> None:
 
 
 def _confirm_approve(req) -> None:
-    """Parity with legacy CTk: confirm + pick plan when multiple scored options exist."""
-    oid = req["officer_id"]
-    rdate = req["request_date"]
-    squad = req.get("squad") or ""
-    shift = req.get("shift_start") or ""
-    officer = req.get("officer_name") or f"Officer #{oid}"
-    date_s = format_date(rdate) if rdate else str(rdate)
-    payload = preview_best_coverage_plans(oid, rdate, squad, shift, max_plans=5)
-    plans = [p for p in (payload.get("plans") or []) if p.get("success")]
+    """Approve dialog: pick one cover + sticky actions (readable / clickable)."""
+    try:
+        oid = int(req["officer_id"])
+        rdate = req["request_date"]
+        squad = req.get("squad") or ""
+        shift = req.get("shift_start") or ""
+        officer = req.get("officer_name") or f"Officer #{oid}"
+        date_s = format_date(rdate) if rdate else str(rdate)
+        rid = int(req["id"])
+        payload = preview_best_coverage_plans(oid, rdate, squad, shift, max_plans=3)
+        plans = [p for p in (payload.get("plans") or []) if p.get("success")]
+        fill = list_ot_fill_candidates(oid, rdate, squad, shift)
+        candidates = fill.get("candidates") or [] if fill.get("success") else []
+        mode_label = fill.get("mode_label") or get_ot_fill_mode()
+        uid = (session.current_user() or {}).get("id")
 
-    with ui.dialog() as dlg, ui.card().classes("w-full").style("min-width:min(480px,94vw);max-width:640px"):
-        ui.label(f"Approve — {officer}").classes("text-sm font-semibold")
-        ui.label(f"{date_s} · {req.get('request_type', '')} · {squad} {shift}").classes("text-xs text-gray-500 q-mb-sm")
-
-        if not plans:
-            ui.label("No auto-coverage plan scored. Approve may route to manual review or fail rules.").classes(
-                "text-sm text-orange-400 q-mb-sm"
+        # Eligible covers only (order-in path). Cap list for readable select.
+        eligible = [c for c in candidates if not c.get("ineligible_for_order") and c.get("officer_id") is not None][:12]
+        by_id = {int(c["officer_id"]): c for c in eligible}
+        # Use int keys only (NiceGUI select is happier than None keys).
+        NONE_COVER = -1
+        cover_options: dict[int, str] = {NONE_COVER: "— Select cover officer —"}
+        for c in eligible:
+            cid = int(c["officer_id"])
+            duty = "ON" if c.get("on_duty") else "OFF"
+            cover_options[cid] = (
+                f"#{c.get('offer_order', '?')} · {c.get('name')} · {duty} · "
+                f"rank {c.get('seniority_rank', '—')} · {c.get('shift_start') or '—'}"
             )
-            ui.textarea(value="Approve with engine default (no preferred chain)?").classes("w-full").props(
-                "readonly outlined dense dark rows=4"
-            )
-
-            def do_default():
-                dlg.close()
-                _run_approve(req, preferred_chain=None)
-
-            with ui.row().classes("gap-2 q-mt-sm w-full justify-end"):
-                ui.button("Cancel", on_click=dlg.close).classes("btn-ghost").props("no-caps flat")
-                ui.button("Approve anyway", on_click=do_default).classes("btn-primary").props("no-caps unelevated")
-            dlg.open()
-            return
-
-        if len(plans) == 1:
-            plan = plans[0]
-            ui.textarea(value=_plan_summary_text(plan)).classes("w-full").props("readonly outlined dense dark rows=10")
-
-            def do_one():
-                dlg.close()
-                _run_approve(
-                    req,
-                    preferred_chain=plan.get("chain") or None,
-                    plan_score=plan.get("plan_score"),
-                )
-
-            with ui.row().classes("gap-2 q-mt-sm w-full justify-end"):
-                ui.button("Cancel", on_click=dlg.close).classes("btn-ghost").props("no-caps flat")
-                ui.button("Confirm approve", on_click=do_one).classes("btn-primary").props("no-caps unelevated")
-            dlg.open()
-            return
-
-        ui.label("Select a coverage plan (best score first)").classes("text-xs text-gray-400 q-mb-sm")
-        for i, plan in enumerate(plans, 1):
+        default_cover = next(iter(by_id), NONE_COVER)
+        plan_options: dict[int, str] = {0: "— No auto plan —"}
+        for i, plan in enumerate(plans[:3], 1):
             score = plan.get("plan_score")
-            score_s = f" · score {score}" if score is not None else ""
-            badge = " (recommended)" if i == 1 else ""
-            with ui.card().classes("w-full q-mb-sm").style("background:rgba(255,255,255,0.04)"):
-                ui.label(f"Plan {i}{badge}{score_s}").classes("text-sm font-semibold")
-                ui.textarea(value=_plan_summary_text(plan)).classes("w-full").props(
-                    "readonly outlined dense dark rows=6"
+            plan_options[i] = f"Auto plan {i}" + (f" · score {score}" if score is not None else "")
+
+        with ui.dialog().props("persistent") as dlg:
+            with (
+                ui.card()
+                .classes("leave-approve-dlg w-full")
+                .style(
+                    "width:min(520px,94vw);max-height:85vh;display:flex;flex-direction:column;"
+                    "padding:16px 18px;gap:8px;background:#0c1220;color:#e2e8f0;"
+                )
+            ):
+                ui.label(f"Approve — {officer}").classes("text-base font-semibold").style("color:#f1f5f9")
+                ui.label(f"{date_s} · {req.get('request_type', '')} · {squad} {shift}").classes("text-xs").style(
+                    "color:#94a3b8"
+                )
+                ui.label(f"Fill mode: {mode_label}").classes("text-xs").style("color:#fbbf24")
+
+                cover_sel = (
+                    ui.select(
+                        cover_options,
+                        value=default_cover,
+                        label="Cover officer",
+                    )
+                    .classes("w-full")
+                    .props("dark dense options-dense emit-value map-options")
                 )
 
-                def make_apply(p=plan):
-                    def apply():
-                        dlg.close()
-                        _run_approve(
-                            req,
-                            preferred_chain=p.get("chain") or None,
-                            plan_score=p.get("plan_score"),
+                detail = ui.label("").classes("text-xs").style("color:#94a3b8;min-height:1.2em")
+
+                def _refresh_detail(_e=None):
+                    try:
+                        cid = int(cover_sel.value) if cover_sel.value is not None else NONE_COVER
+                    except (TypeError, ValueError):
+                        cid = NONE_COVER
+                    if cid == NONE_COVER or cid not in by_id:
+                        detail.set_text("Pick a cover, or use auto plan / approve without cover.")
+                        return
+                    c = by_id[cid]
+                    hint = str(c.get("fill_hint") or "").strip()
+                    ytd = (
+                        f"YTD ordered {c.get('year_ordered_in', 0)} · "
+                        f"turned down {c.get('year_turned_down', 0)} · "
+                        f"volunteered {c.get('year_volunteered', 0)}"
+                    )
+                    detail.set_text(f"{ytd}" + (f" · {hint}" if hint else ""))
+
+                cover_sel.on_value_change(_refresh_detail)
+                _refresh_detail()
+
+                plan_sel = None
+                if plans:
+                    plan_sel = (
+                        ui.select(
+                            plan_options,
+                            value=1,
+                            label="Auto bump plan (optional)",
                         )
+                        .classes("w-full")
+                        .props("dark dense options-dense emit-value map-options")
+                    )
+                    best = _plan_summary_text(plans[0])
+                    ui.textarea(value=best).classes("w-full").props("readonly outlined dense dark rows=3").style(
+                        "font-size:12px"
+                    )
+                else:
+                    ui.label("No auto-coverage plan scored for this day.").classes("text-xs").style("color:#fb923c")
 
-                    return apply
+                def _notify_result(r: dict) -> None:
+                    ok = bool(r.get("success"))
+                    ui.notify(
+                        r.get("message", "Done") if ok else r.get("message", "Failed"),
+                        type="positive" if ok else "warning",
+                    )
+                    _request_queue.refresh()
 
-                label = f"Use plan {i}" + (f" ({score})" if score is not None else "")
-                ui.button(label, on_click=make_apply()).classes("btn-primary q-mt-xs").props("no-caps unelevated dense")
-        ui.button("Cancel", on_click=dlg.close).classes("btn-ghost q-mt-sm").props("no-caps flat dense")
-    dlg.open()
+                def _selected_cover_id() -> int | None:
+                    try:
+                        cid = int(cover_sel.value) if cover_sel.value is not None else NONE_COVER
+                    except (TypeError, ValueError):
+                        return None
+                    if cid == NONE_COVER or cid not in by_id:
+                        return None
+                    return cid
+
+                def _close_dlg() -> None:
+                    try:
+                        dlg.close()
+                    except Exception:
+                        pass
+                    try:
+                        dlg.delete()
+                    except Exception:
+                        pass
+
+                def do_order_in():
+                    cid = _selected_cover_id()
+                    if cid is None:
+                        ui.notify("Select a cover officer first", type="warning")
+                        return
+                    r = apply_ot_fill_selection(
+                        rid,
+                        cid,
+                        response="ordered_in",
+                        is_partial=False,
+                        turned_down_ids=[],
+                        actor_user_id=uid,
+                    )
+                    _close_dlg()
+                    _notify_result(r if isinstance(r, dict) else {"success": False, "message": str(r)})
+
+                def do_volunteer():
+                    cid = _selected_cover_id()
+                    if cid is None:
+                        ui.notify("Select a cover officer first", type="warning")
+                        return
+                    r = apply_ot_fill_selection(
+                        rid,
+                        cid,
+                        response="volunteered",
+                        is_partial=False,
+                        turned_down_ids=[],
+                        actor_user_id=uid,
+                    )
+                    _close_dlg()
+                    _notify_result(r if isinstance(r, dict) else {"success": False, "message": str(r)})
+
+                def do_auto_plan():
+                    if not plans:
+                        ui.notify("No auto plan available", type="warning")
+                        return
+                    idx = 1
+                    if plan_sel is not None and plan_sel.value not in (None, 0, "0"):
+                        try:
+                            idx = int(plan_sel.value)
+                        except (TypeError, ValueError):
+                            idx = 1
+                    plan = plans[min(max(idx, 1), len(plans)) - 1]
+                    _run_approve(
+                        req,
+                        preferred_chain=plan.get("chain") or None,
+                        plan_score=plan.get("plan_score"),
+                    )
+                    _close_dlg()
+
+                def do_without_cover():
+                    _run_approve(req, preferred_chain=None)
+                    _close_dlg()
+
+                # Sticky footer — always on screen, primary path for humans
+                with (
+                    ui.row()
+                    .classes("w-full gap-2 flex-wrap q-mt-sm")
+                    .style(
+                        "border-top:1px solid rgba(148,163,184,0.25);padding-top:12px;"
+                        "position:sticky;bottom:0;background:#0c1220;z-index:5;"
+                    )
+                ):
+                    ui.button("Order in", on_click=do_order_in).classes("btn-primary").props("no-caps unelevated dense")
+                    ui.button("Volunteer", on_click=do_volunteer).classes("btn-ghost").props("no-caps outline dense")
+                    if plans:
+                        ui.button("Use auto plan", on_click=do_auto_plan).classes("btn-ghost").props(
+                            "no-caps outline dense"
+                        )
+                    ui.button("Approve no cover", on_click=do_without_cover).classes("btn-ghost").props(
+                        "no-caps outline dense"
+                    )
+                    ui.button("Cancel", on_click=dlg.close).classes("btn-ghost").props("no-caps flat dense")
+
+                if not eligible:
+                    ui.label("No order-eligible covers ranked — use auto plan or Approve no cover.").classes(
+                        "text-xs"
+                    ).style("color:#fb923c")
+
+        dlg.open()
+    except Exception as exc:
+        ui.notify(f"Approve dialog failed: {exc}", type="negative")
 
 
 def _show_plans(req) -> None:
-    oid = req["officer_id"]
-    rdate = req["request_date"]
-    squad = req.get("squad") or ""
-    shift = req.get("shift_start") or ""
-    payload = preview_best_coverage_plans(oid, rdate, squad, shift, max_plans=5)
     try:
-        from logic.plan_explain import explain_coverage_plans
+        oid = req["officer_id"]
+        rdate = req["request_date"]
+        squad = req.get("squad") or ""
+        shift = req.get("shift_start") or ""
+        payload = preview_best_coverage_plans(oid, rdate, squad, shift, max_plans=5)
+        try:
+            from logic.plan_explain import explain_coverage_plans
 
-        text = explain_coverage_plans(payload if isinstance(payload, dict) else {})
-    except Exception:
-        text = str(payload)[:900]
-    # Feasibility + raw chain (enterprise explain layer)
-    try:
-        feas = validate_bump_feasibility(oid, rdate, squad, shift)
-        feas_line = getattr(feas, "message", None) or str(feas)
+            text = explain_coverage_plans(payload if isinstance(payload, dict) else {})
+        except Exception:
+            text = str(payload)[:900]
+        try:
+            feas = validate_bump_feasibility(oid, rdate, squad, shift)
+            feas_line = getattr(feas, "message", None) or str(feas)
+        except Exception as exc:
+            feas_line = f"Feasibility check unavailable: {exc}"
+        try:
+            chain, chain_msg = plan_bump_chain(oid, rdate, squad, shift)
+            chain_line = f"Chain steps: {len(chain or [])}" + (f" · {chain_msg}" if chain_msg else "")
+            if chain:
+                chain_line += " · " + " → ".join(f"{a}←{b}" for a, b in chain[:8])
+        except Exception as exc:
+            chain_line = f"Chain plan unavailable: {exc}"
+        text = f"Feasibility: {feas_line}\n{chain_line}\n\n{text or 'No scored plans'}"
+        with ui.dialog() as dlg:
+            with (
+                ui.card()
+                .classes("w-full")
+                .style("width:min(480px,94vw);max-height:80vh;padding:16px;background:#0c1220;color:#e2e8f0;")
+            ):
+                ui.label("Coverage plans — explainable scores").classes("text-sm font-semibold q-mb-sm").style(
+                    "color:#f1f5f9"
+                )
+                ui.textarea(value=text).classes("w-full").props("readonly outlined dense dark rows=12")
+                ui.button("Close", on_click=dlg.close).classes("btn-ghost q-mt-sm").props("no-caps flat dense")
+        dlg.open()
     except Exception as exc:
-        feas_line = f"Feasibility check unavailable: {exc}"
-    try:
-        chain, chain_msg = plan_bump_chain(oid, rdate, squad, shift)
-        chain_line = f"Chain steps: {len(chain or [])}" + (f" · {chain_msg}" if chain_msg else "")
-        if chain:
-            chain_line += " · " + " → ".join(f"{a}←{b}" for a, b in chain[:8])
-    except Exception as exc:
-        chain_line = f"Chain plan unavailable: {exc}"
-    text = f"Feasibility: {feas_line}\n{chain_line}\n\n{text or 'No scored plans'}"
-    with ui.dialog() as dlg, ui.card().classes("w-full").style("min-width:min(480px,94vw);max-width:640px"):
-        ui.label("Coverage plans — explainable scores").classes("text-sm font-semibold q-mb-sm")
-        ui.textarea(value=text).classes("w-full").props("readonly outlined dense dark rows=16")
-        ui.button("Close", on_click=dlg.close).classes("btn-ghost q-mt-sm").props("no-caps flat dense")
-    dlg.open()
+        ui.notify(f"Plans dialog failed: {exc}", type="negative")
 
 
 def _reject_dialog(req) -> None:

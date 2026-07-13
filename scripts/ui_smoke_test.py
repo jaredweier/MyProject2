@@ -43,15 +43,21 @@ def run_ui_smoke() -> int:
         # Import every page module + shell
         from gui.pages import (
             access,
+            availability,
+            bidding,
+            callbacks,
+            certs,
             dashboard,
             finance,
             leave,
             login,
             media,
+            notifications,
             operations,
             roster,
             schedules,
             security,
+            self_service,
             simulator,
         )
         from gui.shell import NAV, ROUTE_PERMS, apply_theme, layout, page_header
@@ -66,6 +72,12 @@ def run_ui_smoke() -> int:
             "Monthly Schedule",
             "Live Schedule",
             "Time Off Requests",
+            "Open Shifts",
+            "Shift Bidding",
+            "Callback Rotation",
+            "Availability",
+            "Certifications",
+            "Alerts",
             "Timecards",
             "Payroll",
             "Schedule Simulator",
@@ -78,6 +90,16 @@ def run_ui_smoke() -> int:
         print(f"  route perms: {len(ROUTE_PERMS)}")
         print(f"  nav labels: {labels}")
 
+        # Every registered nav path must have a page route in gui/app.py
+        import re
+        from pathlib import Path
+
+        app_src = Path(__file__).resolve().parents[1] / "gui" / "app.py"
+        routes = set(re.findall(r'@ui\.page\("([^"]+)"\)', app_src.read_text(encoding="utf-8")))
+        for path in (x[0] for x in NAV if x[0] != "section"):
+            if path not in routes:
+                errors.append(f"nav path not registered: {path}")
+
         for name, fn in (
             ("login", login.render_login),
             ("dashboard", dashboard.render_dashboard),
@@ -85,6 +107,12 @@ def run_ui_smoke() -> int:
             ("monthly", schedules.render_monthly_schedule),
             ("live", schedules.render_live_schedule),
             ("leave", leave.render_leave),
+            ("open_shifts", self_service.render_open_shifts),
+            ("bidding", bidding.render_bidding),
+            ("callbacks", callbacks.render_callbacks),
+            ("availability", availability.render_availability),
+            ("notifications", notifications.render_notifications),
+            ("certs", certs.render_certs),
             ("roster", roster.render_roster),
             ("timecards", finance.render_timecards),
             ("payroll", finance.render_payroll),

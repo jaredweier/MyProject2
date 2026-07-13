@@ -1,8 +1,8 @@
 # Dodgeville PD — Agent Rules
 
+**Session auto:** rules apply **now**. Do not wait for paste.
 Auto-context off. Skills on demand. Primary UI: `gui/` Chronos.
-**Bootstrap:** `python dev.py session-start` → `@logs/agent_kit/latest.md` · `@logs/agent_pack/latest.md`
-**Stable:** `@docs/AGENT_STABLE.md`
+**Stable:** `@docs/AGENT_STABLE.md` · **Pack:** `@logs/agent_pack/latest.md` · **Contract:** `@logs/SESSION_CONTRACT.md`
 
 ## Caveman
 Short bullets. No preamble. Prose only if user asks explain/docs.

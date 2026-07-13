@@ -68,8 +68,10 @@ html, body, #app, .q-page, .nicegui-content, .q-layout, .q-page-container {
 .data-row .text-xs,
 .date-ddmmyyyy,
 .date-mdy,
+.date-dmy,
 strong.date-ddmmyyyy,
-strong.date-mdy {
+strong.date-mdy,
+strong.date-dmy {
   text-transform: none !important;
   font-variant-numeric: tabular-nums;
 }
@@ -869,5 +871,32 @@ body {
   .login-shell { grid-template-columns: 1fr; }
   .grid-2 { grid-template-columns: 1fr; }
   .page-title { font-size: 22px; }
+}
+
+/* Leave approve / plans dialogs — solid, readable, clickable above page chrome */
+.q-dialog__backdrop {
+  background: rgba(2, 6, 18, 0.78) !important;
+}
+.q-dialog__inner {
+  z-index: 7000 !important;
+  pointer-events: auto !important;
+}
+.leave-approve-dlg.q-card,
+.q-dialog .leave-approve-dlg {
+  background: #0c1220 !important;
+  color: #e2e8f0 !important;
+  opacity: 1 !important;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.65) !important;
+  border: 1px solid rgba(34, 211, 238, 0.28) !important;
+  pointer-events: auto !important;
+}
+.leave-approve-dlg .q-field__native,
+.leave-approve-dlg .q-field__label,
+.leave-approve-dlg .q-field__marginal {
+  color: #e2e8f0 !important;
+}
+.leave-approve-dlg button {
+  pointer-events: auto !important;
+  cursor: pointer !important;
 }
 """

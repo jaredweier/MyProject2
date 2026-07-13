@@ -194,8 +194,12 @@ def list_scored_replacements(
     except Exception:
         ot_by_id = {}
 
+    from logic.bump_off_duty import load_off_duty_bump_policy, score_off_duty_candidate
+
+    off_policy = load_off_duty_bump_policy()
+
     for officer in get_officers_by_seniority():
-        if officer.get("active") != 1 or officer.get("squad") != squad:
+        if officer.get("active") != 1:
             continue
         if officer_uses_command_staff_schedule(officer):
             continue
@@ -204,21 +208,79 @@ def list_scored_replacements(
             continue
         if counts.get(oid, 0) >= policy.max_bump_assignments:
             continue
+
         day_context = schedule_context.get(oid, {})
-        if not _officer_schedule_working(day_context):
-            continue
-        rule_shift = _replacement_shift_start_for_rules(officer, day_context)
-        if not can_officer_cover_shift(rule_shift, covered_band):
-            continue
-        current_band = _normalize_shift_band(rule_shift)
-        if current_band != covered_band and enforce_minimum_rest:
-            covered_end = _shift_end_for_start(covered_band)
-            if not officer_meets_minimum_rest(oid, coverage_date, covered_band, covered_end):
+        on_duty = _officer_schedule_working(day_context)
+
+        # --- On-duty path (existing) ---
+        if on_duty:
+            if officer.get("squad") != squad:
                 continue
+            rule_shift = _replacement_shift_start_for_rules(officer, day_context)
+            if not can_officer_cover_shift(rule_shift, covered_band):
+                continue
+            current_band = _normalize_shift_band(rule_shift)
+            if current_band != covered_band and enforce_minimum_rest:
+                covered_end = _shift_end_for_start(covered_band)
+                if not officer_meets_minimum_rest(oid, coverage_date, covered_band, covered_end):
+                    continue
+            if enforce_consecutive_work:
+                from logic.labor_compliance import would_exceed_consecutive_work_limit
+
+                if would_exceed_consecutive_work_limit(oid, coverage_date, adding_work_day=False):
+                    continue
+            from logic.certifications import officer_meets_shift_cert_requirements
+
+            cert_ok, _ = officer_meets_shift_cert_requirements(oid, covered_band, coverage_date)
+            if not cert_ok:
+                continue
+
+            rank = int(officer.get("seniority_rank") or 0)
+            used = counts.get(oid, 0)
+            spare = max(0, policy.max_bump_assignments - used)
+            same = 1.0 if current_band == covered_band else 0.0
+            ot_h = float(ot_by_id.get(oid, officer.get("_period_ot_hours") or 0.0))
+            low_ot = max(0.0, 40.0 - min(ot_h, 40.0))
+            trans = same
+            try:
+                cov_h = int(str(covered_band or "0").split(":")[0])
+                cur_h = int(str(current_band or "0").split(":")[0])
+                if cur_h >= 19 and cov_h <= 10:
+                    trans = 0.0
+                elif same:
+                    trans = 1.0
+                else:
+                    trans = 0.4
+            except (TypeError, ValueError):
+                trans = same
+            score = (
+                policy.w_junior * rank
+                + policy.w_spare_capacity * spare
+                + policy.w_same_start * same
+                + policy.w_low_ot * low_ot
+                + policy.w_transition_ok * trans
+            )
+            if off_policy.prefer_on_duty_first:
+                score += off_policy.w_on_duty_bonus
+            officer = dict(officer)
+            officer["_bump_on_duty"] = True
+            scored.append((score, officer))
+            continue
+
+        # --- Off-duty / call-in path (optional) ---
+        if not off_policy.allow_off_duty:
+            continue
+        if off_policy.same_squad_only and officer.get("squad") != squad:
+            continue
+        # Calling someone in adds a work day — consecutive limit applies
         if enforce_consecutive_work:
             from logic.labor_compliance import would_exceed_consecutive_work_limit
 
-            if would_exceed_consecutive_work_limit(oid, coverage_date, adding_work_day=False):
+            if would_exceed_consecutive_work_limit(oid, coverage_date, adding_work_day=True):
+                continue
+        if enforce_minimum_rest:
+            covered_end = _shift_end_for_start(covered_band)
+            if not officer_meets_minimum_rest(oid, coverage_date, covered_band, covered_end):
                 continue
         from logic.certifications import officer_meets_shift_cert_requirements
 
@@ -226,35 +288,21 @@ def list_scored_replacements(
         if not cert_ok:
             continue
 
-        rank = int(officer.get("seniority_rank") or 0)
-        used = counts.get(oid, 0)
-        spare = max(0, policy.max_bump_assignments - used)
-        same = 1.0 if current_band == covered_band else 0.0
-        # Fairness: lower OT hours → higher score (Timefold loadBalance analog)
         ot_h = float(ot_by_id.get(oid, officer.get("_period_ot_hours") or 0.0))
-        # invert: fewer OT hours → larger term (cap scale)
-        low_ot = max(0.0, 40.0 - min(ot_h, 40.0))
-        # Transition soft: same band good; night(19+) to early(06/10) bad
-        trans = same
-        try:
-            cov_h = int(str(covered_band or "0").split(":")[0])
-            cur_h = int(str(current_band or "0").split(":")[0])
-            if cur_h >= 19 and cov_h <= 10:
-                trans = 0.0  # no bonus for harsh transition
-            elif same:
-                trans = 1.0
-            else:
-                trans = 0.4
-        except (TypeError, ValueError):
-            trans = same
-        score = (
-            policy.w_junior * rank
-            + policy.w_spare_capacity * spare
-            + policy.w_same_start * same
-            + policy.w_low_ot * low_ot
-            + policy.w_transition_ok * trans
+        eligible, od_score, _detail = score_off_duty_candidate(
+            officer,
+            covered_shift_start=covered_band,
+            request_squad=squad,
+            coverage_date=coverage_date,
+            policy=off_policy,
+            ot_hours=ot_h,
         )
-        scored.append((score, officer))
+        if not eligible:
+            continue
+        officer = dict(officer)
+        officer["_bump_on_duty"] = False
+        officer["_off_duty_score_detail"] = _detail
+        scored.append((od_score, officer))
 
     scored.sort(key=lambda x: (-x[0], -int(x[1].get("seniority_rank") or 0), x[1]["id"]))
     return scored[:limit]
@@ -398,7 +446,10 @@ def search_best_coverage_plans(
                 if len(state.steps) >= policy.max_cascade_depth:
                     continue
                 repl_context = schedule_context.get(replacement["id"], {})
-                on_duty = _officer_schedule_working(repl_context)
+                on_duty = replacement.get("_bump_on_duty")
+                if on_duty is None:
+                    on_duty = _officer_schedule_working(repl_context)
+                on_duty = bool(on_duty)
                 repl_shift = repl_context.get("shift_start") or replacement.get("shift_start") or ""
                 new_steps = list(state.steps)
                 new_steps.append(
@@ -409,7 +460,7 @@ def search_best_coverage_plans(
                         original_shift=state.current_shift,
                         replacement_officer_id=replacement["id"],
                         replacement_officer_name=replacement["name"],
-                        replacement_shift=repl_shift,
+                        replacement_shift=repl_shift if on_duty else (state.current_shift or repl_shift),
                         replacement_on_duty=on_duty,
                     )
                 )
@@ -417,6 +468,25 @@ def search_best_coverage_plans(
                 new_counts = dict(state.assignment_counts)
                 new_counts[replacement["id"]] = new_counts.get(replacement["id"], 0) + 1
                 new_step_scores = step_scores + [cand_score]
+
+                # Off-duty call-in: no cascade (they were not staffing a band to vacate)
+                if not on_duty:
+                    plan_score = _plan_score(policy, new_steps, new_step_scores)
+                    primary = get_officer_by_id(new_chain[0][1])
+                    suggestion = BumpChainSuggestion(
+                        success=True,
+                        chain=new_chain,
+                        steps=new_steps,
+                        primary_replacement_name=primary["name"] if primary else None,
+                        message=(
+                            f"Coverage via off-duty call-in — {len(new_chain)} assignment(s) (score {plan_score:.0f})"
+                        ),
+                        plan_score=plan_score,
+                        alternatives_considered=explored,
+                        score_components=score_components_for_plan(policy, new_steps, new_step_scores),
+                    )
+                    complete.append((plan_score, suggestion))
+                    continue
 
                 # Stop if vacated band still meets per-band min staffing
                 vacate_excluded = _chain_excluded_officer_ids(new_steps, requesting_officer_id=original_officer_id)

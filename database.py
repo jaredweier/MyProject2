@@ -382,6 +382,16 @@ def _migrate_frontier_features(cursor) -> None:
     if "workforce_class" not in officer_cols:
         # sworn | civilian — Netchex dual workforce
         cursor.execute("ALTER TABLE officers ADD COLUMN workforce_class TEXT DEFAULT 'sworn'")
+    if "rotation_pattern" not in officer_cols:
+        # Multi-block text e.g. "5-3,6-2" or fixed "5-2"; empty = department squad rotation
+        cursor.execute("ALTER TABLE officers ADD COLUMN rotation_pattern TEXT")
+    if "rotation_phase" not in officer_cols:
+        cursor.execute("ALTER TABLE officers ADD COLUMN rotation_phase INTEGER DEFAULT 0")
+    # Max OT/call-in events per calendar year (NULL = use title default / unlimited)
+    if "max_turn_downs_year" not in officer_cols:
+        cursor.execute("ALTER TABLE officers ADD COLUMN max_turn_downs_year INTEGER")
+    if "max_ordered_in_year" not in officer_cols:
+        cursor.execute("ALTER TABLE officers ADD COLUMN max_ordered_in_year INTEGER")
 
     cursor.execute("PRAGMA table_info(open_shifts)")
     os_cols = {row[1] for row in cursor.fetchall()}
@@ -511,6 +521,28 @@ def _ensure_tier2_tables(cursor) -> None:
             FOREIGN KEY (officer_id) REFERENCES officers(id)
         )
     """)
+    # OT / call-in offer outcomes (ordered-in, turned-down) — yearly stats per officer
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS ot_fill_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            officer_id INTEGER NOT NULL,
+            event_year INTEGER NOT NULL,
+            event_date DATE NOT NULL,
+            event_type TEXT NOT NULL,
+            fill_mode TEXT,
+            request_id INTEGER,
+            hours REAL DEFAULT 0,
+            is_partial INTEGER DEFAULT 0,
+            is_ordered INTEGER DEFAULT 0,
+            covered_shift_start TEXT,
+            notes TEXT,
+            created_by_user_id INTEGER,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (officer_id) REFERENCES officers(id)
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ot_fill_officer_year ON ot_fill_events(officer_id, event_year)")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_ot_fill_date ON ot_fill_events(event_date)")
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS certification_types (
             id INTEGER PRIMARY KEY AUTOINCREMENT,

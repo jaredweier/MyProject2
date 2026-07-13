@@ -44,7 +44,11 @@ def render_availability() -> None:
                         '<div class="alert alert-warn">Link an officer profile to set your blackout dates.</div>',
                         sanitize=False,
                     )
-                d_in = ui.input(label="Date", value=today_local().isoformat()).classes("w-full")
+                d_in = ui.input(
+                    label="Date",
+                    value=format_date(today_local()),
+                    placeholder="M/D/YY or M-D-YYYY",
+                ).classes("w-full")
                 reason = ui.input(label="Reason", value="Unavailable").classes("w-full")
 
                 def save_av():
@@ -81,7 +85,11 @@ def render_availability() -> None:
 
                 ui.separator()
                 ui.label("Check unavailability").classes("text-xs text-gray-500")
-                chk_date = ui.input(label="Date to check", value=today_local().isoformat()).classes("w-full")
+                chk_date = ui.input(
+                    label="Date to check",
+                    value=format_date(today_local()),
+                    placeholder="M/D/YY or M-D-YYYY",
+                ).classes("w-full")
                 chk_lbl = ui.label("").classes("text-sm q-mt-xs")
 
                 def check_unavail():
@@ -144,7 +152,7 @@ def render_availability() -> None:
                 if session.can("holidays.manage") or session.can("admin.settings"):
                     ui.separator()
                     ui.label("Add holiday").classes("text-xs text-gray-500")
-                    hd = ui.input(label="Date", value="").classes("w-full")
+                    hd = ui.input(label="Date", value="", placeholder="M/D/YY or M-D-YYYY").classes("w-full")
                     hn = ui.input(label="Name", value="Department Holiday").classes("w-full")
 
                     def add_h():

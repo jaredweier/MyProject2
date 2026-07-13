@@ -1,4 +1,9 @@
-"""Date parse/format/storage helpers (validators split)."""
+"""Date parse/format/storage helpers (validators split).
+
+User-facing dates: month/day (M/D/YY) — e.g. 7/9/26 for July 9, 2026.
+Separators: / or - (or .). Year: 2 or 4 digits.
+Storage: ISO YYYY-MM-DD only (never display storage format as primary UI).
+"""
 
 from __future__ import annotations
 
@@ -22,8 +27,13 @@ def _mdy_datetime(dt: datetime) -> str:
     return f"{dt.month}/{dt.day}/{dt.year % 100:02d} {dt.hour:02d}:{dt.minute:02d}"
 
 
+# Alias names kept for any private imports
+_dmy_short = _mdy_short
+_dmy_datetime = _mdy_datetime
+
+
 def format_date(value) -> str:
-    """Format any date-like value for UI as M/D/YY (e.g. 7/9/26). Never D/M/YY for July 9."""
+    """Format any date-like value for UI as M/D/YY (e.g. 7/9/26 for July 9, 2026)."""
     if value is None or value == "":
         return ""
     try:
@@ -67,6 +77,8 @@ def format_datetime(value) -> str:
         "%m/%d/%y %H:%M",
         "%m-%d-%Y %H:%M:%S",
         "%m-%d-%Y %H:%M",
+        "%m-%d-%y %H:%M:%S",
+        "%m-%d-%y %H:%M",
         "%d/%m/%Y %H:%M:%S",
         "%d/%m/%Y %H:%M",
         "%d-%m-%Y %H:%M:%S",
@@ -135,7 +147,7 @@ def is_overnight_shift(time_in: str, time_out: str) -> bool:
 
 
 def parse_date(value: str) -> date:
-    """Parse user dates. Prefer month/day (7/9/26 = July 9); also ISO and legacy day/month."""
+    """Parse user dates. Prefer month/day (7/9/26 = July 9); also ISO; day-first only if needed."""
     text = (value or "").strip()
     if not text:
         raise ValueError(f"Date must be {DATE_INPUT_HINT}")

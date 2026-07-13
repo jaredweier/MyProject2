@@ -177,7 +177,7 @@ def _status_bar(engine: str) -> None:
         )
 
         def _bar_text() -> str:
-            # M/D/YY e.g. 7/9/26 — not day/month
+            # M/D/YY e.g. 7/9/26
             date_str = format_local_date()
             return (
                 f'<span style="margin-left:auto;opacity:0.9">'
@@ -193,7 +193,9 @@ def _status_bar(engine: str) -> None:
             except Exception:
                 pass
 
-        ui.timer(1.0, _tick_bar)
+        # Detach from layout slot so page navigation cannot raise parent_slot deleted
+        _bar_timer = ui.timer(1.0, _tick_bar)
+        _bar_timer._parent_slot = None
 
 
 def _render_brand_mark() -> None:
@@ -278,7 +280,7 @@ def layout(active: str, build: Callable[[], None]) -> None:
                     ui.html('<span class="sep"></span>', sanitize=False)
                     ui.html(f"<span>Squad <strong>{squad}</strong> Active</span>", sanitize=False)
                     ui.html('<span class="sep"></span>', sanitize=False)
-                    # M/D/YY e.g. 7/9/26 (July 9) — never 9/7/26
+                    # M/D/YY e.g. 7/9/26 (July 9)
                     date_str = format_local_date(today)
                     ui.html(
                         f'<span>Date <strong class="date-mdy">{date_str}</strong></span>',
@@ -293,8 +295,10 @@ def layout(active: str, build: Callable[[], None]) -> None:
                         except Exception:
                             pass
 
-                    # Live local clock (department timezone)
-                    ui.timer(1.0, _tick_clock)
+                    # Live local clock (department timezone). Clear parent slot so
+                    # navigating away from this layout does not raise on tick.
+                    _clk_timer = ui.timer(1.0, _tick_clock)
+                    _clk_timer._parent_slot = None
 
                 with ui.element("main").classes("dc-content"):
                     build()

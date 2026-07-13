@@ -15,7 +15,7 @@ from logic import (
     get_payroll_entries,
     get_payroll_period_timesheets,
 )
-from validators import parse_date
+from validators import format_date, parse_date
 
 
 def _payroll_entries_panel(period_start) -> None:
@@ -102,7 +102,11 @@ def _payroll_entry_form(period_start) -> None:
                 codes = list(rule_codes.keys())
         except Exception:
             pass
-        d_in = ui.input(label="Entry date", value=period_start.isoformat()).classes("w-full")
+        d_in = ui.input(
+            label="Entry date",
+            value=format_date(period_start),
+            placeholder="M/D/YY or M-D-YYYY",
+        ).classes("w-full")
         hours = ui.input(label="Hours", value="8").classes("w-full")
         etype = ui.select(codes, value=codes[0], label="Entry type").classes("w-full")
         night = ui.input(label="Night differential hours", value="0").classes("w-full")

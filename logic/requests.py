@@ -507,6 +507,73 @@ def resolve_notification_navigation(notification: Dict) -> Optional[Dict]:
     return None
 
 
+def _evaluate_post_bump_coverage(
+    request_date: str,
+    vacating_officer_id: int,
+    steps,
+    *,
+    min_247: int = 0,
+    windows=None,
+) -> Dict:
+    """Build tentative wall-clock assignments after bump chain; check 24/7 + windows."""
+    from datetime import timedelta
+
+    from logic.coverage_timeline import evaluate_day_coverage
+    from logic.officers import get_officers_by_seniority
+    from logic.scheduling import officer_base_rotation_working
+
+    req_date = parse_date(request_date)
+    # Officers who are off after chain
+    off_ids = {vacating_officer_id}
+    cover_map = {}  # replacement_id -> covered shift start
+    for step in steps or []:
+        off_ids.add(step.original_officer_id)
+        cover_map[step.replacement_officer_id] = step.original_shift
+
+    assignments = []
+    for officer in get_officers_by_seniority():
+        if officer.get("active") != 1:
+            continue
+        oid = officer["id"]
+        if oid in off_ids and oid not in cover_map:
+            continue
+        if not officer_base_rotation_working(officer, req_date) and oid not in cover_map:
+            continue
+        start = cover_map.get(oid) or officer.get("shift_start") or ""
+        end = officer.get("shift_end") or ""
+        if oid in cover_map:
+            # covered shift: derive end from length if needed
+            from logic.shift_assignment import shift_end_for_start
+
+            end = shift_end_for_start(start)
+        if not start:
+            continue
+        assignments.append((req_date, start, end))
+        # overnight tails from prior day still on duty into req_date morning
+        prior = req_date - timedelta(days=1)
+        if officer_base_rotation_working(officer, prior) and officer.get("shift_start"):
+            ps = officer.get("shift_start") or ""
+            pe = officer.get("shift_end") or ""
+            if pe and ps and pe <= ps:  # overnight
+                if oid not in off_ids or oid in cover_map:
+                    assignments.append((prior, ps, pe))
+
+    result = evaluate_day_coverage(
+        assignments,
+        req_date,
+        min_247=min_247,
+        windows=windows or [],
+    )
+    if result.get("ok"):
+        return {"ok": True, "message": "Coverage OK after bump"}
+    failed = [c.get("message") for c in result.get("checks") or [] if not c.get("ok")]
+    return {
+        "ok": False,
+        "message": "; ".join(failed) or "Coverage requirements not met after bump",
+        "detail": result,
+    }
+
+
 def process_day_off_request(
     request_id: int,
     action: str = "approve",
@@ -619,6 +686,39 @@ def process_day_off_request(
                 )
             steps = suggestion.steps or []
 
+        # Continuous coverage gate (24/7 + extra windows) after tentative bump chain
+        if not manual_override:
+            from logic.coverage_windows_store import get_active_coverage_windows, get_coverage_247_minimum
+
+            min_247 = get_coverage_247_minimum()
+            windows = get_active_coverage_windows()
+            if min_247 > 0 or windows:
+                cov_check = _evaluate_post_bump_coverage(
+                    request["request_date"],
+                    request["officer_id"],
+                    steps,
+                    min_247=min_247,
+                    windows=windows,
+                )
+                if not cov_check.get("ok"):
+                    cursor.execute(
+                        """
+                        UPDATE day_off_requests
+                        SET status = 'Pending Manual Review', admin_notes = ?, processed_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """,
+                        (admin_notes or cov_check.get("message") or "Coverage window short", request_id),
+                    )
+                    conn.commit()
+                    request["status"] = REQUEST_STATUS["pending_manual"]
+                    _notify_day_off_processed(request, officer, "Pending Manual Review")
+                    return ProcessRequestResult(
+                        success=False,
+                        status="Pending Manual Review",
+                        message=cov_check.get("message") or "Coverage requirements not met",
+                        requires_manual=True,
+                    )
+
         replacement_id = None
         replacement_name = None
         for step in steps:
@@ -663,6 +763,19 @@ def process_day_off_request(
         from logic.snapshots import apply_live_schedule_for_date
 
         apply_live_schedule_for_date(request["request_date"], actor_user_id)
+        # Call list: ordered/off-duty cover moves officer to end (furthest from next call)
+        try:
+            from logic.ot_fill import move_officer_to_end_of_call_list
+
+            for step in steps:
+                if not getattr(step, "replacement_on_duty", True):
+                    move_officer_to_end_of_call_list(
+                        int(step.replacement_officer_id),
+                        user_id=actor_user_id,
+                    )
+                    break
+        except Exception:
+            pass
         _notify_day_off_processed(request, officer, "Approved", replacement_id, replacement_name)
         return ProcessRequestResult(
             success=True,

@@ -25,14 +25,22 @@ from validators import (
 
 class TestValidators(unittest.TestCase):
     def test_parse_date(self):
-        # Product policy: US month-first for slash/dash forms; ISO is unambiguous.
+        # Product policy: month-first (mm-dd-yy) for slash/dash; ISO unambiguous.
         self.assertEqual(parse_date("01/07/2026"), date(2026, 1, 7))
         self.assertEqual(parse_date("01-07-2026"), date(2026, 1, 7))
+        self.assertEqual(parse_date("7/9/26"), date(2026, 7, 9))
+        self.assertEqual(parse_date("07-09-2026"), date(2026, 7, 9))
         self.assertEqual(parse_date("7/1/2026"), date(2026, 7, 1))
         self.assertEqual(parse_date("2026-07-01"), date(2026, 7, 1))
 
+    def test_format_date_mdy(self):
+        from validators import format_date
+
+        self.assertEqual(format_date(date(2026, 7, 9)), "7/9/26")
+        self.assertEqual(format_date("2026-07-09"), "7/9/26")
+
     def test_format_datetime(self):
-        # Display: US short M/D/YY (e.g. 7/1/26)
+        # Display: M/D/YY (e.g. 7/1/26 for July 1, 2026)
         self.assertEqual(format_datetime("2026-07-01 14:30:00"), "7/1/26 14:30")
         self.assertEqual(format_datetime(""), "")
 
@@ -143,8 +151,9 @@ class TestValidators(unittest.TestCase):
         self.assertTrue(validate_officer_phone("(608) 930-5228").ok)
         self.assertFalse(validate_officer_phone("12").ok)
         self.assertTrue(validate_officer_start_date("2026-01-15").ok)
-        # US M/D/YYYY accepted for officer start dates (same as parse_date policy)
+        # M/D/YYYY and M-D-YY accepted for officer start dates
         self.assertTrue(validate_officer_start_date("01/15/2026").ok)
+        self.assertTrue(validate_officer_start_date("01-15-26").ok)
         self.assertFalse(validate_officer_start_date("not-a-date").ok)
 
     def test_validate_password(self):

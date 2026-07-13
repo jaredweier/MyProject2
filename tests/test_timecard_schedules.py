@@ -122,7 +122,13 @@ class TimecardScheduleTests(unittest.TestCase):
         with test_database():
             import logic
 
-            # US M/D or ISO — query a date inside the period ending 2026-07-05
+            # M/D or ISO — query a date inside the period ending 2026-07-05
+            result = logic.search_pay_period_by_date("07/05/2026")
+            self.assertTrue(result["success"], result.get("message"))
+            self.assertEqual(result["period_start"], "2026-06-22")
+            result = logic.search_pay_period_by_date("07-05-26")
+            self.assertTrue(result["success"], result.get("message"))
+            self.assertEqual(result["period_start"], "2026-06-22")
             result = logic.search_pay_period_by_date("2026-07-05")
             self.assertTrue(result["success"], result.get("message"))
             self.assertEqual(result["period_start"], "2026-06-22")
@@ -242,9 +248,11 @@ class TimecardScheduleTests(unittest.TestCase):
             off_day = working_date_for_squad("A")
             year, month = off_day.year, off_day.month
             request_date = off_day.strftime("%Y-%m-%d")
-            logic.ensure_original_monthly_schedule(year, month)
+            # Product: ensure_original also seeds live ("updated") snapshot
+            ensured = logic.ensure_original_monthly_schedule(year, month)
+            self.assertTrue(ensured.get("success"), ensured.get("message"))
             before = logic.get_schedule_snapshot(year, month, "updated")
-            self.assertIsNone(before)
+            self.assertIsNotNone(before, "live schedule should be seeded with original monthly")
 
             created = logic.create_day_off_request(officer["id"], request_date, "Vacation")
             self.assertTrue(created["success"])

@@ -40,6 +40,10 @@ def validate_staffing_settings(
         return ValidationResult.fail("Shift length must be a number")
     if length < MIN_SHIFT_LENGTH or length > MAX_SHIFT_LENGTH:
         return ValidationResult.fail(f"Shift length must be {MIN_SHIFT_LENGTH}–{MAX_SHIFT_LENGTH} hours")
+    # Half-hour steps only (10.5, 11.0, 12.5, …)
+    half_steps = round(length * 2)
+    if abs(length * 2 - half_steps) > 1e-6:
+        return ValidationResult.fail("Shift length must be in 0.5 hour steps (e.g. 10.5, 11, 12.5)")
 
     try:
         annual = float(annual_hours_target)
@@ -122,6 +126,14 @@ def parse_bids_due_datetime(value: Optional[str]) -> Optional[datetime]:
         "%Y-%m-%d %H:%M",
         DATE_STORAGE_FORMAT + " %H:%M:%S",
         DATE_STORAGE_FORMAT + " %H:%M",
+        "%m/%d/%Y %H:%M:%S",
+        "%m/%d/%Y %H:%M",
+        "%m/%d/%y %H:%M:%S",
+        "%m/%d/%y %H:%M",
+        "%m-%d-%Y %H:%M:%S",
+        "%m-%d-%Y %H:%M",
+        "%m-%d-%y %H:%M:%S",
+        "%m-%d-%y %H:%M",
         DATE_DISPLAY_FORMAT + " %H:%M",
         DATE_DISPLAY_FORMAT + " %H:%M:%S",
         "%d-%m-%Y %H:%M:%S",

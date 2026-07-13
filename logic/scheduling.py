@@ -134,11 +134,29 @@ def get_squad_on_duty(cycle_day: int) -> str:
 
 
 def officer_base_rotation_working(officer: Dict, target_date: date) -> bool:
-    """Rotation schedule before overrides: patrol A/B cycle or command staff Mon–Fri."""
+    """Rotation schedule before overrides: per-officer pattern, patrol A/B, or command Mon–Fri."""
     from validators import officer_has_assignment
 
     if not officer_has_assignment(officer):
         return False
+
+    # Per-officer multi-block / fixed pattern + phase (customizable rotations)
+    pattern_text = (officer.get("rotation_pattern") or "").strip()
+    if pattern_text:
+        try:
+            from logic.rotation_patterns import build_pattern
+
+            phase = int(officer.get("rotation_phase") or 0)
+            pattern = build_pattern(pattern_text, phase=phase)
+            base = get_active_rotation_base_date()
+            day_index = (target_date - base).days
+            if day_index < 0:
+                return False
+            cycle_day = (day_index % pattern.cycle_length) + 1
+            return pattern.is_working(cycle_day)
+        except (ValueError, TypeError):
+            pass
+
     rust_working = rust_bridge.officer_rotation_working(
         officer.get("squad") or "",
         officer.get("shift_start") or "",

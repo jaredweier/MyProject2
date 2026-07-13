@@ -5,14 +5,17 @@ Companions deepen detail; they do **not** excuse skipping rules here.
 
 | Field | Value |
 |-------|--------|
-| Date | 2026-07-13 |
+| Date | 2026-07-13 (session close handoff) |
 | Product | **Chronos Command** (Dodgeville PD scheduler) |
 | Primary UI | `gui/` NiceGUI (`python main.py`) |
 | Legacy UI | `ui/` CustomTkinter — reference/tests, **not** primary |
-| Trust repair | **`docs/TRUST_REPAIR_CHECKLIST.md`** — do P0 before claiming maps are true |
+| Session brief | **`@logs/NEXT_SESSION_BRIEF.md`** — last session landings + next work |
+| Handoff head | **`@docs/HANDOFF.md`** § NEXT SESSION |
+| Trust repair | **`docs/TRUST_REPAIR_CHECKLIST.md`** — maps OK; product still partial |
 | Dynamic pack | `@logs/agent_pack/latest.md` (head only) |
 | Stable policy | `@docs/AGENT_STABLE.md` (on demand) |
 | Router | `python dev.py route-task "<task>"` once per task — **obey** `cost_tier` |
+| Dates | **M/D/YY** via `format_date` (`7/9/26`); `/` or `-`; year 2/4; storage ISO |
 
 ---
 
@@ -69,27 +72,28 @@ TRUST: still broken | P0 in progress | repaired (only if checklist exit met)
 ### Mission
 Ship **Chronos Command**: modern NiceGUI UI, multi-user capable, business rules only in `validators` + `logic/*` + SQLite.
 
-### Status (2026-07-13 — trust maps OK; product partial; token auto-abide)
+### Status (2026-07-13 close — trust maps OK; product partial)
 
 | Area | Honest status | Notes |
 |------|---------------|--------|
 | Domain logic (`logic/*`, validators, Rust) | **Strong** | Re-run audit after edits |
 | CLI | **Strong** | Thin wrapper over logic |
-| Chronos `gui/` | **Partial / usable** | Shell + key flows; **not** full CTk parity |
+| Chronos `gui/` | **Partial / usable** | Manual-test fixes landed; still not full parity |
 | Legacy `ui/` | **Secondary** | `ui/pages/*` |
-| Full unittest | **385 OK** (2026-07-13) | Re-prove after edits |
-| token-audit | **89/89** | Archive skills off discovery |
-| Vertical slices registry | **Fixed (paths + partial status)** | Primary UI `gui/pages/*` |
-| feature-map UI column | **Fixed** | File existence; bidding UI `—` |
-| Full unittest | **385 OK** (2026-07-13) | Re-prove after edits |
-| Ship gate | Re-run `verify --tier check` | Do not trust stale `last_verify` |
-| Token path | **Lean** (2026-07-12) | Caveman + short route; no OSS tax on low/trivial |
-| Multi-user / deploy | **Partial** | NiceGUI can host; hardening open |
-| Chronos feature depth | **Partial** (leave + notifications deeper 2026-07-09) | See HANDOFF depth table; no complete without browser proof |
-| P0/P1 maps | **Repaired** | slice-check green; feature-map existence |
-| P2 inventory | **Table in HANDOFF** | Exit still needs e2e for complete claims |
+| Full unittest | **~424 OK** in last check | Re-prove after edits |
+| Ship gate | **PASS** 2026-07-13T05:21Z | Re-run check; do not trust stale `last_verify` forever |
+| Date contract | **M/D/YY** month-first | `validators_dates.py`; storage ISO; no D/M product policy |
+| Leave OT fill UI | **Fixed code path** | Browser click-approve / order-in still **unproven** |
+| Simulator run | **Fixed** multi-arg append | — |
+| Timecard period jump | **Wired** storage + reload | — |
+| Vertical slices / feature-map | **Fixed** | Paths exist; statuses mostly partial |
+| Chronos feature depth | **Partial** | HANDOFF P2 table; no complete without browser proof |
+| P0/P1 maps | **Repaired** | Product dual-rate still partial |
 ### Default mission if user does not specify
-Product work on Chronos depth (checklist **P2**), or user-directed tasks. Re-run trust checks if you move paths.
+1. Read `logs/NEXT_SESSION_BRIEF.md`
+2. User manual-test feedback first, else browser-prove leave/payroll critical clicks
+3. P2 Chronos depth only with dual-rate honesty
+Re-run trust checks if you move paths.
 
 ### External tools (math / UI / token-min / FR domain) — use machine first
 | Command | Role |
@@ -146,7 +150,7 @@ main.py → gui.app → logic/* ← validators ← config → database
 | Do | Don’t |
 |----|--------|
 | Business rules in `logic` / validators | Rules in `gui/` |
-| Display dates US short via `format_date` (e.g. `7/9/26`) | Day-first UI for US product without dual-parse tests |
+| Display dates M/D via `format_date` (e.g. `7/9/26`); `/` or `-`; year 2/4 digits | Day-first display; raw ISO as primary user UI |
 | Storage `YYYY-MM-DD` | Claim ISO storage is “wrong display” |
 | Primary edits in `gui/` for product UI | Pretend deleted `ui/*_pages.py` still primary |
 | Same-session registry+handoff on renames | Leave slice-check red |

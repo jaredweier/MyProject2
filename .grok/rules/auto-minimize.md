@@ -1,8 +1,8 @@
 # Auto-minimize (Grok — always on)
 
-`@logs/agent_pack/latest.md` · `@docs/AGENT_STABLE.md` · `@AGENTS.md`
+**Session auto:** rules active at open. Do not wait for user paste.
+`@AGENTS.md` · `@logs/SESSION_CONTRACT.md` · `@logs/agent_pack/latest.md` · `@docs/AGENT_STABLE.md`
 
-**Bootstrap:** `python dev.py agent-kit` → `@logs/agent_kit/latest.md`
 **Chain:** `route-task` (once) → `usage-brief` → `outline`/`symbol` → edit → `verify --tier fast` · ship: `check` + `honest_gate`
 **Caveman:** short bullets; no research tax unless user asks.
 

@@ -85,7 +85,11 @@ def _content() -> None:
         else:
             default = names[0] if names else None
         pick = ui.select(names, value=default, label="Officer").classes("w-full")
-        d_in = ui.input(label="Event date", value=today_local().isoformat()).classes("w-full")
+        d_in = ui.input(
+            label="Event date",
+            value=format_date(today_local()),
+            placeholder="M/D/YY or M-D-YYYY",
+        ).classes("w-full")
         hours = ui.input(label="Hours offered/worked", value="4").classes("w-full")
         notes = ui.input(label="Notes", value="Callback OT").classes("w-full")
 

@@ -370,6 +370,25 @@ def run_token_audit(*, strict: bool = False) -> int:
             "add hard ban: never open docs/archived_skills unless user names skill",
         )
     )
+    checks.append(
+        Check(
+            "session_auto_bootstrap.py present",
+            _exists("scripts/session_auto_bootstrap.py"),
+        )
+    )
+    checks.append(
+        Check(
+            "Grok SessionStart hook present",
+            _exists(".grok/hooks/session-bootstrap.json"),
+        )
+    )
+    checks.append(
+        Check(
+            "AGENTS.md declares session auto",
+            "session auto" in agents_lower or "rules apply" in agents_lower,
+            "AGENTS must say rules apply at open without paste",
+        )
+    )
     kit_path = os.path.join(ROOT, "logs", "agent_kit", "latest.md")
     if os.path.isfile(kit_path):
         kit_chars = os.path.getsize(kit_path)

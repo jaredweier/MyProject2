@@ -107,8 +107,16 @@ def render_certs() -> None:
                     t_sel = ui.select(
                         list(type_labels.keys()), value=list(type_labels.keys())[0], label="Type"
                     ).classes("w-full")
-                    issued = ui.input(label="Issued (optional)", value=today_local().isoformat()).classes("w-full")
-                    expires = ui.input(label="Expires (optional)", value="").classes("w-full")
+                    issued = ui.input(
+                        label="Issued (optional)",
+                        value=format_date(today_local()),
+                        placeholder="M/D/YY or M-D-YYYY",
+                    ).classes("w-full")
+                    expires = ui.input(
+                        label="Expires (optional)",
+                        value="",
+                        placeholder="M/D/YY or M-D-YYYY",
+                    ).classes("w-full")
 
                     def assign():
                         oid = omap.get(pick.value)

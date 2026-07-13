@@ -113,7 +113,11 @@ def render_operations() -> None:
                     "track billing code for payroll export. Not full invoicing."
                 ).classes("text-xs text-gray-500 q-mb-sm")
                 ename = ui.input(label="Event name", value="Parade detail").classes("w-full")
-                edate = ui.input(label="Date", value=today_local().isoformat()).classes("w-full")
+                edate = ui.input(
+                    label="Date",
+                    value=format_date(today_local()),
+                    placeholder="M/D/YY or M-D-YYYY",
+                ).classes("w-full")
                 estart = ui.input(label="Start", value="18:00").classes("w-full")
                 eend = ui.input(label="End", value="23:00").classes("w-full")
                 eloc = ui.input(label="Location", value="").classes("w-full")
@@ -383,6 +387,293 @@ def render_operations() -> None:
                         line = str(h)
                     with ui.element("div").classes("data-row"):
                         ui.label(line).classes("text-sm")
+
+        if session.can("admin.settings") or session.can("settings.manage") or session.can("schedule.manage"):
+            with panel("Bump · off-duty call-in"):
+                from logic import (
+                    get_bump_call_list,
+                    get_next_call_list_officer,
+                    get_off_duty_bump_settings_for_ui,
+                    get_ot_fill_modes_for_ui,
+                    get_ot_fill_year_leaderboard,
+                    import_bump_call_list_file,
+                    import_bump_call_list_text,
+                    reset_call_list_cursor,
+                    save_off_duty_bump_policy,
+                    set_ot_fill_mode,
+                )
+
+                od = get_off_duty_bump_settings_for_ui()
+                pol = od.get("policy") or {}
+                fill_ui = get_ot_fill_modes_for_ui()
+                fill_opts = {o["id"]: o["label"] for o in (fill_ui.get("options") or [])}
+                fill_mode_sel = ui.select(
+                    fill_opts,
+                    value=fill_ui.get("mode") or list(fill_opts.keys())[0],
+                    label="Day-off OT / fill offer order mode",
+                ).classes("w-full")
+
+                def save_fill_mode():
+                    r = set_ot_fill_mode(
+                        fill_mode_sel.value,
+                        user_id=(session.current_user() or {}).get("id"),
+                    )
+                    ui.notify(
+                        r.get("message", "Saved") if r.get("success") else r.get("message", "Fail"),
+                        type="positive" if r.get("success") else "negative",
+                    )
+
+                ui.button("Save fill mode", on_click=save_fill_mode).classes("btn-ghost").props("no-caps outline dense")
+                allow_od = ui.checkbox(
+                    "Allow off-duty officers in bump / call-in logic",
+                    value=bool(pol.get("allow_off_duty")),
+                )
+                prefer_on = ui.checkbox(
+                    "Prefer on-duty officers first (recommended)",
+                    value=bool(pol.get("prefer_on_duty_first", True)),
+                )
+                same_sq = ui.checkbox(
+                    "Off-duty: same squad only",
+                    value=bool(pol.get("same_squad_only", True)),
+                )
+                adj_band = ui.checkbox(
+                    "Off-duty: require adjacent shift band",
+                    value=bool(pol.get("require_adjacent_band", False)),
+                )
+                min_off = ui.input(
+                    label="Minimum consecutive days off (hard filter when criterion on)",
+                    value=str(pol.get("min_days_off_required") or 0),
+                ).classes("w-full")
+                ui.label("Ranking criteria (select any combination):").classes("text-sm text-gray-300 q-mt-sm")
+                crit_checks = {}
+                selected = set(pol.get("criteria") or [])
+                for opt in od.get("criteria_options") or []:
+                    crit_checks[opt["id"]] = ui.checkbox(
+                        opt.get("label") or opt["id"],
+                        value=opt["id"] in selected or bool(opt.get("selected")),
+                    )
+
+                def save_od_policy():
+                    try:
+                        mdo = int((min_off.value or "0").strip() or "0")
+                    except ValueError:
+                        ui.notify("Min days off must be a number", type="negative")
+                        return
+                    crits = [cid for cid, box in crit_checks.items() if box.value]
+                    r = save_off_duty_bump_policy(
+                        {
+                            "allow_off_duty": bool(allow_od.value),
+                            "prefer_on_duty_first": bool(prefer_on.value),
+                            "same_squad_only": bool(same_sq.value),
+                            "require_adjacent_band": bool(adj_band.value),
+                            "min_days_off_required": mdo,
+                            "criteria": crits,
+                        },
+                        user_id=(session.current_user() or {}).get("id"),
+                    )
+                    ui.notify(
+                        r.get("message", "Saved") if r.get("success") else r.get("message", "Fail"),
+                        type="positive" if r.get("success") else "negative",
+                    )
+
+                ui.button("Save off-duty bump settings", on_click=save_od_policy).classes("btn-primary").props(
+                    "no-caps unelevated dense"
+                )
+
+                ui.label("Rotating call list (order = call order; paste names or IDs):").classes(
+                    "text-sm text-gray-300 q-mt-md"
+                )
+                existing = get_bump_call_list()
+                default_text = "\n".join(f"{e.get('officer_id')}  # {e.get('name') or ''}".strip() for e in existing)
+                call_text = (
+                    ui.textarea(value=default_text, label="Call list")
+                    .classes("w-full")
+                    .props("outlined dense dark rows=8")
+                )
+                next_off = get_next_call_list_officer()
+                next_label = (
+                    f"Next up: {next_off.get('name') or next_off.get('officer_id')} (index {od.get('call_list_cursor', 0)})"
+                    if next_off
+                    else f"Cursor index: {od.get('call_list_cursor', 0)} (list empty)"
+                )
+                cursor_lbl = ui.label(next_label).classes("text-xs text-gray-500")
+
+                def _refresh_cursor_label():
+                    n = get_next_call_list_officer()
+                    if n:
+                        cursor_lbl.set_text(
+                            f"Next up: {n.get('name') or n.get('officer_id')} (index {n.get('order', 0)})"
+                        )
+                    else:
+                        cursor_lbl.set_text("Call list empty")
+
+                def save_call_list():
+                    r = import_bump_call_list_text(
+                        call_text.value or "",
+                        user_id=(session.current_user() or {}).get("id"),
+                    )
+                    ui.notify(
+                        r.get("message", "Saved") if r.get("success") else r.get("message", "Fail"),
+                        type="positive" if r.get("success") else "negative",
+                    )
+                    if r.get("success"):
+                        _refresh_cursor_label()
+
+                def reset_cursor():
+                    r = reset_call_list_cursor(user_id=(session.current_user() or {}).get("id"))
+                    ui.notify(r.get("message", "Reset"), type="positive" if r.get("success") else "negative")
+                    _refresh_cursor_label()
+
+                def upload_call_list(e):
+                    """txt/csv/docx/pdf via shared importer (no server crash on bad files)."""
+                    try:
+                        name = getattr(e, "name", None) or getattr(e, "file_name", None) or "upload.txt"
+                        raw = None
+                        if hasattr(e, "content"):
+                            try:
+                                e.content.seek(0)
+                            except Exception:
+                                pass
+                            raw = e.content.read()
+                        if raw is None and hasattr(e, "file"):
+                            raw = e.file.read()
+                        if raw is None:
+                            ui.notify("Could not read upload", type="negative")
+                            return
+                        if isinstance(raw, str):
+                            raw = raw.encode("utf-8")
+                        r = import_bump_call_list_file(
+                            str(name),
+                            raw,
+                            user_id=(session.current_user() or {}).get("id"),
+                        )
+                        if r.get("success") and r.get("extracted_preview"):
+                            call_text.value = r["extracted_preview"]
+                        ui.notify(
+                            r.get("message", "Imported") if r.get("success") else r.get("message", "Fail"),
+                            type="positive" if r.get("success") else "negative",
+                        )
+                        if r.get("success"):
+                            _refresh_cursor_label()
+                    except Exception as exc:
+                        ui.notify(f"Upload failed: {exc}", type="negative")
+
+                with ui.row().classes("gap-2 flex-wrap"):
+                    ui.button("Save call list", on_click=save_call_list).classes("btn-ghost").props(
+                        "no-caps outline dense"
+                    )
+                    ui.button("Reset next-up to top", on_click=reset_cursor).classes("btn-ghost").props(
+                        "no-caps outline dense"
+                    )
+                    ui.upload(
+                        label="Upload call list (.txt/.csv/.docx/.pdf)",
+                        on_upload=upload_call_list,
+                        auto_upload=True,
+                    ).props("accept=.txt,.csv,.list,.docx,.pdf dense")
+
+                ui.label("Year-to-date ordered-in / turned-down (top)").classes("text-sm text-gray-300 q-mt-md")
+                board = get_ot_fill_year_leaderboard() or {}
+                rows = board.get("rows") or []
+                if not rows:
+                    ui.label("No OT fill events recorded this year yet.").classes("text-xs text-gray-500")
+                else:
+                    for row in rows[:15]:
+                        ui.label(
+                            f"{row.get('name')} · ordered {row.get('ordered_in', 0)} · "
+                            f"turned down {row.get('turned_down', 0)} · volunteered {row.get('volunteered', 0)}"
+                        ).classes("text-sm")
+
+            with panel("Additional min coverage windows + 24/7 floor"):
+                from logic import (
+                    add_coverage_window,
+                    delete_coverage_window,
+                    get_coverage_247_minimum,
+                    list_coverage_windows,
+                    set_coverage_247_minimum,
+                )
+
+                cov247_in = ui.input(
+                    label="24/7 minimum officers (0=off)",
+                    value=str(get_coverage_247_minimum()),
+                ).classes("w-full")
+                win_list = ui.column().classes("w-full gap-1")
+
+                def refresh_windows():
+                    win_list.clear()
+                    with win_list:
+                        rows = list_coverage_windows()
+                        if not rows:
+                            ui.label("No extra windows configured.").classes("text-sm text-gray-500")
+                        for w in rows:
+                            label = w.get("label") or f"{w.get('start_time')}–{w.get('end_time')}"
+                            if w.get("specific_date"):
+                                when = format_date(w.get("specific_date"))
+                            elif w.get("weekday") is not None:
+                                when = f"weekday {w.get('weekday')}"
+                            else:
+                                when = "any day"
+                            with ui.row().classes("items-center gap-2"):
+                                ui.label(f"#{w.get('id')} · min {w.get('min_officers')} · {label} · {when}").classes(
+                                    "text-sm"
+                                )
+                                wid = int(w.get("id") or 0)
+
+                                def _del(i=wid):
+                                    r = delete_coverage_window(i, user_id=(session.current_user() or {}).get("id"))
+                                    ui.notify(
+                                        r.get("message", "Deleted"), type="positive" if r.get("success") else "negative"
+                                    )
+                                    refresh_windows()
+
+                                ui.button("Delete", on_click=_del).props("btn-ghost").props("dense no-caps outline")
+
+                refresh_windows()
+                w_min = ui.input(label="Min officers", value="2").classes("w-full")
+                w_start = ui.input(label="Start HH:MM", value="19:00").classes("w-full")
+                w_end = ui.input(label="End HH:MM", value="03:00").classes("w-full")
+                w_dow = ui.input(label="Weekday 0=Mon…6=Sun (blank=any)", value="4").classes("w-full")
+                w_date = ui.input(label="Or specific date (M/D/YY)", value="", placeholder="7/9/26").classes("w-full")
+                w_label = ui.input(label="Label", value="Fri night boost").classes("w-full")
+
+                def save_247():
+                    try:
+                        n = int((cov247_in.value or "0").strip())
+                    except ValueError:
+                        ui.notify("Invalid 24/7 minimum", type="negative")
+                        return
+                    r = set_coverage_247_minimum(n, user_id=(session.current_user() or {}).get("id"))
+                    ui.notify(
+                        r.get("message", "Saved") if r.get("success") else r.get("message", "Fail"),
+                        type="positive" if r.get("success") else "negative",
+                    )
+
+                def add_win():
+                    try:
+                        mn = int((w_min.value or "1").strip())
+                    except ValueError:
+                        ui.notify("Min officers must be a number", type="negative")
+                        return
+                    dow_raw = (w_dow.value or "").strip()
+                    weekday = int(dow_raw) if dow_raw != "" else None
+                    r = add_coverage_window(
+                        min_officers=mn,
+                        start_time=(w_start.value or "").strip(),
+                        end_time=(w_end.value or "").strip(),
+                        specific_date=(w_date.value or "").strip(),
+                        weekday=weekday,
+                        label=(w_label.value or "").strip(),
+                        user_id=(session.current_user() or {}).get("id"),
+                    )
+                    ui.notify(
+                        r.get("message", "Added") if r.get("success") else r.get("message", "Fail"),
+                        type="positive" if r.get("success") else "negative",
+                    )
+                    if r.get("success"):
+                        refresh_windows()
+
+                with ui.row().classes("gap-2"):
+                    ui.button("Save 24/7 floor", on_click=save_247).classes("btn-ghost").props("no-caps outline dense")
+                    ui.button("Add window", on_click=add_win).classes("btn-primary").props("no-caps unelevated dense")
 
         if session.can("admin.settings") or session.can("settings.manage") or session.can("reports.view"):
             with panel("Database backup", glow=False):

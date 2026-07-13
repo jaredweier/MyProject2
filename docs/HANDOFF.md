@@ -4,29 +4,70 @@
 **Human-readable mirror:** [`PROJECT_README.md`](PROJECT_README.md) — keep both in sync when updating.
 **Update this file** when you finish a meaningful chunk of work (features, fixes, renames, perf passes).
 
-**Last updated:** 2026-07-13
+**Last updated:** 2026-07-13 (session close — handoff for next agent)
 **Verification:** run `python dev.py verify --tier check` before ship (do not trust stale counts). **`honest_gate: true` required** for any done/ship claim.
-**Next agent (self-contained):** **[`docs/NEXT_AGENT_PROMPT.md`](NEXT_AGENT_PROMPT.md)** — integrity edition; anti-lie rules + proof requirements
-**Trust repair:** maps restored (P0/P1); product still **partial** — see P2 inventory
-**Depth only:** `TOKEN_PERFORMANCE.md` · `CHRONOS_SOURCES.md` · `UI_AGENTS_CATALOG.md` · `AGENT_ROUTING.md` · `python dev.py route-task`
+**Next agent start pack:** [`docs/NEXT_AGENT_PROMPT.md`](NEXT_AGENT_PROMPT.md) · [`logs/NEXT_SESSION_BRIEF.md`](../logs/NEXT_SESSION_BRIEF.md) · [`logs/SESSION_CONTRACT.md`](../logs/SESSION_CONTRACT.md) · pack head only
 
-### Trust status (updated 2026-07-13)
+---
+
+## NEXT SESSION (read this first)
+
+### What the human is doing
+**Live manual testing of Chronos** (`python main.py`). Expect UI half-wires, wrong click paths, date-format confusion. Prefer fix-from-logs + real handlers over process essays.
+
+### Verified at session close
+| Gate | Result |
+|------|--------|
+| `python dev.py verify --tier check` | **PASS** · `honest_gate: true` · ~**424** unittest discover · 2026-07-13T05:21Z (`logs/last_verify.json`) |
+| Product | Chronos still **partial** (logic smoke ≠ browser e2e) |
+
+### Landed this session (do not re-break)
+
+**1) Manual-test UI repairs**
+
+| Bug | Cause | Fix |
+|-----|-------|-----|
+| Time Off Order in / Volunteer | `make_order(False)` → `coid=False` | keyword-only `make_order(*, partial=, cover_id=)` |
+| Simulator Run | `lines.append("", "Suggestions:")` | `lines.extend([...])` |
+| Nav timer crash | parent_slot deleted after navigate | `timer._parent_slot = None` in `gui/shell.py` |
+| Timecard Find period | notify only | `app.storage.user` + reload; **Current period** button |
+| Stale live-schedule test | assumed no live snap after ensure_original | product seeds live; test updated |
+
+Static guards: `tests/test_feature_ui_static.py` (no `make_order(True/False)`, no multi-arg append).
+
+**2) Date contract — M/D/YY (mm-dd-yy) — user-corrected**
+
+- **Display:** `validators.format_date` → `7/9/26` (July 9). Separators **`/` or `-`**. Year **2 or 4** digits.
+- **Storage:** ISO `YYYY-MM-DD` only (`storage_date` / DB keys).
+- **Parse:** month-first first (`config.DATE_PARSE_FORMATS`), then ISO, day-first last.
+- **Sources:** `config.py` DATE_* · `validators_dates.py` · GUI defaults use `format_date()`, not raw `.isoformat()`.
+- **Mistake avoided:** an interim day-first (D/M) attempt was **reverted** after user said **mm-dd-yy**. Do not re-apply D/M.
+
+### Default work if user says “continue”
+1. Relaunch Chronos; retest Time Off OT board, Simulator run, Timecard period jump, nav clocks
+2. Browser / `chronos-e2e` for leave approve + order-in (still **unproven**)
+3. P2 Chronos depth only with dual-rate honesty
+4. Optional: `rg` remaining user-visible ISO in `gui/`
+
+### Do not waste tokens on
+- Re-reading full `docs/archived_skills/`
+- Explore/plan subagents for gates
+- Claiming leave/payroll “complete” without browser proof
+- OSS / graphify / vision unless user asks
+
+### Trust status (2026-07-13 close)
 
 | Check | Status |
 |-------|--------|
-| Slice registry | **Fixed** — paths → `gui/pages/*` + `ui/pages/*`; status mostly `partial` |
-| feature-map UI column | **Fixed** — requires existing `ui_files` |
-| Full unittest | **385 tests OK** (2026-07-13, `SCHEDULER_SKIP_AGENT_GATES=1`; +token policy) |
-| `verify --tier check` | **PASS** 2026-07-13 · `honest_gate: true` (`logs/last_verify.json`) |
-| token-audit | **89/89** (2026-07-13 auto-abide + skill discovery prune) |
-| Skill discovery | Active skills under `.grok/skills/` only (~10); archives in `docs/archived_skills/` (not injected) |
-| Chronos product depth | **Partial** — P2 inventory below |
+| Slice registry | **Fixed** — `gui/pages/*` + `ui/pages/*`; mostly `partial` |
+| feature-map UI column | **Fixed** — file existence |
+| Full unittest | **~424 OK** in last check run (re-prove after edits) |
+| `verify --tier check` | **PASS** · `honest_gate: true` |
+| Chronos product depth | **Partial** — P2 table below |
 | Domain engine | **Strong** |
-| Chronos leave (P2) | Approve + multi-plan pick + reject notes in `gui/pages/leave.py`; **logic smoke** only; **browser click-approve unproven** |
-| Chronos payroll (P2) | Lock/unlock UI + **logic smoke**; browser lock click unproven |
-| Chronos notifications (P2) | Open path map + create/mark-read; **logic smoke**; chrome e2e optional |
+| Leave / payroll / notifications | Logic smoke OK; **browser click paths unproven** |
 
-Trust maps restored. Product Chronos dual-rated **partial**. Agent auto-abide: caveman AGENTS + lean kit + no archive skill cards (2026-07-13).
+Trust maps restored. Product dual-rated **partial**.
 
 ### Scheduling modularization (2026-07-09)
 
@@ -54,7 +95,7 @@ Scripts: `scripts/split_scheduling_bump.py`, `scripts/split_scheduling_matrix.py
 | Auto-login | **Off by default** — set `SCHEDULER_AUTO_LOGIN=1` for dev skip-login |
 | Full verify | `python dev.py verify --tier check` + read `logs/last_verify.json` |
 | Domain rules | `SCHEDULING_RULES.md`, `.grok/rules/known-issues.md` |
-| Display dates | US **M/D/YY** e.g. `7/9/26` via `validators.format_date` — not day-first |
+| Display dates | **M/D/YY** (mm-dd-yy) e.g. `7/9/26` via `validators.format_date`; `/` or `-`; year 2 or 4 digits; storage ISO |
 
 **User workflow lately:** iterative live GUI testing — launch app, fix feedback, re-run `dev.py check`, relaunch.
 

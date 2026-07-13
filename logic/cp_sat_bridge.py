@@ -69,6 +69,48 @@ def ortools_available() -> bool:
         return False
 
 
+def minimize_officer_count(
+    bands: List[str],
+    days: List[str],
+    *,
+    min_per_band: Optional[Dict[str, int]] = None,
+    max_officers: int = 40,
+    min_officers: int = 1,
+    time_limit_sec: float = 2.0,
+) -> StaffingSolution:
+    """Binary search smallest headcount that meets per-band minima (CP-SAT when available)."""
+    mins = min_per_band or {b: 1 for b in bands}
+    lo, hi = max(1, min_officers), max(min_officers, max_officers)
+    best: Optional[StaffingSolution] = None
+    while lo <= hi:
+        mid = (lo + hi) // 2
+        inst = StaffingInstance(
+            officer_ids=list(range(1, mid + 1)),
+            days=list(days),
+            bands=list(bands),
+            min_per_band=mins,
+            w_assignment=1,
+            w_excess_cover=2,
+            w_unfairness=3,
+        )
+        sol = solve_staffing_feasibility(inst, time_limit_sec=time_limit_sec)
+        if sol.available and sol.feasible:
+            best = sol
+            best.message = f"Min officers feasible: {mid}"
+            hi = mid - 1
+        else:
+            lo = mid + 1
+    if best is None:
+        return StaffingSolution(
+            available=ortools_available(),
+            feasible=False,
+            message=f"No feasible headcount ≤ {max_officers}",
+            solver="cp-sat-min" if ortools_available() else "unavailable",
+        )
+    best.solver = "cp-sat-min"
+    return best
+
+
 def solve_staffing_feasibility(
     instance: StaffingInstance,
     *,

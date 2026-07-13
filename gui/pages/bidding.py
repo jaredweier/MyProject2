@@ -45,8 +45,8 @@ def render_bidding() -> None:
         if session.can("shift_bids.manage"):
             with panel("Create bid event (supervisor)", glow=True):
                 title = ui.input(label="Title", value="Shift bid cycle").classes("w-full")
-                begins = ui.input(label="Shifts begin (ISO or M/D/YYYY)", value="2026-08-01").classes("w-full")
-                due = ui.input(label="Bids due by", value="2026-07-25 17:00").classes("w-full")
+                begins = ui.input(label="Shifts begin (M/D/YYYY or ISO)", value="8/1/2026").classes("w-full")
+                due = ui.input(label="Bids due by", value="7/25/2026 17:00").classes("w-full")
                 starts = ui.input(
                     label="Shift starts (comma)",
                     value="06:00,10:00,15:00,19:00",

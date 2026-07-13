@@ -10,6 +10,7 @@ from logic.operations import get_department_setting, set_department_setting
 from logic.users import log_audit_action
 
 CUSTOM_OFFICER_TITLES_KEY = "custom_officer_titles"
+TITLE_CALLIN_LIMITS_KEY = "title_callin_limits_json"
 _TITLE_MAX_LEN = 48
 
 
@@ -126,4 +127,101 @@ def add_custom_officer_title(title: str, user_id: Optional[int] = None) -> Dict:
         "message": f"Title '{clean}' added",
         "title": clean,
         "titles": get_officer_title_options(),
+    }
+
+
+def get_title_callin_limits() -> Dict[str, Dict]:
+    """Per-title defaults: {title: {max_turn_downs_year, max_ordered_in_year}} (null = unlimited)."""
+    try:
+        raw = get_department_setting(TITLE_CALLIN_LIMITS_KEY, "") or ""
+    except Exception:
+        return {}
+    if not raw.strip():
+        return {}
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    out: Dict[str, Dict] = {}
+    for title, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        out[str(title)] = {
+            "max_turn_downs_year": _optional_nonneg_int(entry.get("max_turn_downs_year")),
+            "max_ordered_in_year": _optional_nonneg_int(entry.get("max_ordered_in_year")),
+        }
+    return out
+
+
+def _optional_nonneg_int(value) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        n = int(value)
+    except (TypeError, ValueError):
+        return None
+    if n < 0:
+        return None
+    return n
+
+
+def save_title_callin_limits(limits: Dict, *, user_id: Optional[int] = None) -> Dict:
+    """Save title-level max turn-downs / ordered-in per year."""
+    cleaned = {}
+    for title, entry in (limits or {}).items():
+        t = str(title or "").strip()
+        if not t:
+            continue
+        if not isinstance(entry, dict):
+            continue
+        cleaned[t] = {
+            "max_turn_downs_year": _optional_nonneg_int(entry.get("max_turn_downs_year")),
+            "max_ordered_in_year": _optional_nonneg_int(entry.get("max_ordered_in_year")),
+        }
+    result = set_department_setting(TITLE_CALLIN_LIMITS_KEY, json.dumps(cleaned), user_id=user_id)
+    if not result.get("success"):
+        return result
+    log_audit_action("roster.title_callin_limits", "department_settings", None, user_id, f"titles={len(cleaned)}")
+    return {"success": True, "message": f"Saved call-in limits for {len(cleaned)} title(s)", "limits": cleaned}
+
+
+def set_title_callin_limit(
+    title: str,
+    *,
+    max_turn_downs_year: Optional[int] = None,
+    max_ordered_in_year: Optional[int] = None,
+    user_id: Optional[int] = None,
+) -> Dict:
+    limits = get_title_callin_limits()
+    key = _canonical_title(title) or (title or "").strip()
+    if not key:
+        return {"success": False, "message": "Title required"}
+    limits[key] = {
+        "max_turn_downs_year": _optional_nonneg_int(max_turn_downs_year),
+        "max_ordered_in_year": _optional_nonneg_int(max_ordered_in_year),
+    }
+    return save_title_callin_limits(limits, user_id=user_id)
+
+
+def resolve_officer_callin_limits(officer: Dict) -> Dict:
+    """
+    Effective yearly caps for an officer.
+    Officer field wins when set; else title default; else unlimited (None).
+    """
+    title_limits = get_title_callin_limits()
+    title = _canonical_title(officer.get("job_title") or "") or (officer.get("job_title") or "")
+    t_entry = title_limits.get(title) or title_limits.get(officer.get("job_title") or "") or {}
+
+    def pick(officer_key: str, title_key: str) -> Optional[int]:
+        raw = officer.get(officer_key)
+        if raw is not None and raw != "":
+            return _optional_nonneg_int(raw)
+        return _optional_nonneg_int(t_entry.get(title_key))
+
+    return {
+        "max_turn_downs_year": pick("max_turn_downs_year", "max_turn_downs_year"),
+        "max_ordered_in_year": pick("max_ordered_in_year", "max_ordered_in_year"),
+        "source_title": title or None,
     }

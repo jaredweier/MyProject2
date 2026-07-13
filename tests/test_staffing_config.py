@@ -67,6 +67,38 @@ class StaffingConfigTests(unittest.TestCase):
         self.assertEqual(len(rules), 3)
         self.assertEqual(rules.get("14:00"), ("06:00", "22:00"))
 
+    def test_half_hour_shift_length_and_variance(self):
+        from logic.staffing_config import (
+            get_active_annual_hours_variance,
+            get_active_shift_length_hours,
+            get_active_shift_times,
+            save_staffing_settings,
+        )
+        from validators import validate_staffing_settings
+
+        bad = validate_staffing_settings(
+            shift_length_hours=10.25,
+            annual_hours_target=2080,
+            shift_count=2,
+            target_officer_count=8,
+            shift_starts_text="06:00, 18:00",
+        )
+        self.assertFalse(bad.ok)
+
+        result = save_staffing_settings(
+            shift_length_hours=10.5,
+            annual_hours_target=2080.0,
+            shift_count=2,
+            target_officer_count=8,
+            shift_starts_text="06:00, 18:00",
+            annual_hours_variance=50.0,
+        )
+        self.assertTrue(result.get("success"), result.get("message"))
+        self.assertEqual(get_active_shift_length_hours(), 10.5)
+        times = get_active_shift_times()
+        self.assertEqual(times[1], ("06:00", "16:30"))
+        self.assertEqual(get_active_annual_hours_variance(), 50.0)
+
     def test_custom_shift_starts_drive_bump_and_coverage(self):
         from logic.scheduling import resolve_officer_shift_band
         from logic.staffing_config import (
