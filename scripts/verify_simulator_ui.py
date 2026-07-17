@@ -136,9 +136,9 @@ def main() -> int:
         else:
             fail("could not find Officer Count checkbox to lock headcount")
 
-        cont = page.locator('button:has-text("Continue To Coverage")')
+        cont = page.locator('button:has-text("Continue to find best")')
         if cont.count() == 0:
-            fail("Continue To Coverage missing")
+            fail("Continue to find best missing")
             browser.close()
             return 1
 
@@ -258,7 +258,7 @@ def main() -> int:
             if "06:00" in body or "14:00" in body:
                 ok("half-hour starts visible in plan")
             # Continue to Publish step chrome
-            pub = page.locator('button:has-text("Continue To Publish")')
+            pub = page.locator('button:has-text("go publish")')
             if pub.count():
                 pub.first.click()
                 page.wait_for_timeout(1000)

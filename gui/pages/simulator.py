@@ -3825,14 +3825,32 @@ def render_simulator() -> None:
 
         def do_heat():
             res = state.get("result") or {}
-            lines = coverage_heat_grid(res)
-            set_plan("\n".join(lines))
-            r = export_coverage_heat_png(res)
-            if r.get("success"):
-                set_summary(f"Heat grid in Plan Detail.\nExport: {r.get('path')} ({r.get('format')})")
-                ui.notify(f"Heat export: {r.get('format')}", type="positive")
-            else:
-                ui.notify("Heat grid ready", type="info")
+            from logic.optimizer_features import shift_coverage_heatmap
+            hm = shift_coverage_heatmap(res)
+            if not hm.get("success"):
+                set_plan("Heatmap unavailable: " + str(hm.get("message")))
+                return
+            
+            def _render():
+                plan_box.clear()
+                with plan_box:
+                    ui.label("Shift Coverage Heatmap").style("font-size: 1.2rem; font-weight: bold; color: #F8FAFC; margin-bottom: 8px;")
+                    with ui.row().classes("gap-1 items-start"):
+                        matrix = hm.get("matrix", [])
+                        labels = hm.get("day_labels", [])
+                        for wd, day_label in enumerate(labels):
+                            if wd >= len(matrix): continue
+                            with ui.column().classes("gap-0"):
+                                ui.label(day_label).style("font-size: 0.8rem; font-weight: bold; color: #9AABC4; text-align: center;")
+                                for val in matrix[wd]:
+                                    color = "#3B7DD8" if val >= 2 else ("#5b8def" if val >= 1 else "#0f172a")
+                                    if val < hm.get("coverage_threshold", 1): color = "#ef4444"
+                                    ui.element("div").style(f"width: 24px; height: 10px; background-color: {color}; margin-bottom: 1px;")
+                                    ui.tooltip(f"{val} officers")
+                    ui.label(hm.get("message", "")).style("color: #E8EDF4; margin-top: 8px;")
+
+            _ui_safe(_render)
+            ui.notify("Heat grid visual ready", type="info")
 
         def do_window_drill():
             res = state.get("result") or state.get("opt_result") or {}
