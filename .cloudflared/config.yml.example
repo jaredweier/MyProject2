@@ -1,0 +1,16 @@
+# Cloudflare Tunnel Configuration Example
+# Copy this to ~/.cloudflared/config.yml and update with your values
+
+tunnel: dodgeville-scheduler
+credentials-file: ~/.cloudflared/<TUNNEL_ID>.json
+
+ingress:
+  # Replace with your actual domain and port
+  - hostname: yourdomain.com
+    service: http://localhost:8080
+  
+  # Catch-all for undefined routes
+  - service: http_status:404
+
+# Optional: Enable logging
+logLevel: debug
