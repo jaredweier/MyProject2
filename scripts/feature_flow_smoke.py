@@ -18,6 +18,11 @@ import sys
 import zipfile
 from datetime import timedelta
 from io import BytesIO
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
 from typing import List
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
