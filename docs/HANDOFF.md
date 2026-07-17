@@ -1,4 +1,6 @@
 ## NEXT SESSION
+- **Full brief:** `logs/NEXT_SESSION_BRIEF.md` (2026-07-17 evening) — Windows Unicode console crashes fixed (3 flow-smoke tests + token-scan hook), 3 commits pushed to origin/master, SQLite connection-leak refactor running in background as `task_677d0a7d` (check its outcome before touching `logic/*.py` connection handling).
+- F1 `shift_coverage_heatmap` is now wired to simulator UI (`do_heat()` button) — no longer logic-only. F2 `suggest_relaxations` still unwired.
 - Simulator UI overhauled to remove Quickstart and Annual Live calculators, shifting to a clean dense grid layout.
 - Folder boundaries enforced in agent_kit.py.
 
@@ -8,7 +10,7 @@
 **Human-readable mirror:** [`PROJECT_README.md`](PROJECT_README.md) — keep both in sync when updating.
 **Update this file** when you finish a meaningful chunk of work (features, fixes, renames, perf passes).
 
-**Last updated:** 2026-07-17 (simulator UI · agency brand strip · NiceGUI UX · live SMS deferred)
+**Last updated:** 2026-07-17 evening (Windows Unicode console-encoding fixes · simulator heatmap wired · 3 commits pushed · SQLite leak refactor in progress)
 **Verification:** ship only → `verify --tier check` + `honest_gate: true`. Day-to-day → **one focused test** + human Chronos click. Logic green ≠ UI works.
 **Next agent start pack (auto):** `logs/SESSION_CONTRACT.md` · `logs/NEXT_SESSION_BRIEF.md` · `logs/agent_pack/latest.md` · `docs/AGENT_TRUST_AND_MISTAKES.md` · this § NEXT SESSION · [`docs/NEXT_AGENT_PROMPT.md`](NEXT_AGENT_PROMPT.md)
 
