@@ -4,7 +4,13 @@ from __future__ import annotations
 
 import fnmatch
 import os
+import sys
 from typing import List, Tuple
+
+try:
+    sys.stdout.reconfigure(encoding="utf-8")
+except (AttributeError, ValueError):
+    pass
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
