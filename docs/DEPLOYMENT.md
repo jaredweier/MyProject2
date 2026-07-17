@@ -38,20 +38,26 @@ Zip that **entire folder** for IT (not the `.exe` alone).
 Copy the folder to a central share, for example:
 
 ```
-\\PD-SERVER\PDApps\DodgevilleScheduler\
-├── Dodgeville_PD_Scheduler.exe
+\\PD-SERVER\PDApps\ChronosScheduler\
+├── Dodgeville_PD_Scheduler.exe   (package name may still say Dodgeville)
 ├── _internal\
-├── logo.png
-├── team_photo.jpg
 ├── roster_seed.json
 ├── Start Dodgeville Scheduler.bat   ← copy from project docs/deploy/
 └── (after first run)
     ├── dodgeville_scheduler.db
-    ├── photos\
+    ├── photos\                   ← brand + officer uploads live here
+    │   ├── chronos_logo.png      ← optional product mark (upload in UI)
+    │   ├── dept_logo.png         ← optional agency seal
+    │   └── dept_photo.jpg        ← optional login hero photo
     ├── backups\
     ├── logs\
     └── exports\
 ```
+
+**Branding:** No logo/team photo is shipped. After install, an admin opens Chronos → **Branding & Media** and uploads:
+1. **Chronos Command logo** (product mark on login + sidebar)
+2. **Department logo** (agency seal)
+3. **Department photo** (login hero)
 
 **Permissions:** Every scheduler user needs **Modify** on this folder (read/write/create files).
 

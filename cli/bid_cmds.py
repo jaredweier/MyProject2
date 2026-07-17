@@ -163,7 +163,7 @@ def import_sim_shift_bid_cmd(args):
     if args.scenario_id:
         sim = load_simulator_scenario_for_bid(args.scenario_id)
     else:
-        from logic import run_schedule_simulation
+        from logic.scheduling_sim import run_schedule_simulation
 
         sim = run_schedule_simulation(
             args.rotation or "4-on-4-off",

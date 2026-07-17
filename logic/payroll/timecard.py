@@ -21,9 +21,11 @@ from logic.payroll.period import (
     is_pay_period_locked,
     pay_period_for_shift_start,
 )
-from logic.scheduling import (
-    _shift_hours,
+from logic.scheduling_matrix import (
     get_officer_day_status,
+)
+from logic.scheduling_matrix import (
+    shift_hours as compute_shift_hours,
 )
 from logic.snapshots import get_schedule_snapshot
 from logic.users import log_audit_action
@@ -62,7 +64,7 @@ def _timecard_defaults_for_schedule_status(
     shift_end: str,
     target_date: date,
 ) -> Dict:
-    shift_hours = _shift_hours(shift_start, shift_end)
+    shift_hours = compute_shift_hours(shift_start, shift_end)
     if status in _TIMECARD_WORKING_STATUSES:
         entry_type = "Training" if status == "training" else TIMECARD_REGULAR_TYPE
         return {
@@ -398,6 +400,24 @@ def save_timecard_entry(
         return {"success": False, "message": "Officer not found"}
     if entry_type not in TIMECARD_ENTRY_TYPES:
         return {"success": False, "message": f"Invalid entry type: {entry_type}"}
+
+    # Punch-required policy (default off): block free-form entry unless
+    # supervisor override_approval or entry came from punch pipeline notes.
+    try:
+        from logic.time_punch import assert_manual_timecard_allowed, is_punch_required
+
+        if is_punch_required() and not override_approval:
+            notes_l = (notes or "").lower()
+            from_punch = "geofence punch" in notes_l or "punch in#" in notes_l or notes_l.startswith("punch")
+            gate = assert_manual_timecard_allowed(
+                officer_id=int(officer_id),
+                actor_is_supervisor=False,
+                from_punch_pipeline=from_punch,
+            )
+            if not gate.get("allowed"):
+                return {"success": False, "message": gate.get("message") or "Punch required"}
+    except Exception:
+        pass
 
     try:
         parsed = parse_date(entry_date)

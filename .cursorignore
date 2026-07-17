@@ -64,3 +64,5 @@ graphify-out/
 .claude/skills/_archive/
 
 docs/archived_skills/
+
+gui/theme.py

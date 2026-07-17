@@ -28,9 +28,11 @@ Dodgeville_PD_Scheduler/
 ├── build.bat
 ├── requirements.txt
 ├── README.md
-├── logo.png
-└── dodgeville_scheduler.db
+└── dodgeville_scheduler.db   (created at runtime)
 ```
+
+Brand assets (Chronos logo, agency seal/photo) are **not** shipped — upload in **Branding & Media** after login.
+
 
 ## Features
 

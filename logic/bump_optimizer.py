@@ -1,7 +1,7 @@
-"""Bump chain planning and replacement pick.
+"""**Optimizer brain** — bump chain planning and replacement pick.
 
-Extracted from ``logic.scheduling`` so rotation/matrix stay navigable.
-Public names re-exported from ``logic.scheduling`` and ``import logic``.
+Canonical implementation. Prefer public APIs from ``logic.coverage_optimizer``;
+import this module for internals.
 """
 
 from __future__ import annotations
@@ -81,7 +81,7 @@ def count_remaining_on_shift_band(
     """How many on-duty same-squad patrol officers remain on the vacated band."""
     from validators import officer_uses_command_staff_schedule
 
-    vacated_band = _scheduling()._normalize_shift_band(vacated_shift_start)
+    vacated_band = _scheduling().normalize_shift_band(vacated_shift_start)
     if not vacated_band:
         return 0
     remaining = 0
@@ -94,10 +94,10 @@ def count_remaining_on_shift_band(
         if oid == vacating_officer_id or oid in excluded_officer_ids:
             continue
         day_context = schedule_context.get(oid, {})
-        if not _scheduling()._officer_schedule_working(day_context):
+        if not _scheduling().officer_schedule_working(day_context):
             continue
-        home_band = _scheduling()._normalize_shift_band(
-            _scheduling()._officer_scheduled_shift_start(officer, day_context)
+        home_band = _scheduling().normalize_shift_band(
+            _scheduling().officer_scheduled_shift_start(officer, day_context)
         )
         if home_band == vacated_band:
             remaining += 1
@@ -247,7 +247,7 @@ def suggest_bump_chain(
     ]
     conn.close()
 
-    schedule_context = _scheduling()._get_generated_schedule_day_context(req_date)
+    schedule_context = _scheduling().get_generated_schedule_day_context(req_date)
     shift_times = list(get_active_shift_times().values())
     enforce_compliance = not supervisor_override
     rest_window_start = req_date - timedelta(days=1)
@@ -290,18 +290,27 @@ def suggest_bump_chain(
         return opt
 
     rust_plan = _bump_suggestion_from_rust(rust_data)
-    # Prefer complete optimizer plan when it beats or equals rust (multi-plan rank).
-    if opt.success and (not rust_plan.success or (opt.plan_score or 0) >= 0):
-        if not rust_plan.success:
-            return opt
-        # Both complete — keep shorter / higher-scored optimizer result when better depth
+    # Rank complete plans: shorter chain first, then higher internal plan_score.
+    # Scores are ranking-only — never surfaced to supervisors in messages.
+    if opt.success and not rust_plan.success:
+        return opt
+    if rust_plan.success and not opt.success:
+        return rust_plan
+    if opt.success and rust_plan.success:
         rust_depth = len(rust_plan.chain or [])
         opt_depth = len(opt.chain or [])
-        if opt_depth < rust_depth or (opt.plan_score or 0) > 0:
-            opt.message = f"{opt.message} · ranked vs engine ({opt_depth} vs {rust_depth} step chain)"
+        opt_score = float(opt.plan_score or 0.0)
+        rust_score = float(rust_plan.plan_score or 0.0)
+        prefer_opt = opt_depth < rust_depth or (opt_depth == rust_depth and opt_score > rust_score)
+        if prefer_opt:
+            n_alt = opt.alternatives_considered
+            if n_alt and int(n_alt) > 1:
+                opt.message = (
+                    f"Best of {int(n_alt)} options — {opt_depth} assignment(s) · vs engine {rust_depth}-step chain"
+                )
+            else:
+                opt.message = f"Auto-approve ready — {opt_depth} assignment(s) · vs engine {rust_depth}-step chain"
             return opt
-        return rust_plan
-    if rust_plan.success:
         return rust_plan
     return opt if opt.success else rust_plan
 
@@ -322,7 +331,7 @@ def _minimum_rest_manual_failure(
         original_officer_id,
         request_date,
         squad,
-        _scheduling()._normalize_shift_band(shift_start),
+        _scheduling().normalize_shift_band(shift_start),
         schedule_context,
         assignment_counts,
         chain_excluded,
@@ -330,11 +339,11 @@ def _minimum_rest_manual_failure(
     )
     if not rest_pick:
         return None
-    covered_end = _scheduling()._shift_end_for_start(_scheduling()._normalize_shift_band(shift_start))
+    covered_end = _scheduling().shift_end_for_start_active(_scheduling().normalize_shift_band(shift_start))
     msg = _scheduling().describe_minimum_rest_violation(
         rest_pick["id"],
         parse_date(request_date),
-        _scheduling()._normalize_shift_band(shift_start),
+        _scheduling().normalize_shift_band(shift_start),
         covered_end,
         rest_pick.get("name"),
     )
@@ -368,7 +377,7 @@ def _consecutive_days_manual_failure(
         original_officer_id,
         request_date,
         squad,
-        _scheduling()._normalize_shift_band(shift_start),
+        _scheduling().normalize_shift_band(shift_start),
         schedule_context,
         assignment_counts,
         chain_excluded,
@@ -429,7 +438,7 @@ def _suggest_bump_chain_python(
             current_id,
             request_date,
             squad,
-            _scheduling()._normalize_shift_band(current_shift),
+            _scheduling().normalize_shift_band(current_shift),
             schedule_context,
             assignment_counts,
             chain_excluded,
@@ -487,7 +496,7 @@ def _suggest_bump_chain_python(
             coverage_excluded = _chain_excluded_officer_ids(steps, requesting_officer_id=original_officer_id)
             if _shift_retains_coverage_after_bump(
                 current_id,
-                _scheduling()._normalize_shift_band(current_shift),
+                _scheduling().normalize_shift_band(current_shift),
                 squad,
                 schedule_context,
                 coverage_excluded,
@@ -514,7 +523,7 @@ def _suggest_bump_chain_python(
             )
 
         repl_context = schedule_context.get(replacement["id"], {})
-        on_duty = _scheduling()._officer_schedule_working(repl_context)
+        on_duty = _scheduling().officer_schedule_working(repl_context)
         repl_shift = repl_context.get("shift_start") or replacement.get("shift_start") or ""
         steps.append(
             BumpChainStep(

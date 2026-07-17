@@ -1,4 +1,4 @@
-"""Finance NiceGUI pages — split from monolith for maintainability."""
+"""Finance NiceGUI pages — time banks / comp / sick / float."""
 
 from __future__ import annotations
 
@@ -6,13 +6,16 @@ from nicegui import ui
 
 from config import FLSA_COMP_TIME_MAX_HOURS
 from gui import session
-from gui.shell import panel
+from gui.clock import today_local
+from gui.shell import finance_subnav, layout, page_header, panel
 from logic import (
     get_bank_transactions,
     get_banked_time_summary,
     get_officer_time_banks,
     get_officers_by_seniority,
 )
+from logic.labor_compliance import export_flsa_vs_contract_ot_csv, force_use_comp_time
+from validators import format_date
 
 
 def _resolve_bank_officer_id() -> int | None:
@@ -93,6 +96,65 @@ def _banks() -> None:
                     ui.linear_progress(value=pct / 100.0).props(
                         f"color={'negative' if pct >= 95 else 'warning' if pct >= 80 else 'positive'}"
                     )
+
+                    if (
+                        not session.is_officer()
+                        and (session.can("payroll.edit") or session.can("timecard.edit_all"))
+                        and pct >= 80
+                    ):
+                        with ui.row().classes("gap-2 flex-wrap q-mt-sm q-mb-sm items-end"):
+                            force_hrs = ui.input(label="Force-Use Hours", value="8").classes("w-32")
+                            force_date = ui.input(
+                                label="Date (M/D/YY)",
+                                value=format_date(today_local()),
+                            ).classes("w-40")
+
+                            def do_force():
+                                from validators import parse_date
+
+                                dt = parse_date((force_date.value or "").strip())
+                                try:
+                                    h = float((force_hrs.value or "0").strip())
+                                except ValueError:
+                                    ui.notify("Hours must be numeric", type="negative")
+                                    return
+                                if not dt:
+                                    ui.notify("Valid date required", type="negative")
+                                    return
+                                uid = (session.current_user() or {}).get("id")
+                                r = force_use_comp_time(
+                                    int(oid),
+                                    dt.isoformat(),
+                                    h,
+                                    user_id=uid,
+                                )
+                                ui.notify(
+                                    r.get("message", "Done") if r.get("success") else r.get("message", "Failed"),
+                                    type="positive" if r.get("success") else "negative",
+                                )
+                                if r.get("success"):
+                                    refresh()
+
+                            ui.button("Force Use Comp", on_click=do_force).classes("btn-primary").props(
+                                "no-caps unelevated dense"
+                            )
+
+                    if not session.is_officer() and (
+                        session.can("payroll.view_all") or session.can("exports.run") or session.can("reports.export")
+                    ):
+
+                        def do_flsa_split():
+                            r = export_flsa_vs_contract_ot_csv()
+                            ui.notify(
+                                r.get("message") or r.get("path") or "Exported"
+                                if r.get("success")
+                                else r.get("message", "Export failed"),
+                                type="positive" if r.get("success") else "negative",
+                            )
+
+                        ui.button("Export FLSA Vs Contract OT", on_click=do_flsa_split).classes(
+                            "btn-ghost q-mb-sm"
+                        ).props("no-caps outline dense")
 
                     bank_rows = summary.get("banks") or []
                     if bank_rows:
@@ -184,3 +246,18 @@ def _banks() -> None:
     if officer_sel is not None:
         officer_sel.on_value_change(lambda _: refresh())
     refresh()
+
+
+def render_banks() -> None:
+    """Chronos route: Time banks (comp / sick / float)."""
+
+    def body() -> None:
+        page_header(
+            "Time banks",
+            "Comp · sick · float holiday balances and period movements",
+            kicker="Finance",
+        )
+        finance_subnav("banks")
+        _banks()
+
+    layout("banks", body)

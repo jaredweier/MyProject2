@@ -15,14 +15,9 @@ from slices.registry import SHARED_KERNEL, SLICES  # noqa: E402
 
 
 def _logic_has(name: str) -> bool:
-    import database
-    import logic
+    from scripts.logic_resolve import logic_has
 
-    if "." in name:
-        mod_name, attr = name.split(".", 1)
-        mod = database if mod_name == "database" else logic
-        return hasattr(mod, attr)
-    return hasattr(logic, name)
+    return logic_has(name)
 
 
 def _validator_has(name: str) -> bool:
@@ -40,9 +35,9 @@ def _page_keys() -> set:
 def run_slice_map(verbose: bool = False) -> int:
     pages = _page_keys()
     print("Dodgeville PD Scheduler — vertical slice map")
-    print("=" * 78)
-    print(f"{'Slice':<22} {'Status':<10} {'UI':<4} {'Logic':<6} {'Tests':<6} Future module")
-    print("-" * 78)
+    print("=" * 96)
+    print(f"{'Slice':<22} {'Overall':<9} {'Logic':<10} {'Chronos':<10} {'UI':<4} {'API':<4} {'Tests':<6} Future module")
+    print("-" * 96)
 
     for s in SLICES:
         ui_ok = all(p in pages for p in s.get("ui_pages", []))
@@ -54,16 +49,19 @@ def run_slice_map(verbose: bool = False) -> int:
         mark_l = "✓" if logic_ok else "—"
         mark_t = "✓" if tests_ok else "—"
         print(
-            f"{s['id']:<22} {s.get('status', '?'):<10} {mark_u:<4} {mark_l:<6} {mark_t:<6} {s.get('future_module', '')}"
+            f"{s['id']:<22} {s.get('status', '?'):<9} "
+            f"{s.get('logic_status', '—'):<10} {s.get('chronos_status', '—'):<10} "
+            f"{mark_u:<4} {mark_l:<4} {mark_t:<6} {s.get('future_module', '')}"
         )
         if verbose:
             print(f"    {s.get('summary', '')}")
             if s.get("touch_together"):
                 print(f"    touch: {', '.join(s['touch_together'][:5])}{'…' if len(s['touch_together']) > 5 else ''}")
 
-    print("-" * 78)
+    print("-" * 96)
     print(f"Shared kernel files: {len(SHARED_KERNEL['files'])}")
     print(f"Slices registered: {len(SLICES)}")
+    print("Note: logic_status ≠ chronos_status — unit green is not Chronos proof.")
     return 0
 
 

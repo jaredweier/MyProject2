@@ -35,6 +35,11 @@ def _extract_priorities(agents_md: str) -> list[str]:
 
 
 def run_session_start() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)
     os.chdir(ROOT)

@@ -8,6 +8,8 @@ import sys
 import unittest
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if ROOT not in sys.path:
+    sys.path.insert(0, ROOT)
 
 
 def _run_login_probe() -> int:
@@ -34,6 +36,7 @@ def _run_readiness_unittests() -> int:
     for case in (
         "tests.test_users_security.UserSecurityTests.test_seed_users_require_password_change",
         "tests.test_tier2.Tier2FeatureTests.test_parse_bids_due_datetime_formats",
+        "tests.test_three_brains_boundary",
     ):
         loaded = loader.loadTestsFromName(case)
         suite.addTests(loaded)

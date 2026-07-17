@@ -80,14 +80,31 @@ def aggrid_from_dicts(
     page_size: int = 25,
     csv_export: bool = False,
     csv_name: str = "chronos_export",
-) -> ui.aggrid:
+    empty_title: str = "No rows",
+    empty_hint: str = "Nothing to show for this filter.",
+    empty_cta_label: str = "",
+    empty_cta_path: str = "",
+) -> Optional[ui.aggrid]:
     """
     Render a filterable/sortable grid. Returns the aggrid element for refresh.
 
-    theme: NiceGUI supports quartz|balham|material|alpine (dark follows page dark mode).
-    csv_export: show a button that writes filtered-friendly snapshot of current rowData to exports/.
+    Unified chrome: 48px rows, sticky header micro labels (see chronos.css .chronos-aggrid).
+    Empty grids use empty_state instead of a blank table.
     """
     clean = _clean_rows(rows)
+    if not clean:
+        try:
+            from gui.ui_patterns import empty_state
+
+            empty_state(
+                empty_title,
+                empty_hint,
+                cta_label=empty_cta_label,
+                cta_path=empty_cta_path,
+            )
+        except Exception:
+            ui.label(empty_title).classes("text-sm text-gray-500")
+        return None
     options = {
         "columnDefs": rows_to_column_defs(clean, prefer=prefer_columns, floating_filter=floating_filter),
         "rowData": clean,
@@ -107,6 +124,9 @@ def aggrid_from_dicts(
         "suppressMenuHide": True,
         "enableCellTextSelection": True,
         "ensureDomOrder": True,
+        "rowHeight": 48,
+        "headerHeight": 40,
+        "rowSelection": "single",
     }
     grid = ui.aggrid(options, theme=theme).classes("w-full chronos-aggrid").style(f"height: {height}")
 

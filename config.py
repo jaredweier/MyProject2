@@ -1,5 +1,5 @@
 """
-Dodgeville Police Department Scheduler
+Chronos Command — agency workforce scheduler
 Centralized configuration, constants, and logging.
 """
 
@@ -9,9 +9,17 @@ from datetime import date
 from typing import Dict, Tuple
 
 # ==================== APPLICATION ====================
-APP_VERSION = "2026.07.1"
+APP_VERSION = "2026.07.2"
 APP_NAME = "Chronos Command"
 PRODUCT_NAME = "Chronos Command"
+# Vendor identity (UI chrome, login, status bar, deploy docs)
+COMPANY_NAME = "Weierworks Technologies, LLC"
+VENDOR_LEGAL = "Weierworks Technologies, LLC"
+PRODUCT_TAGLINE = "Workforce command for public safety"
+# Deploy: local desktop | browser | online (SaaS-style host)
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_ONLINE_HOST = "0.0.0.0"
+DEFAULT_PORT = 8080
 
 # ==================== ROTATION ====================
 ROTATION_BASE_DATE: date = date(2026, 6, 28)
@@ -165,14 +173,21 @@ DATE_PARSE_FORMATS = (
     "%d.%m.%y",
 )
 
-# Real-world local time for all user-facing clocks (Dodgeville WI default).
+# Real-world local time for all user-facing clocks (default Central US).
 # Override with SCHEDULER_TZ=America/New_York etc. if needed.
 DEPARTMENT_TIMEZONE = os.environ.get("SCHEDULER_TZ", "America/Chicago").strip() or "America/Chicago"
 
 # ==================== DEPARTMENT BRANDING ====================
-DEFAULT_DEPARTMENT_NAME = "Dodgeville Police Department"
-DEFAULT_DEPARTMENT_MISSION = "To protect and serve, in partnership with our community, through integrity and compassion"
-DEFAULT_DEPARTMENT_TAGLINE = "Wisconsin's Oldest Courthouse · Est. 1859"
+# Agency-neutral defaults — departments set their own name in Admin / setup.
+DEFAULT_DEPARTMENT_NAME = "Police Department"
+DEFAULT_DEPARTMENT_MISSION = "Protect and serve through integrity, partnership, and professional readiness"
+DEFAULT_DEPARTMENT_TAGLINE = "Workforce command"
+
+# Canonical rotation name (UI). Legacy "Dodgeville" key still resolves via ROTATION_PRESETS.
+DEFAULT_ROTATION_PRESET = "2-2-3 (14-day)"
+ROTATION_LEGACY_ALIASES = {
+    "2-2-3 (Dodgeville 14-day)": DEFAULT_ROTATION_PRESET,
+}
 
 # ==================== DEV AUTO-LOGIN ====================
 # Production default: login required. For local UI testing set SCHEDULER_AUTO_LOGIN=1.
@@ -322,11 +337,41 @@ SNAPSHOT_STATUSES = (
 )
 
 SIMULATOR_ROTATION_TYPES = [
-    "2-2-3 (Dodgeville 14-day)",
-    "4-on-4-off",
+    "2-2-3 (14-day)",
+    "Pitman 2-2-3 (12h)",
     "Panama 12-hour",
+    "4-on-4-off",
+    "3-on-3-off",
+    "4-on-3-off",
+    "5-2 fixed (M-F style)",
+    "5-3 fixed",
+    "6-2 fixed",
+    "6-3 fixed",
+    "7-7 half-month",
+    "DuPont 12-hour (28-day)",
+    "Every-other-weekend (EOWEO)",
     "Continental 7-day",
     "Equal split (custom cycle)",
+]
+
+# Common multi-block / on-off catalogs for simulator pattern dropdown (not squad presets).
+SIMULATOR_MULTI_BLOCK_CATALOG = [
+    {"label": "Custom (type below)", "style": "rotating", "variations": ""},
+    {"label": "6-2,5-3 | 6-3,5-2 (rotating)", "style": "rotating", "variations": "6-2,5-3 | 6-3,5-2"},
+    {"label": "5-2,6-3 | 5-3,6-2 (rotating)", "style": "rotating", "variations": "5-2,6-3 | 5-3,6-2"},
+    {"label": "5-3,6-2 | 6-2,5-3 (rotating)", "style": "rotating", "variations": "5-3,6-2 | 6-2,5-3"},
+    {"label": "4-3,3-4 | 3-4,4-3 (rotating)", "style": "rotating", "variations": "4-3,3-4 | 3-4,4-3"},
+    {"label": "2-2-3 blocks as 2-2,3-2,2-3", "style": "rotating", "variations": "2-2,3-2,2-3"},
+    {"label": "5-2 fixed", "style": "fixed", "variations": "5-2"},
+    {"label": "5-3 fixed", "style": "fixed", "variations": "5-3"},
+    {"label": "4-3 fixed", "style": "fixed", "variations": "4-3"},
+    {"label": "4-4 fixed", "style": "fixed", "variations": "4-4"},
+    {"label": "3-3 fixed", "style": "fixed", "variations": "3-3"},
+    {"label": "6-2 fixed", "style": "fixed", "variations": "6-2"},
+    {"label": "6-3 fixed", "style": "fixed", "variations": "6-3"},
+    {"label": "7-7 fixed", "style": "fixed", "variations": "7-7"},
+    {"label": "2-2 fixed", "style": "fixed", "variations": "2-2"},
+    {"label": "3-4 fixed", "style": "fixed", "variations": "3-4"},
 ]
 
 DEFAULT_OVERTIME_MULTIPLIER = 1.5
@@ -354,20 +399,92 @@ MAX_CONSECUTIVE_WORK_DAYS = 13
 CALLBACK_MINIMUM_HOURS = 2.0
 
 ROTATION_PRESETS = {
+    "2-2-3 (14-day)": {
+        "cycle_length": 14,
+        "squads": 2,
+        "squad_a_days": {1, 2, 5, 6, 7, 10, 11},
+        "label": "Pitman / 2-2-3 squad A/B (14-day)",
+    },
+    # Legacy key (saved forms / older DBs) — same skeleton; do not show in new UI lists
     "2-2-3 (Dodgeville 14-day)": {
         "cycle_length": 14,
         "squads": 2,
         "squad_a_days": {1, 2, 5, 6, 7, 10, 11},
+        "label": "Pitman / 2-2-3 squad A/B (14-day)",
+    },
+    "Pitman 2-2-3 (12h)": {
+        # Same duty skeleton as 2-2-3; typically paired with 12h starts
+        "cycle_length": 14,
+        "squads": 2,
+        "squad_a_days": {1, 2, 5, 6, 7, 10, 11},
+        "label": "Pitman 2-2-3 twelve-hour",
+    },
+    "Panama 12-hour": {
+        "cycle_length": 14,
+        "squads": 2,
+        "squad_a_days": {1, 2, 3, 4, 5, 6, 7},
+        "label": "Panama half-cycle A then B",
     },
     "4-on-4-off": {
         "cycle_length": 8,
         "squads": 2,
         "squad_patterns": {"A": [1, 1, 1, 1, 0, 0, 0, 0], "B": [0, 0, 0, 0, 1, 1, 1, 1]},
     },
-    "Panama 12-hour": {
+    "3-on-3-off": {
+        "cycle_length": 6,
+        "squads": 2,
+        "squad_patterns": {"A": [1, 1, 1, 0, 0, 0], "B": [0, 0, 0, 1, 1, 1]},
+    },
+    "4-on-3-off": {
+        "cycle_length": 7,
+        "squads": 2,
+        "squad_patterns": {"A": [1, 1, 1, 1, 0, 0, 0], "B": [0, 0, 0, 0, 1, 1, 1]},
+    },
+    "5-2 fixed (M-F style)": {
+        "cycle_length": 7,
+        "squads": 1,
+        "squad_patterns": {"A": [1, 1, 1, 1, 1, 0, 0]},
+    },
+    "5-3 fixed": {
+        "cycle_length": 8,
+        "squads": 1,
+        "squad_patterns": {"A": [1, 1, 1, 1, 1, 0, 0, 0]},
+    },
+    "6-2 fixed": {
+        "cycle_length": 8,
+        "squads": 1,
+        "squad_patterns": {"A": [1, 1, 1, 1, 1, 1, 0, 0]},
+    },
+    "6-3 fixed": {
+        "cycle_length": 9,
+        "squads": 1,
+        "squad_patterns": {"A": [1, 1, 1, 1, 1, 1, 0, 0, 0]},
+    },
+    "7-7 half-month": {
         "cycle_length": 14,
         "squads": 2,
-        "squad_a_days": {1, 2, 3, 4, 5, 6, 7},
+        "squad_patterns": {
+            "A": [1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0],
+            "B": [0, 0, 0, 0, 0, 0, 0, 1, 1, 1, 1, 1, 1, 1],
+        },
+    },
+    "DuPont 12-hour (28-day)": {
+        # Classic industrial DuPont-style four-platoon skeleton (A works first week pattern)
+        "cycle_length": 28,
+        "squads": 2,
+        "squad_patterns": {
+            "A": ([1, 1, 1, 1, 0, 0, 0] + [1, 1, 1, 0, 0, 0, 0] + [1, 1, 0, 0, 0, 0, 1] + [1, 0, 0, 0, 0, 1, 1]),
+            "B": ([0, 0, 0, 0, 1, 1, 1] + [0, 0, 0, 1, 1, 1, 1] + [0, 0, 1, 1, 1, 1, 0] + [0, 1, 1, 1, 1, 0, 0]),
+        },
+    },
+    "Every-other-weekend (EOWEO)": {
+        # 5-2 / 5-2 / 5-3 style compressed into 14-day A/B
+        "cycle_length": 14,
+        "squads": 2,
+        "squad_patterns": {
+            "A": [1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1, 0, 0],
+            "B": [0, 0, 1, 1, 1, 1, 1, 0, 0, 1, 1, 1, 1, 1],
+        },
     },
     "Continental 7-day": {
         "cycle_length": 7,
@@ -395,7 +512,7 @@ _logging_configured = False
 def configure_logging() -> logging.Logger:
     """Configure file/console logging once (call from app entry, not on import)."""
     global _logging_configured
-    log = logging.getLogger("DodgevilleScheduler")
+    log = logging.getLogger("ChronosCommand")
     if _logging_configured:
         return log
     try:
@@ -419,4 +536,4 @@ def configure_logging() -> logging.Logger:
     return log
 
 
-logger = logging.getLogger("DodgevilleScheduler")
+logger = logging.getLogger("ChronosCommand")

@@ -15,8 +15,10 @@ from logic.certifications import (
     list_certification_types,
     list_immunization_types,
     officer_immunization_status,
+    officer_meets_shift_cert_requirements,
     set_shift_cert_requirement,
 )
+from logic.product_complete_pack import cert_inventory_health
 from logic.staffing_config import get_active_shift_times
 from validators import format_date, parse_date
 
@@ -29,6 +31,15 @@ def render_certs() -> None:
             kicker="Personnel · LE pattern",
         )
         can_manage = session.can("officers.manage") or session.can("admin.settings") or session.can("settings.manage")
+
+        health = cert_inventory_health()
+        if health.get("thin"):
+            ui.html(
+                f'<div class="alert alert-warn">{health.get("message")}</div>',
+                sanitize=False,
+            )
+        else:
+            ui.label(health.get("message") or "").classes("text-xs q-mb-sm").style("color: var(--dim)")
 
         types = list_certification_types(active_only=True) or []
         type_labels = {f"{t.get('code')}: {t.get('name')}": t["id"] for t in types if t.get("id")}
@@ -188,5 +199,51 @@ def render_certs() -> None:
                     ui.button("Require cert on band", on_click=set_req).classes("btn-ghost q-mt-sm").props(
                         "no-caps outline dense"
                     )
+
+            # Expand gate check: all active officers vs selected band
+            with panel("Cert gate expand check (all fill paths)", glow=False):
+                ui.label(
+                    "Open-shift claim, supervisor assign, and callout fills respect band cert requirements."
+                ).classes("text-xs q-mb-sm").style("color: var(--dim)")
+                starts_chk = []
+                try:
+                    starts_chk = [s for s, _e in get_active_shift_times().values()]
+                except Exception:
+                    starts_chk = ["06:00", "10:00", "15:00", "19:00"]
+                band_chk = ui.select(
+                    starts_chk or ["19:00"],
+                    value=(starts_chk or ["19:00"])[-1],
+                    label="Band to test",
+                ).classes("w-full")
+                gate_box = (
+                    ui.textarea(value="Run check…").classes("w-full").props("readonly outlined dense dark rows=8")
+                )
+
+                def run_gate():
+                    lines = []
+                    band = band_chk.value or "19:00"
+                    for o in get_officers_by_seniority() or []:
+                        if not o.get("active", 1):
+                            continue
+                        try:
+                            ok, msg = officer_meets_shift_cert_requirements(int(o["id"]), band)
+                        except TypeError:
+                            try:
+                                res = officer_meets_shift_cert_requirements(int(o["id"]), band)
+                                if isinstance(res, tuple):
+                                    ok, msg = res[0], res[1] if len(res) > 1 else ""
+                                else:
+                                    ok, msg = bool(res), ""
+                            except Exception as exc:
+                                ok, msg = False, str(exc)
+                        except Exception as exc:
+                            ok, msg = False, str(exc)
+                        lines.append(f"{'OK' if ok else 'BLOCK'} · {o.get('name')} · {msg or band}")
+                    gate_box.value = "\n".join(lines) or "No officers"
+                    ui.notify(f"Checked {len(lines)} officers", type="info")
+
+                ui.button("Check roster vs band gate", on_click=run_gate).classes("btn-primary").props(
+                    "no-caps unelevated dense"
+                )
 
     layout("certs", body)

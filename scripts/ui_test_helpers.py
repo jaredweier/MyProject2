@@ -152,12 +152,15 @@ def create_headless_app():
 
 
 def assert_brand_assets(errors: list[str]) -> None:
-    from paths import resource_path
+    """Brand files are optional (agency upload). Only fail if brand APIs break."""
+    try:
+        from photos import chronos_logo_path, department_logo_path, department_photo_path
 
-    for filename in ("logo.png", "team_photo.jpg"):
-        path = resource_path(filename)
-        if not os.path.isfile(path):
-            errors.append(f"brand asset missing on disk: {filename} ({path})")
+        chronos_logo_path()
+        department_logo_path()
+        department_photo_path()
+    except Exception as exc:
+        errors.append(f"brand path APIs failed: {exc}")
 
 
 def assert_login_handlers_cleared(root, errors: list[str]) -> None:

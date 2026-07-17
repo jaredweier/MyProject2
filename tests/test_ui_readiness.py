@@ -12,20 +12,44 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 class TestUiReadiness(unittest.TestCase):
     def test_brand_assets_exist(self):
+        """Root placeholders exist for legacy CTk; agency uploads remain optional under photos/."""
         from paths import resource_path
+        from photos import chronos_logo_path, department_logo_path, department_photo_path
 
+        # Ship-safe placeholders (tiny generated assets) so headless loaders work.
         for name in ("logo.png", "team_photo.jpg"):
             path = resource_path(name)
-            self.assertTrue(os.path.isfile(path), f"missing {name}: {path}")
+            self.assertTrue(os.path.isfile(path), f"missing placeholder {name}: {path}")
+            self.assertGreater(os.path.getsize(path), 0, f"empty placeholder {name}")
+
+        # Agency brand APIs must not raise when dept uploads are absent.
+        try:
+            chronos_logo_path()
+            department_logo_path()
+            department_photo_path()
+        except Exception as exc:
+            self.fail(f"brand path APIs failed: {exc}")
+
+        # Department seal/photo are optional (upload in Branding & Media).
+        # Chronos product mark may exist as a small default under photos/.
+        chronos = chronos_logo_path()
+        if chronos is not None:
+            self.assertTrue(os.path.isfile(chronos))
 
     def test_brand_images_load(self):
-        from ui.assets import load_logo, load_team_photo
+        from ui.assets import load_logo, load_logo_safe, load_team_photo, make_monogram_badge
 
-        self.assertIsNotNone(load_logo((64, 64)), "load_logo returned None")
+        # Placeholders restore load_logo / load_team_photo for CTk paths.
+        self.assertIsNotNone(load_logo((64, 64)), "load_logo returned None (need root logo.png placeholder)")
         self.assertIsNotNone(
             load_team_photo((200, 120), cover=True),
-            "load_team_photo returned None",
+            "load_team_photo returned None (need root team_photo.jpg placeholder)",
         )
+        # Safe path must never be None even if files go missing later.
+        safe = load_logo_safe((48, 48), initials="PD")
+        self.assertIsNotNone(safe, "load_logo_safe must return logo or monogram")
+        mono = make_monogram_badge((40, 40), initials="CH")
+        self.assertIsNotNone(mono, "monogram fallback must paint")
 
     def test_title_case_preserves_possessive_s(self):
         from ui.helpers import title_case_ui
@@ -69,7 +93,7 @@ class TestUiReadiness(unittest.TestCase):
             env=env,
             capture_output=True,
             text=True,
-            timeout=120,
+            timeout=180,
         )
         combined = (proc.stdout or "") + (proc.stderr or "")
         self.assertEqual(

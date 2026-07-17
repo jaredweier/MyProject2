@@ -24,7 +24,7 @@ def generate_schedule_pdf(
     matrix: List[Dict],
     days: List[date],
     output_path: str,
-    title: str = "Dodgeville PD Schedule",
+    title: str = "Schedule",
 ) -> Dict:
     if not matrix or not days:
         return {"success": False, "message": "No schedule data to export"}
@@ -197,8 +197,14 @@ def generate_coverage_pdf(report: Dict, output_path: str) -> Dict:
     end = report.get("end_date", "")
     title = f"Coverage Report {format_date(start) if start else ''} – {format_date(end) if end else ''}"
     doc, styles = _build_doc(output_path, title, landscape_mode=True)
+    try:
+        from config import APP_NAME, DEFAULT_DEPARTMENT_NAME
+
+        org = DEFAULT_DEPARTMENT_NAME or APP_NAME
+    except Exception:
+        org = "Police Department"
     story = [
-        Paragraph("Dodgeville Police Department", styles["Title"]),
+        Paragraph(org, styles["Title"]),
         Paragraph(title, styles["Heading2"]),
         Paragraph(f"Issues: {report.get('issue_count', 0)}", styles["Normal"]),
         Spacer(1, 12),
@@ -248,8 +254,14 @@ def generate_pay_stub_pdf(stub: Dict, output_path: str) -> Dict:
     officer = stub["officer"]
     title = f"Pay Stub — {officer['name']}"
     doc, styles = _build_doc(output_path, title)
+    try:
+        from config import APP_NAME, DEFAULT_DEPARTMENT_NAME
+
+        org = DEFAULT_DEPARTMENT_NAME or APP_NAME
+    except Exception:
+        org = "Police Department"
     story = [
-        Paragraph("Dodgeville Police Department", styles["Title"]),
+        Paragraph(org, styles["Title"]),
         Paragraph(title, styles["Heading2"]),
         Spacer(1, 8),
         Paragraph(

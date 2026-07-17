@@ -1,0 +1,14 @@
+# Chronos Command — Caddy reverse proxy (TLS automatic)
+# Set CHRONOS_DOMAIN via env or edit the hostname below.
+# Run: docker compose -f docker-compose.yml -f deploy/cloud/docker-compose.caddy.yml up -d
+
+{$CHRONOS_DOMAIN:localhost} {
+	encode gzip
+	reverse_proxy chronos:8080
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy strict-origin-when-cross-origin
+		-Server
+	}
+}

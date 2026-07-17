@@ -11,18 +11,17 @@ from logic import (
     create_day_off_request,
     create_shift_swap_request,
     describe_day_off_request,
-    format_bump_suggestion,
     get_day_off_requests_for_viewer,
     get_officers_by_seniority,
     get_pending_day_off_requests,
     get_pending_shift_swap_requests,
     get_shift_swap_requests,
-    preview_best_coverage_plans,
     process_day_off_request,
     process_shift_swap,
-    suggest_bump_chain,
     validate_swap_feasibility,
 )
+from logic.coverage_optimizer import format_bump_suggestion, suggest_bump_chain
+from logic.scheduling_sim import preview_best_coverage_plans
 from ui.helpers import today_placeholder
 from ui.pages.base import BasePage
 from ui.theme import (

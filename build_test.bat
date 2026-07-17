@@ -8,8 +8,6 @@ if errorlevel 1 (
     exit /b 1
 )
 pyinstaller --noconfirm --onedir --windowed --clean ^
-  --add-data "logo.png;." ^
-  --add-data "team_photo.jpg;." ^
   --add-data "roster_seed.json;." ^
   --hidden-import customtkinter ^
   --hidden-import PIL ^

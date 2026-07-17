@@ -18,13 +18,33 @@ def _log_audit(*args, **kwargs):
     log_audit_action(*args, **kwargs)
 
 
+# Legacy seed brand → agency-neutral display (existing DBs)
+_LEGACY_BRAND = {
+    "department_name": {
+        "Dodgeville Police Department": "Police Department",
+        "Dodgeville PD": "Police Department",
+    },
+    "department_tagline": {
+        "Wisconsin's Oldest Courthouse · Est. 1859": "Workforce command",
+        "Est. 1859": "Workforce command",
+    },
+    "rotation_preset": {
+        "2-2-3 (Dodgeville 14-day)": "2-2-3 (14-day)",
+    },
+}
+
+
 def get_department_setting(key: str, default: str = "") -> str:
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM department_settings WHERE key = ?", (key,))
     row = cursor.fetchone()
     conn.close()
-    return row["value"] if row else default
+    value = row["value"] if row else default
+    remap = _LEGACY_BRAND.get(key) or {}
+    if value in remap:
+        return remap[value]
+    return value
 
 
 def set_department_setting(key: str, value: str, user_id: Optional[int] = None) -> Dict:
@@ -394,6 +414,24 @@ def fill_open_shift(shift_id: int, officer_id: int, user_id: Optional[int] = Non
         )
         if not cert_ok:
             return {"success": False, "message": cert_msg}
+        try:
+            from logic.fatigue_gates import check_rest_hard_stop
+
+            rest = check_rest_hard_stop(
+                int(officer_id),
+                work_date=str(shift["shift_date"]),
+                shift_start=shift.get("shift_start"),
+                shift_end=shift.get("shift_end"),
+                user_id=user_id,
+            )
+            if rest.get("blocked"):
+                return {
+                    "success": False,
+                    "message": rest.get("message") or "Rest/fatigue hard stop",
+                    "requires_override": True,
+                }
+        except Exception:
+            pass
         cursor.execute(
             """
             UPDATE open_shifts

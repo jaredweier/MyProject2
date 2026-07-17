@@ -29,6 +29,7 @@ def _run_all() -> List[ScenarioResult]:
 
     with test_database():
         import logic
+        from logic.coverage_optimizer import validate_bump_feasibility
 
         # S-01: Squad B requests off on Squad A day → Pending
         squad_b = get_any_officer("B")
@@ -81,7 +82,7 @@ def _run_all() -> List[ScenarioResult]:
         )
 
         # S-04: Day shift Friday not night-blocked
-        bump04 = logic.validate_bump_feasibility(
+        bump04 = validate_bump_feasibility(
             day_officer["id"],
             "2026-07-03",
             day_officer["squad"],
@@ -164,7 +165,7 @@ def _run_all() -> List[ScenarioResult]:
 
         # S-09: On-duty same-squad replacement for day shift bump (squad working day)
         s09_date = working_date_for_squad("A").strftime("%Y-%m-%d")
-        bump09 = logic.validate_bump_feasibility(
+        bump09 = validate_bump_feasibility(
             day_officer["id"],
             s09_date,
             day_officer["squad"],

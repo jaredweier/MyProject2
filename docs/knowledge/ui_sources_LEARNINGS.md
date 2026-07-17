@@ -28,3 +28,7 @@ _  https://nicegui.io/documentation/aggrid_
 
 ## 2026-07-09T09:20:54.312038+00:00 — eval-ui-stability
 After large Chronos UI growth (finance dual FLSA, leave donation, CP-SAT sim, rank candidates): evaluate for broken imports, duplicate handlers, NiceGUI refresh errors, permission gates. No new UI until tests green.
+
+## 2026-07-17T06:39:43.419124+00:00 — nicegui-llms-txt
+Official NiceGUI LLM guide: refreshable>clear, bindings in-place, scroll_area+stepper/chips, mark(), skeleton, no module-level state, run.io_bound/to_thread, avoid CSS thrash. Applied to sim + always-on watcher fix.
+_  https://nicegui.io/llms.txt_

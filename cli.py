@@ -67,6 +67,11 @@ from cli.ops_cmds import (
     set_setting_cmd,
     staffing_settings_cmd,
 )
+from cli.optimizer_cmds import (
+    optimize_compare_cmd,
+    optimize_find_best_cmd,
+    optimize_min_n_cmd,
+)
 from cli.payroll_cmds import (
     pay_period_history_cmd,
     pay_period_lock,
@@ -318,6 +323,23 @@ def main():
     rep_lc = rep_sub.add_parser("labor-compliance", help="FLSA §207(k), comp cap, consecutive-day alerts")
     rep_lc.add_argument("--officer-id", type=int, help="Limit to one officer")
 
+    # Staffing optimizer (headless)
+    optimize = subparsers.add_parser("optimize", help="Staffing optimizer (Find Best / min-N / compare)")
+    opt_sub = optimize.add_subparsers(dest="action")
+    opt_best = opt_sub.add_parser("find-best", help="Run real-world 8h hard search")
+    opt_best.add_argument("--officers", type=int, default=0, help="Lock N (0=try 7-9)")
+    opt_best.add_argument("--length", type=float, default=8.0)
+    opt_best.add_argument("--soft", action="store_true", help="Allow near-misses")
+    opt_best.add_argument("--free-starts", action="store_true")
+    opt_best.add_argument("--export-csv", action="store_true")
+    opt_best.add_argument("--export-audit", action="store_true")
+    opt_best.add_argument("--json", action="store_true")
+    opt_min = opt_sub.add_parser("min-n", help="Binary search minimum officers")
+    opt_min.add_argument("--lo", type=int, default=4)
+    opt_min.add_argument("--hi", type=int, default=16)
+    opt_cmp = opt_sub.add_parser("compare", help="Compare 8/10/12h")
+    opt_cmp.add_argument("--officers", type=int, default=8)
+
     # Schedule diff
     sched_diff = subparsers.add_parser("schedule-diff", help="Compare base vs updated schedule")
     sched_diff.add_argument("--year", type=int, help="Year (default: current)")
@@ -540,6 +562,15 @@ def main():
             export_swaps_pdf_cmd(args)
         elif args.action == "ical":
             export_ical_cmd(args)
+    elif args.command == "optimize":
+        if args.action == "find-best":
+            optimize_find_best_cmd(args)
+        elif args.action == "min-n":
+            optimize_min_n_cmd(args)
+        elif args.action == "compare":
+            optimize_compare_cmd(args)
+        else:
+            print("Usage: optimize {find-best|min-n|compare}")
     elif args.command == "users":
         if args.action == "list":
             list_users_cmd(args)

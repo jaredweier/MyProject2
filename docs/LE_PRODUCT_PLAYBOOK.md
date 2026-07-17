@@ -33,13 +33,24 @@ Sources researched (public pages / industry): Aladtec (TCP), Snap Schedule, inTi
 
 | Pattern | Why agencies pay for it | Next step |
 |---------|-------------------------|-----------|
-| SMS / callback paging | Fill last-minute vacancies | Notify provider + open-shift hooks |
-| Mobile app | Officers off-station | PWA / responsive Chronos |
-| Court / subpoena module | inTime specialty | Request type + calendar flags (partial types exist) |
-| Certification-gated fill | Only qualified on OT | Wire `logic/certifications.py` into open-shift claim |
-| Seniority OT call-down list | Union fairness | Callback rotation UI on `logic/callbacks.py` |
-| Comp time vs cash OT election | FLSA public sector | Timecard entry UX |
-| 7(k) work-period config UX | 14-day 86h LE threshold | Surface `labor_compliance` settings in Chronos admin |
+| SMS vendor transport | Fill last-minute vacancies | **Full path ready** — outbox + Twilio/SMTP; enable creds when ready (`/channels`) |
+| Mobile app | Officers off-station | **PWA + My Week + bottom nav** — host online for install |
+| Court / subpoena module | inTime specialty | **`/court` multi-day + min hours + notify** |
+| Certification-gated fill | Only qualified on OT | **Done in logic + Chronos** claim/assign + band requirements |
+| Seniority OT call-down list | Union fairness | **Auto call-down** + dual equity ledger (offered vs worked) |
+| Comp time vs cash OT election | FLSA public sector | Timecard radio + **force-use** + FLSA vs contract OT CSV |
+| 7(k) work-period config UX | 14-day 86h LE threshold | **Done** Payroll FLSA panel + dual workforce |
+| Shift length compare | Wellness trade-offs | **Compare 8/10/12h** on Simulator |
+| Online / SaaS host | Sell subscription | **`main.py --web` · Docker · `/deploy` kit** |
+| Branding | White-label mark | **Chronos Command logo upload** + Weierworks chrome |
+
+## Landed product hardening (2026-07)
+
+- Callback **zero-hour offers** (call-down) no longer rejected
+- Publish plan snaps starts to **:00 / :30** only
+- Open-shift post/fill fire **channel hooks** (email/SMS queue; SMTP optional)
+- Slice registry: dual **`logic_status` / `chronos_status`**
+- **2026-07-16 priorities:** Twilio SMS, templates, PWA, court page, call-down automation, FLSA split export, staffing explain + compare, extra-duty marketplace helpers
 
 ---
 

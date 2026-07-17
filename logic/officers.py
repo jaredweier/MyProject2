@@ -79,8 +79,9 @@ def get_request_reviewer_officer_ids() -> List[int]:
 
 
 def describe_day_off_request(officer_id: int, request_date: str) -> Dict:
+    from logic.coverage_optimizer import suggest_bump_chain
     from logic.operations import is_officer_unavailable_on_date
-    from logic.scheduling import is_officer_working_on_day, resolve_officer_shift_band, suggest_bump_chain
+    from logic.scheduling import is_officer_working_on_day, resolve_officer_shift_band
 
     """Advisory context for UI and supervisor notifications (does not block submit)."""
     officer = get_officer_by_id(officer_id)

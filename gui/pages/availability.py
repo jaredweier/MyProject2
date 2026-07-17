@@ -9,11 +9,14 @@ from nicegui import ui
 from gui import session
 from gui.clock import today_local
 from gui.shell import layout, page_header, panel
+from gui.ui_patterns import empty_state, shift_card
 from logic import (
     add_holiday,
     add_officer_availability,
     delete_holiday,
+    delete_officer_availability,
     get_holidays,
+    get_officer_availability,
     get_officers_by_seniority,
     get_schedule_conflicts,
     get_upcoming_holidays,
@@ -113,6 +116,87 @@ def render_availability() -> None:
                 ui.button("Check date", on_click=check_unavail).classes("btn-ghost q-mt-sm").props(
                     "no-caps outline dense"
                 )
+
+                ui.separator()
+                ui.label("Your blackout list (next 90 days)").classes("text-xs text-gray-500 q-mb-xs")
+                bl_host = ui.element("div")
+
+                def refresh_blackouts():
+                    bl_host.clear()
+                    with bl_host:
+                        view_oid = oid
+                        if off_sel is not None and off_sel.value:
+                            view_oid = omap.get(off_sel.value) or view_oid
+                        if session.is_officer():
+                            view_oid = session.linked_officer_id()
+                        if not view_oid and not (
+                            session.can("availability.manage_all") or session.can("officers.manage")
+                        ):
+                            empty_state(
+                                "No officer linked",
+                                "Link a profile to list blackout days.",
+                                cta_label="Access",
+                                cta_path="/access",
+                            )
+                            return
+                        start = today_local()
+                        end = start + timedelta(days=90)
+                        try:
+                            rows = (
+                                get_officer_availability(
+                                    officer_id=int(view_oid) if view_oid else None,
+                                    start_date=start,
+                                    end_date=end,
+                                )
+                                or []
+                            )
+                        except Exception as exc:
+                            ui.label(str(exc)).classes("text-sm text-red-400")
+                            return
+                        if not rows:
+                            empty_state(
+                                "No blackouts in range",
+                                "Mark a date above when you need a day blocked.",
+                            )
+                            return
+                        for row in rows[:40]:
+                            if not isinstance(row, dict):
+                                continue
+                            rid = row.get("id")
+                            d = row.get("unavailable_date") or row.get("date")
+                            who = row.get("officer_name") or ""
+                            reason = row.get("reason") or row.get("notes") or "Unavailable"
+
+                            def del_av(entry_id=rid):
+                                if entry_id is None:
+                                    return
+                                uid = (session.current_user() or {}).get("id")
+                                r = delete_officer_availability(int(entry_id), user_id=uid)
+                                ui.notify(
+                                    r.get("message", "Removed") if r.get("success") else r.get("message", "Failed"),
+                                    type="positive" if r.get("success") else "negative",
+                                )
+                                if r.get("success"):
+                                    refresh_blackouts()
+
+                            can_del = session.can("availability.manage_all") or (
+                                session.is_officer()
+                                and int(row.get("officer_id") or 0) == int(session.linked_officer_id() or 0)
+                            )
+                            shift_card(
+                                title=f"{format_date(d) if d else '—'} · {who}".strip(" ·"),
+                                subtitle=str(reason)[:120],
+                                status="Blackout",
+                                status_level="warn",
+                                primary_label="Remove" if can_del else "",
+                                on_primary=del_av if can_del else None,
+                                card_id=f"av-{rid}",
+                            )
+
+                ui.button("Refresh list", on_click=refresh_blackouts).classes("btn-ghost q-mt-xs").props(
+                    "no-caps outline dense"
+                )
+                refresh_blackouts()
 
             with panel("Upcoming holidays (60 days)"):
                 try:

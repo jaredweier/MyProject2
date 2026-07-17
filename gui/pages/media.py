@@ -1,4 +1,4 @@
-"""Department Media — stage uploads, then Save to disk."""
+"""Department Media — Chronos logo, agency seal/photo, officer portraits."""
 
 from __future__ import annotations
 
@@ -13,9 +13,14 @@ from gui.clock import department_tz, format_local_datetime
 from gui.shell import layout, page_header
 from logic import get_officers_by_seniority, update_officer
 from photos import (
+    chronos_logo_path,
+    clear_chronos_logo,
+    clear_department_logo,
+    clear_department_photo,
     department_logo_path,
     department_photo_path,
     officer_photo_path,
+    save_chronos_logo_bytes,
     save_department_logo_bytes,
     save_department_photo_bytes,
     save_officer_photo_bytes,
@@ -24,11 +29,10 @@ from photos import (
 
 def _file_meta(path: str | None) -> str:
     if not path or not os.path.isfile(path):
-        return "No File On Disk — Choose File Then Save"
+        return "No file on disk — choose file then save"
     try:
         st = os.stat(path)
         kb = max(1, st.st_size // 1024)
-        # File mtime → department-local display
         when = format_local_datetime(datetime.fromtimestamp(st.st_mtime, tz=department_tz()))
         return f"{os.path.basename(path)} · {kb} KB · Updated {when}"
     except OSError:
@@ -43,26 +47,44 @@ def _write_temp_preview(data: bytes, suffix: str) -> str:
     return path
 
 
+def _sync_brand() -> None:
+    try:
+        from gui.brand_assets import sync_brand_files
+
+        sync_brand_files()
+    except Exception:
+        pass
+
+
 def render_media() -> None:
     def body() -> None:
         if not (session.can("officers.manage") or session.can("admin.settings") or session.can("settings.manage")):
-            page_header("Department Media", "Permission Required", kicker="Command")
+            page_header("Department Media", "Permission required", kicker="Command")
             ui.html(
-                '<div class="alert alert-warn">Department Media Requires Supervisor Or Administration Access.</div>',
+                '<div class="alert alert-warn">Department Media requires supervisor or administration access.</div>',
                 sanitize=False,
             )
             return
 
         page_header(
-            "Department Media",
-            "Choose Files, Preview, Then Save — Logo (Sidebar) · Photo (Login Hero) · Officer Portraits",
-            kicker="Command",
+            "Branding & Media",
+            "Chronos Command logo (upload before deploy) · agency seal & photo · officer portraits · Weierworks Technologies, LLC",
+            kicker="Chronos Command",
+        )
+        ui.html(
+            '<div class="alert alert-ok q-mb-md">'
+            "<strong>Chronos Command</strong> product mark is shown in the sidebar and login. "
+            "Upload PNG/JPG/WebP here before online or portable deployment. "
+            "Agency seal is optional secondary branding."
+            "</div>",
+            sanitize=False,
         )
 
-        # Pending staged bytes until user clicks Save
         pending: dict = {
-            "logo": None,  # bytes
-            "logo_preview": None,  # temp path
+            "chronos": None,
+            "chronos_preview": None,
+            "logo": None,
+            "logo_preview": None,
             "photo": None,
             "photo_preview": None,
             "officer_id": None,
@@ -75,160 +97,159 @@ def render_media() -> None:
             status.set_text(msg)
             status.style(f"color: {'#fbbf24' if pending_note else 'var(--dim)'}")
 
-        with ui.element("div").classes("grid-2").style("margin-bottom: 18px"):
-            # —— Logo ——
+        def brand_card(
+            *,
+            title: str,
+            subtitle: str,
+            key: str,
+            path_fn,
+            save_fn,
+            clear_fn,
+            accept: str = ".png,.jpg,.jpeg,.webp",
+            cover: bool = False,
+            logo_style: bool = False,
+        ):
             with ui.element("div").classes("media-card"):
-                logo_hero = ui.element("div").classes("media-card-hero logo-hero")
+                hero = ui.element("div").classes("media-card-hero" + (" logo-hero" if logo_style else ""))
                 with ui.element("div").classes("media-card-body"):
-                    ui.html('<div class="media-card-title">Department Logo</div>', sanitize=False)
-                    logo_meta = ui.label("").classes("media-card-meta")
-                    logo_upload = (
-                        ui.upload(label="Choose Logo File", auto_upload=True)
-                        .props("accept=.png,.jpg,.jpeg,.webp flat dense color=cyan")
+                    ui.html(f'<div class="media-card-title">{title}</div>', sanitize=False)
+                    meta = ui.label("").classes("media-card-meta")
+                    ui.label(subtitle).classes("text-xs q-mb-sm").style("color: var(--dim)")
+                    upload = (
+                        ui.upload(label="Choose file", auto_upload=True)
+                        .props(f"accept={accept} flat dense color=cyan")
                         .classes("w-full")
                     )
-                    logo_save_btn = (
-                        ui.button("Save Logo").classes("btn-primary w-full q-mt-sm").props("no-caps unelevated")
-                    )
+                    with ui.row().classes("gap-2 w-full q-mt-sm"):
+                        save_btn = ui.button("Save").classes("btn-primary").props("no-caps unelevated dense")
+                        clear_btn = ui.button("Clear").classes("btn-ghost").props("no-caps outline dense")
 
-                def paint_logo():
-                    logo_hero.clear()
-                    show_path = pending.get("logo_preview") or department_logo_path()
-                    if pending.get("logo"):
-                        logo_meta.set_text("Unsaved Logo Staged — Click Save Logo")
+                def paint():
+                    hero.clear()
+                    show = pending.get(f"{key}_preview") or path_fn()
+                    if pending.get(key):
+                        meta.set_text(f"Unsaved {title.lower()} staged — click Save")
                     else:
-                        logo_meta.set_text(_file_meta(department_logo_path()) + " · Sidebar Mark")
-                    with logo_hero:
-                        if show_path and os.path.isfile(show_path):
-                            ui.image(show_path).style(
-                                "max-height:150px;max-width:88%;object-fit:contain;border-radius:8px"
-                            )
-                        else:
-                            ui.html('<div class="media-empty">No Logo Yet</div>', sanitize=False)
-
-                async def stage_logo(e: events.UploadEventArguments):
-                    data = await e.file.read()
-                    pending["logo"] = data
-                    if pending.get("logo_preview") and os.path.isfile(pending["logo_preview"]):
-                        try:
-                            os.remove(pending["logo_preview"])
-                        except OSError:
-                            pass
-                    name = getattr(e.file, "name", "") or "logo.png"
-                    suf = os.path.splitext(name)[1].lower() or ".png"
-                    pending["logo_preview"] = _write_temp_preview(data, suf)
-                    set_status("Logo Staged — Click Save Logo To Apply", pending_note=True)
-                    paint_logo()
-
-                def save_logo():
-                    data = pending.get("logo")
-                    if not data:
-                        ui.notify("Choose A Logo File First", type="warning")
-                        return
-                    result = save_department_logo_bytes(data)
-                    if result.get("success"):
-                        try:
-                            from gui.brand_assets import sync_brand_files
-
-                            sync_brand_files()
-                        except Exception:
-                            pass
-                        pending["logo"] = None
-                        if pending.get("logo_preview") and os.path.isfile(pending["logo_preview"]):
-                            try:
-                                os.remove(pending["logo_preview"])
-                            except OSError:
-                                pass
-                        pending["logo_preview"] = None
-                        set_status("Department Logo Saved")
-                        ui.notify("Department Logo Saved", type="positive")
-                        paint_logo()
-                    else:
-                        ui.notify(result.get("message", "Save Failed"), type="negative")
-
-                logo_upload.on_upload(stage_logo)
-                logo_save_btn.on_click(save_logo)
-                paint_logo()
-
-            # —— Photo ——
-            with ui.element("div").classes("media-card"):
-                photo_hero = ui.element("div").classes("media-card-hero")
-                with ui.element("div").classes("media-card-body"):
-                    ui.html('<div class="media-card-title">Department Photo</div>', sanitize=False)
-                    photo_meta = ui.label("").classes("media-card-meta")
-                    photo_upload = (
-                        ui.upload(label="Choose Photo File", auto_upload=True)
-                        .props("accept=.png,.jpg,.jpeg,.webp flat dense color=cyan")
-                        .classes("w-full")
-                    )
-                    photo_save_btn = (
-                        ui.button("Save Photo").classes("btn-primary w-full q-mt-sm").props("no-caps unelevated")
-                    )
-
-                def paint_photo():
-                    photo_hero.clear()
-                    show_path = pending.get("photo_preview") or department_photo_path()
-                    if pending.get("photo"):
-                        photo_meta.set_text("Unsaved Photo Staged — Click Save Photo")
-                    else:
-                        photo_meta.set_text(_file_meta(department_photo_path()) + " · Login Hero")
-                    with photo_hero:
-                        if show_path and os.path.isfile(show_path):
-                            ui.image(show_path).style("width:100%;height:100%;object-fit:cover")
+                        meta.set_text(_file_meta(path_fn()))
+                    with hero:
+                        if show and os.path.isfile(show):
+                            if cover:
+                                ui.image(show).style("width:100%;height:100%;object-fit:cover")
+                            else:
+                                ui.image(show).style(
+                                    "max-height:150px;max-width:88%;object-fit:contain;border-radius:8px"
+                                )
                         else:
                             ui.html(
-                                '<div class="media-empty">No Department Photo Yet</div>',
+                                f'<div class="media-empty">No {title.lower()} yet</div>',
                                 sanitize=False,
                             )
 
-                async def stage_photo(e: events.UploadEventArguments):
+                async def stage(e: events.UploadEventArguments):
                     data = await e.file.read()
-                    pending["photo"] = data
-                    if pending.get("photo_preview") and os.path.isfile(pending["photo_preview"]):
+                    pending[key] = data
+                    prev = pending.get(f"{key}_preview")
+                    if prev and os.path.isfile(prev):
                         try:
-                            os.remove(pending["photo_preview"])
+                            os.remove(prev)
                         except OSError:
                             pass
-                    name = getattr(e.file, "name", "") or "photo.jpg"
-                    suf = os.path.splitext(name)[1].lower() or ".jpg"
-                    pending["photo_preview"] = _write_temp_preview(data, suf)
-                    set_status("Photo Staged — Click Save Photo To Apply", pending_note=True)
-                    paint_photo()
+                    name = getattr(e.file, "name", "") or "upload.png"
+                    suf = os.path.splitext(name)[1].lower() or ".png"
+                    pending[f"{key}_preview"] = _write_temp_preview(data, suf)
+                    set_status(f"{title} staged — click Save", pending_note=True)
+                    paint()
 
-                def save_photo():
-                    data = pending.get("photo")
+                def save():
+                    data = pending.get(key)
                     if not data:
-                        ui.notify("Choose A Photo File First", type="warning")
+                        ui.notify("Choose a file first", type="warning")
                         return
-                    result = save_department_photo_bytes(data)
+                    result = save_fn(data)
                     if result.get("success"):
-                        try:
-                            from gui.brand_assets import sync_brand_files
-
-                            sync_brand_files()
-                        except Exception:
-                            pass
-                        pending["photo"] = None
-                        if pending.get("photo_preview") and os.path.isfile(pending["photo_preview"]):
+                        _sync_brand()
+                        pending[key] = None
+                        prev = pending.get(f"{key}_preview")
+                        if prev and os.path.isfile(prev):
                             try:
-                                os.remove(pending["photo_preview"])
+                                os.remove(prev)
                             except OSError:
                                 pass
-                        pending["photo_preview"] = None
-                        set_status("Department Photo Saved")
-                        ui.notify("Department Photo Saved", type="positive")
-                        paint_photo()
+                        pending[f"{key}_preview"] = None
+                        set_status(f"{title} saved — refresh or re-open login to see landing page")
+                        ui.notify(f"{title} saved", type="positive")
+                        paint()
                     else:
-                        ui.notify(result.get("message", "Save Failed"), type="negative")
+                        ui.notify(result.get("message", "Save failed"), type="negative")
 
-                photo_upload.on_upload(stage_photo)
-                photo_save_btn.on_click(save_photo)
-                paint_photo()
+                def clear():
+                    r = clear_fn()
+                    _sync_brand()
+                    pending[key] = None
+                    prev = pending.get(f"{key}_preview")
+                    if prev and os.path.isfile(prev):
+                        try:
+                            os.remove(prev)
+                        except OSError:
+                            pass
+                    pending[f"{key}_preview"] = None
+                    set_status(r.get("message", f"{title} cleared"))
+                    ui.notify(r.get("message", "Cleared"), type="info")
+                    paint()
+
+                upload.on_upload(stage)
+                save_btn.on_click(save)
+                clear_btn.on_click(clear)
+                paint()
+                return paint
+
+        with ui.element("div").classes("grid-2").style("margin-bottom: 18px"):
+            paint_chronos = brand_card(
+                title="Chronos Command logo",
+                subtitle="Product mark — shown with Chronos Command on login and sidebar",
+                key="chronos",
+                path_fn=chronos_logo_path,
+                save_fn=save_chronos_logo_bytes,
+                clear_fn=clear_chronos_logo,
+                logo_style=True,
+            )
+            paint_logo = brand_card(
+                title="Department logo",
+                subtitle="Your agency seal — login hero badge (optional)",
+                key="logo",
+                path_fn=department_logo_path,
+                save_fn=save_department_logo_bytes,
+                clear_fn=clear_department_logo,
+                logo_style=True,
+            )
+
+        with ui.element("div").classes("grid-2").style("margin-bottom: 18px"):
+            paint_photo = brand_card(
+                title="Department photo",
+                subtitle="Your agency team / facility photo — login hero background",
+                key="photo",
+                path_fn=department_photo_path,
+                save_fn=save_department_photo_bytes,
+                clear_fn=clear_department_photo,
+                cover=True,
+            )
+            with ui.element("div").classes("media-card"):
+                with ui.element("div").classes("media-card-body"):
+                    ui.html('<div class="media-card-title">How branding works</div>', sanitize=False)
+                    ui.html(
+                        '<div class="media-card-meta" style="line-height:1.5">'
+                        "<strong>Chronos logo</strong> = product identity (any agency).<br/>"
+                        "<strong>Department logo + photo</strong> = your organization only — "
+                        "uploaded here, never shipped as defaults.<br/>"
+                        "Clear removes the file from this installation."
+                        "</div>",
+                        sanitize=False,
+                    )
 
         # —— Officers ——
         with ui.element("div").classes("panel w-full"):
-            ui.html('<div class="panel-title">Officer Portraits</div>', sanitize=False)
-            ui.label("Select A Tile, Choose File, Then Save Portrait").classes("text-xs q-mb-md").style(
+            ui.html('<div class="panel-title">Officer portraits</div>', sanitize=False)
+            ui.label("Select a tile, choose file, then save portrait").classes("text-xs q-mb-md").style(
                 "color: var(--dim)"
             )
 
@@ -241,7 +262,7 @@ def render_media() -> None:
                 grid.clear()
                 with grid:
                     if not officers:
-                        ui.label("No Active Officers").classes("text-sm").style("color: var(--dim)")
+                        ui.label("No active officers").classes("text-sm").style("color: var(--dim)")
                         return
                     for o in officers:
                         oid = o["id"]
@@ -266,7 +287,6 @@ def render_media() -> None:
 
             def select_officer(oid: int):
                 state["oid"] = oid
-                # Clear staged portrait when switching officers
                 pending["officer"] = None
                 if pending.get("officer_preview") and os.path.isfile(pending["officer_preview"]):
                     try:
@@ -296,7 +316,7 @@ def render_media() -> None:
                         with ui.element("div").classes("flex-grow"):
                             ui.label(name).classes("text-sm font-semibold")
                             if pending.get("officer") and pending.get("officer_id") == oid:
-                                ui.label("Unsaved Portrait Staged — Click Save Portrait").classes("text-xs").style(
+                                ui.label("Unsaved portrait staged — click Save portrait").classes("text-xs").style(
                                     "color: #fbbf24"
                                 )
                             else:
@@ -304,11 +324,11 @@ def render_media() -> None:
                                     "color: var(--dim)"
                                 )
                         up = (
-                            ui.upload(label="Choose Portrait File", auto_upload=True)
+                            ui.upload(label="Choose portrait file", auto_upload=True)
                             .props("accept=.png,.jpg,.jpeg,.webp flat dense color=cyan")
                             .classes("w-56")
                         )
-                        save_btn = ui.button("Save Portrait").classes("btn-primary").props("no-caps unelevated")
+                        save_btn = ui.button("Save portrait").classes("btn-primary").props("no-caps unelevated")
 
                         async def stage_off(e: events.UploadEventArguments, officer_id=oid):
                             data = await e.file.read()
@@ -322,13 +342,13 @@ def render_media() -> None:
                             name_f = getattr(e.file, "name", "") or "portrait.jpg"
                             suf = os.path.splitext(name_f)[1].lower() or ".jpg"
                             pending["officer_preview"] = _write_temp_preview(data, suf)
-                            set_status("Portrait Staged — Click Save Portrait", pending_note=True)
+                            set_status("Portrait staged — click Save portrait", pending_note=True)
                             paint_grid()
                             paint_detail()
 
                         def save_off(officer_id=oid):
                             if pending.get("officer_id") != officer_id or not pending.get("officer"):
-                                ui.notify("Choose A Portrait File First", type="warning")
+                                ui.notify("Choose a portrait file first", type="warning")
                                 return
                             result = save_officer_photo_bytes(officer_id, pending["officer"])
                             if result.get("success"):
@@ -343,12 +363,12 @@ def render_media() -> None:
                                     except OSError:
                                         pass
                                 pending["officer_preview"] = None
-                                set_status("Officer Portrait Saved")
-                                ui.notify("Officer Portrait Saved", type="positive")
+                                set_status("Officer portrait saved")
+                                ui.notify("Officer portrait saved", type="positive")
                                 paint_grid()
                                 paint_detail()
                             else:
-                                ui.notify(result.get("message", "Save Failed"), type="negative")
+                                ui.notify(result.get("message", "Save failed"), type="negative")
 
                         up.on_upload(stage_off)
                         save_btn.on_click(save_off)
@@ -356,70 +376,37 @@ def render_media() -> None:
             paint_grid()
             paint_detail()
 
-        # —— Global save all staged brand assets ——
         with ui.row().classes("gap-2 q-mt-md flex-wrap"):
 
             def save_all_brand():
                 saved = []
+                if pending.get("chronos"):
+                    if save_chronos_logo_bytes(pending["chronos"]).get("success"):
+                        pending["chronos"] = None
+                        saved.append("Chronos logo")
                 if pending.get("logo"):
-                    r = save_department_logo_bytes(pending["logo"])
-                    if r.get("success"):
+                    if save_department_logo_bytes(pending["logo"]).get("success"):
                         pending["logo"] = None
-                        if pending.get("logo_preview") and os.path.isfile(pending["logo_preview"]):
-                            try:
-                                os.remove(pending["logo_preview"])
-                            except OSError:
-                                pass
-                        pending["logo_preview"] = None
-                        saved.append("Logo")
+                        saved.append("Department logo")
                 if pending.get("photo"):
-                    r = save_department_photo_bytes(pending["photo"])
-                    if r.get("success"):
+                    if save_department_photo_bytes(pending["photo"]).get("success"):
                         pending["photo"] = None
-                        if pending.get("photo_preview") and os.path.isfile(pending["photo_preview"]):
-                            try:
-                                os.remove(pending["photo_preview"])
-                            except OSError:
-                                pass
-                        pending["photo_preview"] = None
-                        saved.append("Photo")
-                if pending.get("officer") and pending.get("officer_id"):
-                    oid = pending["officer_id"]
-                    r = save_officer_photo_bytes(oid, pending["officer"])
-                    if r.get("success"):
-                        try:
-                            update_officer(oid, photo_path=r.get("photo_path"))
-                        except Exception:
-                            pass
-                        pending["officer"] = None
-                        if pending.get("officer_preview") and os.path.isfile(pending["officer_preview"]):
-                            try:
-                                os.remove(pending["officer_preview"])
-                            except OSError:
-                                pass
-                        pending["officer_preview"] = None
-                        saved.append("Portrait")
+                        saved.append("Department photo")
+                _sync_brand()
                 try:
-                    from gui.brand_assets import sync_brand_files
-
-                    sync_brand_files()
+                    paint_chronos()
+                    paint_logo()
+                    paint_photo()
                 except Exception:
                     pass
                 if saved:
                     set_status("Saved: " + ", ".join(saved))
                     ui.notify("Saved: " + ", ".join(saved), type="positive")
-                    paint_logo()
-                    paint_photo()
-                    paint_grid()
-                    paint_detail()
                 else:
-                    ui.notify("Nothing Staged To Save", type="warning")
+                    ui.notify("Nothing staged to save", type="info")
 
-            ui.button("Save All Staged Changes", on_click=save_all_brand).classes("btn-primary").props(
-                "no-caps unelevated"
-            )
-            ui.label("Choose Files First, Then Save — Changes Are Not Applied Until Save.").classes("text-xs").style(
-                "color: var(--dim)"
+            ui.button("Save all staged brand files", on_click=save_all_brand).classes("btn-primary").props(
+                "no-caps unelevated dense"
             )
 
     layout("media", body)

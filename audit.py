@@ -23,6 +23,7 @@ def run_audit() -> List[AuditFinding]:
     with test_database():
         import logic
         from database import get_connection
+        from logic.coverage_optimizer import validate_bump_feasibility
 
         # AUD-001: Off-rotation day-off request allowed at creation
         squad_b = get_any_officer("B")
@@ -70,7 +71,7 @@ def run_audit() -> List[AuditFinding]:
 
         # AUD-003: Day shift on Friday not blocked by night-minimum rule
         day_officer = get_any_officer("A", "06:00")
-        bump = logic.validate_bump_feasibility(
+        bump = validate_bump_feasibility(
             day_officer["id"], "2026-07-03", day_officer["squad"], day_officer["shift_start"]
         )
         night_blocked = bump.requires_manual and "night" in bump.message.lower()
@@ -107,9 +108,7 @@ def run_audit() -> List[AuditFinding]:
 
         # AUD-006: Bump auto-resolves when on-duty cascade completes
         bump_test_day = working_date_for_squad("A").strftime("%Y-%m-%d")
-        bump_ok = logic.validate_bump_feasibility(
-            squad_a["id"], bump_test_day, squad_a["squad"], squad_a["shift_start"]
-        )
+        bump_ok = validate_bump_feasibility(squad_a["id"], bump_test_day, squad_a["squad"], squad_a["shift_start"])
         if bump_ok.replacement_name:
             from validators import officer_uses_command_staff_schedule
 

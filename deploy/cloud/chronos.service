@@ -1,0 +1,19 @@
+[Unit]
+Description=Chronos Command (web)
+After=network.target
+
+[Service]
+Type=simple
+User=chronos
+WorkingDirectory=/opt/chronos
+EnvironmentFile=/opt/chronos/.env
+Environment=SCHEDULER_UI_MODE=web
+Environment=SCHEDULER_HOST=0.0.0.0
+Environment=SCHEDULER_PORT=8080
+Environment=SCHEDULER_SKIP_STARTUP_GATES=1
+ExecStart=/opt/chronos/.venv/bin/python main.py --web --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

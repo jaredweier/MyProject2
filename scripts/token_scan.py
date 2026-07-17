@@ -50,6 +50,11 @@ ALLOWED_LARGE_SOURCE = {
     "gui/pages/schedules.py",
     "gui/pages/self_service.py",
     "gui/pages/simulator.py",
+    "logic/staffing_optimizer.py",
+    "logic/optimizer_features.py",
+    "logic/coverage_optimizer.py",
+    "logic/bump_optimizer.py",
+    "simulator.py",
 }
 
 
@@ -173,11 +178,11 @@ def run_token_scan(*, min_kb: int = 100, fix: bool = False) -> int:
     surprise = [e for e in indexed if e["path"] not in ALLOWED_LARGE_SOURCE]
 
     if allowed:
-        print("\n✓ Large editable source (use outline/symbol — not cursorignored):")
+        print("\n[OK] Large editable source (use outline/symbol — not cursorignored):")
         for e in allowed:
             print(f"  {e['path']}: {e['kb']} KB (~{e['tokens']:,} tokens)")
 
-    print("\n⚠ Still indexable (add to .cursorignore if not needed every turn):")
+    print("\n[!] Still indexable (add to .cursorignore if not needed every turn):")
     if surprise:
         for e in surprise:
             print(f"  {e['path']}: {e['kb']} KB (~{e['tokens']:,} tokens)")

@@ -13,9 +13,11 @@ PREVIEW_SIZE = (160, 160)
 
 ALLOWED_EXTENSIONS = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"}
 
-# Department brand assets (writable copies under photos/ + project root for loaders)
+# Brand assets live only under data photos/ (runtime upload). No shipped root defaults.
+CHRONOS_LOGO_NAME = "chronos_logo.png"
 DEPT_LOGO_NAME = "dept_logo.png"
 DEPT_PHOTO_NAME = "dept_photo.jpg"
+# Legacy names (older loaders may still look; we no longer write these)
 ROOT_LOGO = "logo.png"
 ROOT_TEAM = "team_photo.jpg"
 
@@ -51,72 +53,98 @@ def _save_image_bytes(dest_path: str, data: bytes, *, max_side: int = 1600, jpeg
         return {"success": False, "message": str(e)}
 
 
+def _brand_static_dir():
+    from pathlib import Path
+
+    d = Path(__file__).resolve().parent / "gui" / "static" / "brand"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
+def _mirror_static(src: str, static_name: str) -> Optional[str]:
+    try:
+        import shutil
+
+        dest = _brand_static_dir() / static_name
+        shutil.copy2(src, dest)
+        return str(dest)
+    except Exception:
+        return None
+
+
+def _unlink_quiet(*paths: str) -> None:
+    for p in paths:
+        if p and os.path.isfile(p):
+            try:
+                os.remove(p)
+            except OSError:
+                pass
+
+
+def save_chronos_logo_bytes(data: bytes) -> dict:
+    """Save Chronos Command product logo (agency-neutral product mark)."""
+    ensure_data_dirs()
+    dest = os.path.join(PHOTOS_DIR, CHRONOS_LOGO_NAME)
+    result = _save_image_bytes(dest, data, max_side=512, jpeg=False)
+    if not result.get("success"):
+        return result
+    static = _mirror_static(dest, CHRONOS_LOGO_NAME)
+    if static:
+        result["static_path"] = static
+    return result
+
+
 def save_department_logo_bytes(data: bytes) -> dict:
-    """Save department seal/logo for Chronos Command chrome."""
+    """Save agency seal/logo (not product chrome)."""
     ensure_data_dirs()
     dest = os.path.join(PHOTOS_DIR, DEPT_LOGO_NAME)
     result = _save_image_bytes(dest, data, max_side=512, jpeg=False)
     if not result.get("success"):
         return result
-    # Also write project-root logo.png for resource_path loaders
-    try:
-        from paths import app_dir
-
-        root_logo = os.path.join(app_dir(), ROOT_LOGO)
-        with Image.open(dest) as img:
-            img.save(root_logo, "PNG")
-        result["root_path"] = root_logo
-    except Exception:
-        pass
-    # Mirror into NiceGUI static brand folder (sidebar mark)
-    try:
-        import shutil
-        from pathlib import Path
-
-        brand_dir = Path(__file__).resolve().parent / "gui" / "static" / "brand"
-        brand_dir.mkdir(parents=True, exist_ok=True)
-        # Prefer PNG in static; also copy root logo if present
-        static_logo = brand_dir / "dept_logo.png"
-        shutil.copy2(dest, static_logo)
-        if result.get("root_path") and os.path.isfile(result["root_path"]):
-            shutil.copy2(result["root_path"], static_logo)
-        result["static_path"] = str(static_logo)
-    except Exception:
-        pass
+    static = _mirror_static(dest, DEPT_LOGO_NAME)
+    if static:
+        result["static_path"] = static
     return result
 
 
 def save_department_photo_bytes(data: bytes) -> dict:
-    """Save department / team hero photo."""
+    """Save agency department / team hero photo (login background)."""
     ensure_data_dirs()
     dest = os.path.join(PHOTOS_DIR, DEPT_PHOTO_NAME)
     result = _save_image_bytes(dest, data, max_side=1920, jpeg=True)
     if not result.get("success"):
         return result
-    try:
-        from paths import app_dir
-
-        root_team = os.path.join(app_dir(), ROOT_TEAM)
-        with Image.open(dest) as img:
-            img.convert("RGB").save(root_team, "JPEG", quality=90)
-        result["root_path"] = root_team
-    except Exception:
-        pass
-    # Mirror for Chronos static brand (login hero)
-    try:
-        import shutil
-        from pathlib import Path
-
-        brand_dir = Path(__file__).resolve().parent / "gui" / "static" / "brand"
-        brand_dir.mkdir(parents=True, exist_ok=True)
-        static_photo = brand_dir / "dept_photo.jpg"
-        shutil.copy2(dest, static_photo)
-        if result.get("root_path") and os.path.isfile(result["root_path"]):
-            shutil.copy2(result["root_path"], static_photo)
-        result["static_path"] = str(static_photo)
-    except Exception:
-        pass
+    static = _mirror_static(dest, DEPT_PHOTO_NAME)
+    if static:
+        result["static_path"] = static
     return result
+
+
+def clear_chronos_logo() -> dict:
+    ensure_data_dirs()
+    _unlink_quiet(
+        os.path.join(PHOTOS_DIR, CHRONOS_LOGO_NAME),
+        str(_brand_static_dir() / CHRONOS_LOGO_NAME),
+    )
+    return {"success": True, "message": "Chronos logo cleared"}
+
+
+def clear_department_logo() -> dict:
+    ensure_data_dirs()
+    _unlink_quiet(
+        os.path.join(PHOTOS_DIR, DEPT_LOGO_NAME),
+        str(_brand_static_dir() / DEPT_LOGO_NAME),
+    )
+    return {"success": True, "message": "Department logo cleared"}
+
+
+def clear_department_photo() -> dict:
+    ensure_data_dirs()
+    _unlink_quiet(
+        os.path.join(PHOTOS_DIR, DEPT_PHOTO_NAME),
+        str(_brand_static_dir() / DEPT_PHOTO_NAME),
+    )
+    return {"success": True, "message": "Department photo cleared"}
 
 
 def save_officer_photo_bytes(officer_id: int, data: bytes) -> dict:
@@ -140,42 +168,22 @@ def save_officer_photo_bytes(officer_id: int, data: bytes) -> dict:
         return {"success": False, "message": str(e)}
 
 
-def department_logo_path() -> Optional[str]:
-    for p in (
-        os.path.join(PHOTOS_DIR, DEPT_LOGO_NAME),
-        data_path(ROOT_LOGO),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ROOT_LOGO),
-    ):
-        if os.path.isfile(p):
-            return p
-    try:
-        from paths import resource_path
+def chronos_logo_path() -> Optional[str]:
+    """Chronos Command product logo — data dir only (no shipped default)."""
+    p = os.path.join(PHOTOS_DIR, CHRONOS_LOGO_NAME)
+    return p if os.path.isfile(p) else None
 
-        rp = resource_path(ROOT_LOGO)
-        if os.path.isfile(rp):
-            return rp
-    except Exception:
-        pass
-    return None
+
+def department_logo_path() -> Optional[str]:
+    """Agency seal — data photos/ only (no root logo.png fallback)."""
+    p = os.path.join(PHOTOS_DIR, DEPT_LOGO_NAME)
+    return p if os.path.isfile(p) else None
 
 
 def department_photo_path() -> Optional[str]:
-    for p in (
-        os.path.join(PHOTOS_DIR, DEPT_PHOTO_NAME),
-        data_path(ROOT_TEAM),
-        os.path.join(os.path.dirname(os.path.abspath(__file__)), ROOT_TEAM),
-    ):
-        if os.path.isfile(p):
-            return p
-    try:
-        from paths import resource_path
-
-        rp = resource_path(ROOT_TEAM)
-        if os.path.isfile(rp):
-            return rp
-    except Exception:
-        pass
-    return None
+    """Agency hero photo — data photos/ only (no root team_photo.jpg fallback)."""
+    p = os.path.join(PHOTOS_DIR, DEPT_PHOTO_NAME)
+    return p if os.path.isfile(p) else None
 
 
 def officer_photo_path(officer_id: int) -> Optional[str]:

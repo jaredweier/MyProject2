@@ -1,4 +1,4 @@
-"""Secure access — Chronos Command login with department photo hero + logo."""
+"""Secure access — Chronos Command login (Deep Chrome)."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import os
 
 from nicegui import ui
 
-from config import APP_NAME
+from config import APP_NAME, APP_VERSION, COMPANY_NAME, PRODUCT_TAGLINE
 from gui import session
 from gui.shell import apply_theme
 from logic import authenticate_user
@@ -14,11 +14,32 @@ from logic import authenticate_user
 
 def render_login() -> None:
     apply_theme()
+    # Login-only CSS — do not depend on cache; force button + full-viewport center
     ui.add_head_html(
         """
         <style>
           .q-header, .q-drawer, .nicegui-header { display: none !important; }
-          .nicegui-content { padding: 0 !important; }
+          html, body, .q-layout, .q-page-container, .q-page, .nicegui-content {
+            padding: 0 !important; margin: 0 !important;
+            min-height: 100vh !important; min-height: 100dvh !important;
+            width: 100% !important; max-width: none !important;
+            background: #060D18 !important;
+          }
+          .nicegui-content { display: flex !important; flex-direction: column !important; }
+          /* Beat Quasar primary on Sign In */
+          .login-center-shell .q-btn.btn-primary,
+          .login-submit.q-btn {
+            background: linear-gradient(180deg, #6BA3F5 0%, #3B7DD8 50%, #1E5AA8 100%) !important;
+            background-color: #3B7DD8 !important;
+            color: #F0F7FF !important;
+            border: 1px solid rgba(107, 163, 245, 0.6) !important;
+            min-height: 46px !important;
+            font-size: 15px !important;
+            font-weight: 650 !important;
+          }
+          .login-submit.q-btn .q-btn__content {
+            color: #F0F7FF !important; opacity: 1 !important;
+          }
         </style>
         """,
         shared=False,
@@ -28,23 +49,30 @@ def render_login() -> None:
         ui.navigate.to("/")
         return
 
+    chronos_path = None
     logo_path = None
     photo_path = None
     try:
         from gui.brand_assets import sync_brand_files
-        from photos import department_logo_path, department_photo_path
+        from photos import chronos_logo_path, department_logo_path, department_photo_path
 
         sync_brand_files()
+        chronos_path = chronos_logo_path()
         logo_path = department_logo_path()
         photo_path = department_photo_path()
     except Exception:
         pass
 
+    error_label = {"el": None}
+
     def submit() -> None:
-        error.set_text("")
+        el = error_label["el"]
+        if el is not None:
+            el.set_text("")
         auth = authenticate_user((username.value or "").strip(), password.value or "")
         if not auth.get("success"):
-            error.set_text(auth.get("message") or "Invalid Credentials")
+            if el is not None:
+                el.set_text(auth.get("message") or "Invalid credentials")
             return
         user = dict(auth["user"])
         if user.get("must_change_password"):
@@ -69,51 +97,95 @@ def render_login() -> None:
             pass
         ui.navigate.to("/")
 
-    with ui.element("div").classes("login-shell"):
-        with ui.element("div").classes("login-hero"):
-            # Full-bleed department photo behind copy
-            if photo_path and os.path.isfile(photo_path):
-                ui.image(photo_path).classes("login-hero-photo")
-            if logo_path and os.path.isfile(logo_path):
-                ui.image(logo_path).classes("login-hero-logo")
-            ui.html(
-                '<div class="page-kicker" style="margin-bottom:16px">Authorized Access Only</div>',
-                sanitize=False,
-            )
-            ui.html(f"<h1>{APP_NAME}</h1>", sanitize=False)
-            ui.html(
-                "<p>Law Enforcement Duty Scheduling — Live Coverage, Leave, Roster, And Payroll.</p>",
-                sanitize=False,
-            )
-            ui.html(
-                '<div style="margin-top:28px;display:flex;gap:8px;flex-wrap:wrap">'
-                '<span class="chip" style="border-color:rgba(34,197,94,0.4);color:#4ade80">'
-                "● System Live</span>"
-                '<span class="chip">Dark Ops</span>'
-                '<span class="chip">Multi-User</span>'
-                "</div>",
-                sanitize=False,
-            )
+    # Centered card on full viewport (not a split that looks "off to the side")
+    with ui.element("div").classes("login-center-shell"):
+        if photo_path and os.path.isfile(photo_path):
+            ui.image(photo_path).classes("login-center-bg")
+        with ui.element("div").classes("login-card login-center-card"):
+            with ui.element("div").classes("login-form-product"):
+                if chronos_path and os.path.isfile(chronos_path):
+                    ui.image(chronos_path).classes("login-mark-img")
+                elif logo_path and os.path.isfile(logo_path):
+                    ui.image(logo_path).classes("login-mark-img login-mark-img--seal")
+                else:
+                    ui.html('<div class="login-mark-fallback">CC</div>', sanitize=False)
+                with ui.element("div"):
+                    ui.html(
+                        f'<div class="login-kicker">{PRODUCT_TAGLINE}</div>'
+                        f'<h2 class="login-form-title product-brand" style="margin:0">{APP_NAME}</h2>'
+                        f'<div class="login-vendor" style="font-size:12px;opacity:0.8;margin-top:4px">'
+                        f"{COMPANY_NAME}</div>",
+                        sanitize=False,
+                    )
+            uat_on = False
+            try:
+                from logic.uat_lab import uat_lab_enabled
 
-        with ui.element("div").classes("login-form-wrap"):
-            with ui.element("div").classes("login-card"):
-                ui.html('<div class="page-kicker">Secure Access</div>', sanitize=False)
-                ui.html("<h2>Sign In</h2>", sanitize=False)
+                uat_on = uat_lab_enabled()
+            except Exception:
+                uat_on = False
+
+            if uat_on:
                 ui.html(
-                    '<p class="page-sub" style="margin-bottom:22px">Department Credentials Required.</p>',
+                    '<p class="login-form-sub" style="margin-bottom:8px">'
+                    "<b>Remote UAT lab</b> — one click for full product (all pages). "
+                    "Or sign in as supervisor / officer to check limited roles."
+                    "</p>",
                     sanitize=False,
                 )
-                with ui.element("div").classes("panel panel-glow"):
-                    ui.label("Username").classes("text-xs mb-1").style("color: var(--dim)")
-                    username = ui.input(placeholder="Username").classes("w-full").props("outlined dense dark autofocus")
-                    ui.label("Password").classes("text-xs mb-1 q-mt-md").style("color: var(--dim)")
-                    password = (
-                        ui.input(placeholder="Password", password=True, password_toggle_button=True)
-                        .classes("w-full")
-                        .props("outlined dense dark")
-                    )
-                    error = ui.label("").classes("text-red-400 text-sm q-mt-sm")
-                    password.on("keydown.enter", submit)
-                    ui.button("Sign In", on_click=submit).classes("btn-primary w-full q-mt-md").props(
-                        "no-caps unelevated"
-                    )
+            else:
+                ui.html(
+                    '<p class="login-form-sub">Department credentials required. Upload your Chronos logo under Branding &amp; Media before deployment.</p>',
+                    sanitize=False,
+                )
+
+            username = (
+                ui.input(label="Username", placeholder="Username")
+                .classes("w-full login-field")
+                .props('outlined dense dark autofocus stack-label data-testid="login-username"')
+            )
+            password = (
+                ui.input(
+                    label="Password",
+                    placeholder="Password",
+                    password=True,
+                    password_toggle_button=True,
+                )
+                .classes("w-full login-field q-mt-sm")
+                .props('outlined dense dark stack-label data-testid="login-password"')
+            )
+            error_label["el"] = ui.label("").classes("login-error").props('data-testid="login-error"')
+            password.on("keydown.enter", submit)
+            if uat_on:
+
+                def enter_full() -> None:
+                    username.value = "admin"
+                    password.value = "admin"
+                    submit()
+
+                ui.button(
+                    "Enter full product (Administration)",
+                    on_click=enter_full,
+                ).classes("btn-primary w-full login-submit q-mt-sm").props(
+                    'no-caps unelevated data-testid="login-uat-full"'
+                )
+                ui.label("admin / admin · full left nav · every feature").classes("text-xs").style(
+                    "opacity:0.75;margin:6px 0 8px"
+                )
+            ui.button("Sign In", on_click=submit).classes("btn-primary w-full login-submit").props(
+                'no-caps unelevated data-testid="login-submit"'
+            )
+            if uat_on:
+                ui.html(
+                    '<p class="login-form-sub" style="margin-top:10px;font-size:12px;opacity:0.8">'
+                    "After login open <b>UAT Lab</b> in the nav (or /uat) for a map of every page. "
+                    "Live SMS/email not required for this lab."
+                    "</p>",
+                    sanitize=False,
+                )
+            ui.html(
+                f'<div class="login-foot"><span class="product-brand">{APP_NAME}</span>'
+                f" · v{APP_VERSION}<br/>"
+                f'<span style="opacity:0.75">{COMPANY_NAME}</span></div>',
+                sanitize=False,
+            )

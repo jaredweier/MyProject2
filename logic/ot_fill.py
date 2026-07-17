@@ -177,6 +177,30 @@ def list_ot_fill_candidates(
         else:
             off_duty.append(row)
 
+    # Fatigue soft scores (tie-break only — mode / CBA order stays primary)
+    fatigue_by_id: Dict[int, float] = {}
+    thr = 70.0
+    _compute_fatigue = None
+    try:
+        from logic.labor_compliance import compute_fatigue_score as _compute_fatigue
+        from logic.labor_compliance import get_fatigue_score_threshold
+
+        thr = float(get_fatigue_score_threshold())
+    except Exception:
+        _compute_fatigue = None
+    if _compute_fatigue is not None:
+        for row in on_duty + off_duty:
+            oid = int(row["officer_id"])
+            try:
+                fs = _compute_fatigue(oid) or {}
+                fatigue_by_id[oid] = float(fs.get("score") or 0)
+            except Exception:
+                fatigue_by_id[oid] = 0.0
+    for row in on_duty + off_duty:
+        fs = float(fatigue_by_id.get(int(row["officer_id"]), 0.0))
+        row["fatigue_score"] = round(fs, 1)
+        row["fatigue_elevated"] = fs >= thr
+
     # Annotate call list order
     from logic.bump_off_duty import get_bump_call_list, get_call_list_cursor
 
@@ -192,13 +216,22 @@ def list_ot_fill_candidates(
             row["call_list_position"] = pos_map.get(row["officer_id"])
 
     def by_seniority(rows: List[Dict]) -> List[Dict]:
-        return sorted(rows, key=lambda r: (int(r.get("seniority_rank") or 9999), r["officer_id"]))
+        # Seniority primary; lower fatigue preferred as LE wellness tie-break
+        return sorted(
+            rows,
+            key=lambda r: (
+                int(r.get("seniority_rank") or 9999),
+                float(r.get("fatigue_score") or 0),
+                r["officer_id"],
+            ),
+        )
 
     def by_call_list(rows: List[Dict]) -> List[Dict]:
         return sorted(
             rows,
             key=lambda r: (
                 r["call_list_position"] if r.get("call_list_position") is not None else 999,
+                float(r.get("fatigue_score") or 0),
                 int(r.get("seniority_rank") or 9999),
             ),
         )
@@ -206,8 +239,9 @@ def list_ot_fill_candidates(
     if mode == FILL_MODE_SENIORITY_ONLY:
         ranked = by_seniority(on_duty + off_duty)
     elif mode == FILL_MODE_ON_DUTY_PARTIAL_FIRST:
-        adj_on = [r for r in on_duty if r.get("adjacent_band")]
-        other_on = [r for r in on_duty if not r.get("adjacent_band")]
+        # Adjacent on-duty first; fatigue tie-break within each band bucket
+        adj_on = by_seniority([r for r in on_duty if r.get("adjacent_band")])
+        other_on = by_seniority([r for r in on_duty if not r.get("adjacent_band")])
         ranked = adj_on + other_on + by_call_list(off_duty)
     elif mode == FILL_MODE_ON_DUTY_PARTIAL_BY_SENIORITY:
         adj_on = by_seniority([r for r in on_duty if r.get("adjacent_band")])
@@ -228,11 +262,15 @@ def list_ot_fill_candidates(
         if r.get("ineligible_for_order"):
             continue
         if r.get("on_duty") and r.get("adjacent_band"):
-            r["fill_hint"] = "On-duty · can take partial or whole shift (adjacent band)"
+            base = "On-duty · can take partial or whole shift (adjacent band)"
         elif r.get("on_duty"):
-            r["fill_hint"] = "On-duty · other band (may require order-in / OT)"
+            base = "On-duty · other band (may require order-in / OT)"
         else:
-            r["fill_hint"] = "Off-duty · call-in / OT"
+            base = "Off-duty · call-in / OT"
+        if r.get("fatigue_elevated"):
+            r["fill_hint"] = f"{base} · elevated fatigue ({r.get('fatigue_score')})"
+        else:
+            r["fill_hint"] = base
 
     return {
         "success": True,

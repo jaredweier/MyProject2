@@ -5,7 +5,7 @@ a = Analysis(
     ['main.py'],
     pathex=[],
     binaries=[],
-    datas=[('logo.png', '.'), ('team_photo.jpg', '.'), ('roster_seed.json', '.')],
+    datas=[('roster_seed.json', '.')],
     hiddenimports=['customtkinter', 'PIL', 'PIL._tkinter_finder', 'PIL.Image', 'PIL.ImageTk'],
     hookspath=[],
     hooksconfig={},

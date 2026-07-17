@@ -1,0 +1,22 @@
+/* Chronos offline-first fonts — local() first, system stack always works without CDN */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-style: normal;
+  font-weight: 400 700;
+  font-display: swap;
+  src: local("IBM Plex Sans"), local("IBMPlexSans"), local("Segoe UI"), local("Helvetica Neue");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-style: normal;
+  font-weight: 400 500;
+  font-display: swap;
+  src: local("IBM Plex Mono"), local("IBMPlexMono"), local("Cascadia Mono"), local("Consolas");
+}
+@font-face {
+  font-family: "Rajdhani";
+  font-style: normal;
+  font-weight: 600 700;
+  font-display: swap;
+  src: local("Rajdhani"), local("Segoe UI Semibold"), local("Arial Narrow"), local("Arial");
+}

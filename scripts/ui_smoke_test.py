@@ -79,10 +79,13 @@ def run_ui_smoke() -> int:
             "Certifications",
             "Alerts",
             "Timecards",
+            "Time Punch",
             "Payroll",
+            "Ops Desk",
             "Schedule Simulator",
+            "Notify Channels",
             "Security & Governance",
-            "Department Media",
+            "Branding & Media",
         ):
             if expected not in labels:
                 errors.append(f"nav missing: {expected}")
@@ -99,6 +102,10 @@ def run_ui_smoke() -> int:
         for path in (x[0] for x in NAV if x[0] != "section"):
             if path not in routes:
                 errors.append(f"nav path not registered: {path}")
+
+        from gui.pages import channels as channels_page
+        from gui.pages import ops_desk as ops_desk_page
+        from gui.pages import time_punch as time_punch_page
 
         for name, fn in (
             ("login", login.render_login),
@@ -118,6 +125,9 @@ def run_ui_smoke() -> int:
             ("payroll", finance.render_payroll),
             ("simulator", simulator.render_simulator),
             ("operations", operations.render_operations),
+            ("ops_desk", ops_desk_page.render_ops_desk),
+            ("time_punch", time_punch_page.render_time_punch),
+            ("channels", channels_page.render_channels),
             ("security", security.render_security),
             ("media", media.render_media),
             ("access", access.render_access),

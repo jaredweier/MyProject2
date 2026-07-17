@@ -47,6 +47,12 @@
       "idea": "After large Chronos UI growth (finance dual FLSA, leave donation, CP-SAT sim, rank candidates): evaluate for broken imports, duplicate handlers, NiceGUI refresh errors, permission gates. No new UI unt",
       "why": "",
       "added": "2026-07-09T09:20:54.318112+00:00"
+    },
+    {
+      "lane": "nicegui-llms-txt",
+      "idea": "Official NiceGUI LLM guide: refreshable>clear, bindings in-place, scroll_area+stepper/chips, mark(), skeleton, no module-level state, run.io_bound/to_thread, avoid CSS thrash. Applied to sim + always-",
+      "why": "https://nicegui.io/llms.txt",
+      "added": "2026-07-17T06:39:43.421275+00:00"
     }
   ]
 }

@@ -145,7 +145,12 @@ def render_access() -> None:
                 ui.label("First-run / re-brand: set department display name used in exports and headers.").classes(
                     "text-xs text-gray-500 q-mb-sm"
                 )
-                dept = ui.input(label="Department name", value="Dodgeville Police Department").classes("w-full")
+                from config import DEFAULT_DEPARTMENT_NAME
+
+                dept = ui.input(
+                    label="Department name",
+                    value=DEFAULT_DEPARTMENT_NAME,
+                ).classes("w-full")
 
                 def do_setup():
                     actor = (session.current_user() or {}).get("id")

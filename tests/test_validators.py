@@ -50,12 +50,20 @@ class TestValidators(unittest.TestCase):
         self.assertFalse(is_officer_active({"active": None}))
 
     def test_night_shift_detection(self):
-        self.assertTrue(is_night_shift("19:00"))
-        self.assertTrue(is_night_shift("15:00"))
+        from logic.staffing_config import get_active_night_shift_starts
+
+        nights = get_active_night_shift_starts()
+        self.assertTrue(nights, "active staffing must define at least one night start")
+        for start in nights:
+            self.assertTrue(is_night_shift(start), start)
         self.assertFalse(is_night_shift("06:00"))
+        self.assertFalse(is_night_shift("14:00"))
 
     def test_overnight_shift_detection(self):
+        # Calendar wrap: end minutes <= start minutes (e.g. 22:00→06:00)
+        self.assertTrue(is_overnight_shift("22:00", "06:00"))
         self.assertTrue(is_overnight_shift("19:00", "06:00"))
+        self.assertFalse(is_overnight_shift("06:00", "14:00"))
         self.assertFalse(is_overnight_shift("06:00", "17:00"))
         self.assertFalse(is_overnight_shift("", "06:00"))
 
@@ -72,8 +80,12 @@ class TestValidators(unittest.TestCase):
         self.assertFalse(bad.ok)
 
     def test_applies_night_minimum(self):
+        from logic.staffing_config import get_active_night_shift_starts
+
         fri = date(2026, 7, 3)
-        self.assertTrue(applies_night_minimum(fri, "19:00", is_high_risk_night))
+        nights = get_active_night_shift_starts()
+        night = sorted(nights)[0] if nights else "22:00"
+        self.assertTrue(applies_night_minimum(fri, night, is_high_risk_night))
         self.assertFalse(applies_night_minimum(fri, "06:00", is_high_risk_night))
 
     def test_validate_cycle_date_before_base(self):
@@ -180,17 +192,21 @@ class TestValidators(unittest.TestCase):
         self.assertFalse(validate_manual_override(original, replacement, "bad-date").ok)
 
     def test_validate_officer_profile(self):
+        from logic.staffing_config import get_active_shift_times
+
+        times = get_active_shift_times()
+        start, end = times[1] if 1 in times else next(iter(times.values()))
         result = validate_officer_profile(
             "Chief Example",
             1,
             "A",
-            "06:00",
-            "17:00",
+            start,
+            end,
             40.0,
             start_date="2026-01-01",
             email="chief@dodgeville.gov",
         )
-        self.assertTrue(result.ok)
+        self.assertTrue(result.ok, result.message)
 
 
 if __name__ == "__main__":

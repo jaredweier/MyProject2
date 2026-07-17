@@ -21,9 +21,9 @@ from logic.payroll.period import (
     monthly_pay_to_per_pay_period,
     pay_period_for_shift_start,
 )
-from logic.scheduling import (
-    _officer_shift_hours,
-    _officer_work_days_per_cycle,
+from logic.scheduling_matrix import (
+    officer_shift_hours,
+    officer_work_days_per_cycle,
 )
 from validators import (
     parse_date,
@@ -253,8 +253,8 @@ def project_officer_annual_pay(officer_id: int) -> Dict:
     per_pay_period = monthly_pay_to_per_pay_period(monthly_pay)
     pay_periods = count_pay_periods_in_year()
 
-    shift_hours = _officer_shift_hours(officer)
-    work_days = _officer_work_days_per_cycle(officer)
+    shift_hours = officer_shift_hours(officer)
+    work_days = officer_work_days_per_cycle(officer)
     from logic.rotation_config import get_active_rotation_cycle_length
     from logic.staffing_config import get_active_annual_hours_target
 

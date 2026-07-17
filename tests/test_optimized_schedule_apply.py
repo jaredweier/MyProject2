@@ -96,10 +96,59 @@ class OptimizedScheduleApplyTests(unittest.TestCase):
         self.assertTrue(impl.get("success"), impl.get("message"))
         defaults = get_schedule_builder_defaults()
         self.assertEqual(defaults.get("source"), "optimized_plan")
+        for s in defaults.get("shift_starts") or []:
+            self.assertTrue(
+                str(s).endswith(":00") or str(s).endswith(":30"),
+                f"start not half-hour: {s}",
+            )
         base = get_schedule_snapshot(2026, 9, "base")
         live = get_schedule_snapshot(2026, 9, "updated")
         self.assertTrue(base)
         self.assertTrue(live)
+
+    def test_implement_snaps_exotic_starts_to_half_hour(self):
+        from logic.optimized_schedule_apply import (
+            _normalize_half_hour_starts,
+            implement_optimized_plan,
+        )
+        from logic.scheduling_sim import run_schedule_simulation
+
+        snapped = _normalize_half_hour_starts(["06:07", "14:22", "22:00", "06:07"])
+        self.assertEqual(snapped, ["06:00", "14:30", "22:00"])
+
+        sim = run_schedule_simulation(
+            rotation_type="2-2-3 (Dodgeville 14-day)",
+            num_officers=10,
+            shift_length_hours=8.0,
+            annual_hours_target=2008,
+            shift_starts=["06:00", "14:00", "22:00"],
+            apply_department_rules=False,
+            min_per_shift=1,
+            simulation_days=7,
+            auto_min_officers=False,
+        )
+        self.assertTrue(sim.get("success"), sim.get("message"))
+        cfg = {
+            "rotation_type": "2-2-3 (Dodgeville 14-day)",
+            "num_officers": 10,
+            "shift_length_hours": 8.0,
+            "annual_hours_target": 2008,
+            "shift_starts": ["06:07", "14:22", "22:00"],
+            "min_per_shift": 1,
+            "annual_hours_variance": 20,
+        }
+        impl = implement_optimized_plan(
+            start_date="2026-10-01",
+            result=sim,
+            config=cfg,
+            apply_officer_assignments=False,
+            force_regenerate=True,
+            save_as_defaults=True,
+        )
+        self.assertTrue(impl.get("success"), impl.get("message"))
+        starts = (impl.get("defaults") or {}).get("shift_starts") or []
+        for s in starts:
+            self.assertTrue(str(s).endswith(":00") or str(s).endswith(":30"), s)
 
     def test_officer_rotation_pattern_duty(self):
         from datetime import timedelta

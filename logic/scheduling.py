@@ -1,8 +1,11 @@
-"""Rotation, coverage, bumping, and schedule matrix.
+"""Generator brain: rotation, day status, rest, schedule matrix facade.
 
 Scheduling *math* runs in scheduler_core (Rust) via logic/rust_bridge.py.
 This module loads DB state, calls the bridge, and applies results to workflows.
 Emergency Python math lives in logic/rust_fallback.py when Rust is not built.
+
+Optimizer (bump / sim) lives in ``logic.coverage_optimizer``, ``logic.bump_optimizer``,
+and ``logic.scheduling_sim`` — not re-exported here.
 """
 
 from datetime import date, datetime, timedelta
@@ -23,8 +26,8 @@ from logic.staffing_config import (
 _OFFICER_WORKING_STATUSES = frozenset({"working", "covering", "swapped", "training"})
 
 
-def _get_generated_schedule_day_context(target_date: date) -> Dict[int, Dict[str, str]]:
-    """Per-officer status and shift band for bump decisions (rotation + overrides, not stale snapshots)."""
+def get_generated_schedule_day_context(target_date: date) -> Dict[int, Dict[str, str]]:
+    """Generator fact: per-officer status + shift band (rotation + overrides, not stale snapshots)."""
     date_key = target_date.strftime("%Y-%m-%d")
     active = [o for o in get_officers_by_seniority() if o.get("active") == 1]
     statuses = batch_officer_day_status([(o["id"], target_date) for o in active])
@@ -55,7 +58,7 @@ def _get_generated_schedule_day_context(target_date: date) -> Dict[int, Dict[str
         covered = row["covered_shift_start"]
         if covered:
             context[rid]["shift_start"] = covered
-            context[rid]["shift_end"] = _shift_end_for_start(covered)
+            context[rid]["shift_end"] = shift_end_for_start_active(covered)
     conn.close()
 
     from logic.snapshots import get_schedule_snapshot
@@ -89,26 +92,37 @@ def _get_generated_schedule_day_context(target_date: date) -> Dict[int, Dict[str
     return context
 
 
-def _officer_schedule_working(day_context: Dict[str, str]) -> bool:
+def officer_schedule_working(day_context: Dict[str, str]) -> bool:
+    """Generator fact: day-context status counts as on-duty for coverage rules."""
     return day_context.get("status") in _OFFICER_WORKING_STATUSES
 
 
-def _normalize_shift_band(shift_start: str) -> str:
+def normalize_shift_band(shift_start: str) -> str:
+    """Generator fact: snap a shift start label to the active staffing band."""
     from logic.staffing_config import normalize_shift_start_to_active
 
     return normalize_shift_start_to_active(shift_start or "")
 
 
-def _officer_scheduled_shift_start(officer: Dict, day_context: Dict[str, str]) -> str:
+def officer_scheduled_shift_start(officer: Dict, day_context: Dict[str, str]) -> str:
     return day_context.get("shift_start") or officer.get("shift_start") or ""
 
 
-def _replacement_shift_start_for_rules(officer: Dict, day_context: Dict[str, str]) -> str:
-    if _officer_schedule_working(day_context):
-        raw = _officer_scheduled_shift_start(officer, day_context)
+def replacement_shift_start_for_rules(officer: Dict, day_context: Dict[str, str]) -> str:
+    """Generator fact: which band an officer is treated as covering under bump rules."""
+    if officer_schedule_working(day_context):
+        raw = officer_scheduled_shift_start(officer, day_context)
     else:
         raw = officer.get("shift_start") or ""
-    return _normalize_shift_band(raw)
+    return normalize_shift_band(raw)
+
+
+# Private aliases (optimizer/payroll historically imported these)
+_get_generated_schedule_day_context = get_generated_schedule_day_context
+_officer_schedule_working = officer_schedule_working
+_normalize_shift_band = normalize_shift_band
+_officer_scheduled_shift_start = officer_scheduled_shift_start
+_replacement_shift_start_for_rules = replacement_shift_start_for_rules
 
 
 def get_current_cycle_window(reference: Optional[date] = None) -> Tuple[date, date]:
@@ -298,7 +312,8 @@ def resolve_officer_shift_band(
     return normalize_shift_start_to_active(start), end
 
 
-def _shift_end_for_start(shift_start: str) -> str:
+def shift_end_for_start_active(shift_start: str) -> str:
+    """Generator fact: end time for a start band from active shift times / length."""
     from logic.staffing_config import get_active_shift_length_hours, shift_end_from_length
 
     for start, end in get_active_shift_times().values():
@@ -307,6 +322,9 @@ def _shift_end_for_start(shift_start: str) -> str:
     if shift_start:
         return shift_end_from_length(shift_start, get_active_shift_length_hours())
     return shift_start
+
+
+_shift_end_for_start = shift_end_for_start_active  # back-compat; prefer shift_assignment.shift_end_for_start
 
 
 def _shift_bounds(target_date: date, shift_start: str, shift_end: str) -> Tuple[datetime, datetime]:
@@ -400,27 +418,7 @@ def describe_minimum_rest_violation(
     )
 
 
-# Simulator / multi-plan coverage (extracted)
-# Bump chain (extracted) — include private helpers used by coverage_optimizer / tests
-from logic.scheduling_bump import (  # noqa: E402,F401
-    _bump_assignment_counts_for_date,
-    _bump_capacity_exhausted,
-    _bump_suggestion_from_rust,
-    _chain_excluded_officer_ids,
-    _consecutive_days_manual_failure,
-    _minimum_rest_manual_failure,
-    _night_minimum_uncovered_failure,
-    _shift_retains_coverage_after_bump,
-    _suggest_bump_chain_python,
-    count_remaining_on_shift_band,
-    find_replacement_officer,
-    format_bump_suggestion,
-    plan_bump_chain,
-    suggest_bump_chain,
-    validate_bump_feasibility,
-)
-
-# Matrix / day status (extracted) — private helpers used by payroll, snapshots, labor_compliance
+# --- Generator matrix (home: scheduling_matrix) ---
 from logic.scheduling_matrix import (  # noqa: E402,F401
     _get_monthly_rotation_base_only,
     _load_covering_shift_starts_for_range,
@@ -439,10 +437,7 @@ from logic.scheduling_matrix import (  # noqa: E402,F401
     get_officer_effective_shift_band,
     get_officer_work_dates_from_summary,
     get_schedule_conflicts,
-)
-from logic.scheduling_sim import (  # noqa: E402,F401
-    get_simulator_defaults_from_roster,
-    preview_best_coverage_plans,
-    run_schedule_simulation,
-    run_staffing_optimizer,
+    officer_shift_hours,
+    officer_work_days_per_cycle,
+    shift_hours,
 )

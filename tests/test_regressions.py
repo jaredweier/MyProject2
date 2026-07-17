@@ -177,12 +177,10 @@ class TestRegressions(unittest.TestCase):
 
     def test_day_shift_friday_not_night_blocked(self):
         with test_database():
-            import logic
+            from logic.coverage_optimizer import validate_bump_feasibility
 
             officer = get_any_officer("A", "06:00")
-            result = logic.validate_bump_feasibility(
-                officer["id"], "2026-07-03", officer["squad"], officer["shift_start"]
-            )
+            result = validate_bump_feasibility(officer["id"], "2026-07-03", officer["squad"], officer["shift_start"])
             if result.requires_manual:
                 self.assertNotIn("night", result.message.lower())
 
@@ -293,11 +291,12 @@ class TestRegressions(unittest.TestCase):
     def test_scenario_s09_eligible_replacement_selected(self):
         with test_database():
             import logic
+            from logic.coverage_optimizer import validate_bump_feasibility
             from logic.staffing_config import can_officer_cover_shift
 
             officer = get_any_officer("A", "06:00")
             work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
-            result = logic.validate_bump_feasibility(
+            result = validate_bump_feasibility(
                 officer["id"],
                 work_day,
                 officer["squad"],

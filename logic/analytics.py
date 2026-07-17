@@ -789,7 +789,8 @@ def export_simulation_csv(
 
     ensure_data_dirs()
     if not output_path:
-        output_path = data_path(f"exports/simulation_{format_date(date.today())}.csv")
+        # ISO date only — display format_date uses M/D/YY and breaks Windows paths
+        output_path = data_path(f"exports/simulation_{date.today().isoformat()}.csv")
 
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     fields = [

@@ -1,5 +1,5 @@
 """
-Configurable coverage optimizer for day-off bumps and staffing scenarios.
+**Optimizer brain** — coverage scoring, multi-plan bump search, staffing shim.
 
 Works with any active staffing/rotation settings (shift count, lengths, starts,
 night min, rest, consecutive caps). Explores multiple replacement chains and
@@ -46,6 +46,8 @@ class CoveragePolicy:
     w_same_start: float = 3.0
     # Timefold/CrewSense: prefer officers with lower recent OT (fairness)
     w_low_ot: float = 2.0
+    # LE wellness: prefer lower fatigue score among otherwise equal candidates
+    w_low_fatigue: float = 1.5
     # OR-Tools transition: prefer same band; soft hit for night→early
     w_transition_ok: float = 1.5
 
@@ -165,11 +167,11 @@ def list_scored_replacements(
     """All eligible replacements with multi-objective scores (best first)."""
     from logic.officers import get_officers_by_seniority
     from logic.scheduling import (
-        _normalize_shift_band,
-        _officer_schedule_working,
-        _replacement_shift_start_for_rules,
-        _shift_end_for_start,
+        normalize_shift_band,
         officer_meets_minimum_rest,
+        officer_schedule_working,
+        replacement_shift_start_for_rules,
+        shift_end_for_start_active,
     )
     from logic.staffing_config import can_officer_cover_shift
     from validators import officer_uses_command_staff_schedule
@@ -179,7 +181,7 @@ def list_scored_replacements(
     counts = dict(assignment_counts or {})
     excluded = set(chain_excluded_ids or set())
     excluded.add(original_officer_id)
-    covered_band = _normalize_shift_band(shift_start)
+    covered_band = normalize_shift_band(shift_start)
     scored: List[Tuple[float, Dict]] = []
 
     # Period OT map for fairness weight (CrewSense / Timefold load-balance analog)
@@ -193,6 +195,22 @@ def list_scored_replacements(
                 ot_by_id[int(row["officer_id"])] = float(row.get("ot_hours") or 0)
     except Exception:
         ot_by_id = {}
+
+    # Fatigue map (soft preference — hard stops still in callout/open-shift/manual cover)
+    fatigue_by_id: Dict[int, float] = {}
+    try:
+        from logic.labor_compliance import compute_fatigue_score
+
+        for o in get_officers_by_seniority():
+            if o.get("active") != 1:
+                continue
+            try:
+                fs = compute_fatigue_score(int(o["id"])) or {}
+                fatigue_by_id[int(o["id"])] = float(fs.get("score") or 0)
+            except Exception:
+                pass
+    except Exception:
+        fatigue_by_id = {}
 
     from logic.bump_off_duty import load_off_duty_bump_policy, score_off_duty_candidate
 
@@ -210,18 +228,18 @@ def list_scored_replacements(
             continue
 
         day_context = schedule_context.get(oid, {})
-        on_duty = _officer_schedule_working(day_context)
+        on_duty = officer_schedule_working(day_context)
 
         # --- On-duty path (existing) ---
         if on_duty:
             if officer.get("squad") != squad:
                 continue
-            rule_shift = _replacement_shift_start_for_rules(officer, day_context)
+            rule_shift = replacement_shift_start_for_rules(officer, day_context)
             if not can_officer_cover_shift(rule_shift, covered_band):
                 continue
-            current_band = _normalize_shift_band(rule_shift)
+            current_band = normalize_shift_band(rule_shift)
             if current_band != covered_band and enforce_minimum_rest:
-                covered_end = _shift_end_for_start(covered_band)
+                covered_end = shift_end_for_start_active(covered_band)
                 if not officer_meets_minimum_rest(oid, coverage_date, covered_band, covered_end):
                     continue
             if enforce_consecutive_work:
@@ -241,6 +259,9 @@ def list_scored_replacements(
             same = 1.0 if current_band == covered_band else 0.0
             ot_h = float(ot_by_id.get(oid, officer.get("_period_ot_hours") or 0.0))
             low_ot = max(0.0, 40.0 - min(ot_h, 40.0))
+            fat = float(fatigue_by_id.get(oid, 0.0))
+            # 0–10 relief: rested officers score higher (soft; does not hard-block)
+            low_fatigue = max(0.0, 100.0 - min(fat, 100.0)) / 10.0
             trans = same
             try:
                 cov_h = int(str(covered_band or "0").split(":")[0])
@@ -258,12 +279,15 @@ def list_scored_replacements(
                 + policy.w_spare_capacity * spare
                 + policy.w_same_start * same
                 + policy.w_low_ot * low_ot
+                + policy.w_low_fatigue * low_fatigue
                 + policy.w_transition_ok * trans
             )
             if off_policy.prefer_on_duty_first:
                 score += off_policy.w_on_duty_bonus
             officer = dict(officer)
             officer["_bump_on_duty"] = True
+            officer["_fatigue_score"] = fat
+            officer["_score_low_fatigue"] = low_fatigue
             scored.append((score, officer))
             continue
 
@@ -279,7 +303,7 @@ def list_scored_replacements(
             if would_exceed_consecutive_work_limit(oid, coverage_date, adding_work_day=True):
                 continue
         if enforce_minimum_rest:
-            covered_end = _shift_end_for_start(covered_band)
+            covered_end = shift_end_for_start_active(covered_band)
             if not officer_meets_minimum_rest(oid, coverage_date, covered_band, covered_end):
                 continue
         from logic.certifications import officer_meets_shift_cert_requirements
@@ -299,9 +323,14 @@ def list_scored_replacements(
         )
         if not eligible:
             continue
+        fat = float(fatigue_by_id.get(oid, 0.0))
+        low_fatigue = max(0.0, 100.0 - min(fat, 100.0)) / 10.0
+        od_score = float(od_score) + policy.w_low_fatigue * low_fatigue
         officer = dict(officer)
         officer["_bump_on_duty"] = False
         officer["_off_duty_score_detail"] = _detail
+        officer["_fatigue_score"] = fat
+        officer["_score_low_fatigue"] = low_fatigue
         scored.append((od_score, officer))
 
     scored.sort(key=lambda x: (-x[0], -int(x[1].get("seniority_rank") or 0), x[1]["id"]))
@@ -362,25 +391,27 @@ def search_best_coverage_plans(
     enforce_consecutive_work: bool = True,
 ) -> List[BumpChainSuggestion]:
     """Beam-search complete bump chains; return best plans first."""
-    from logic.officers import get_officer_by_id
-    from logic.scheduling import (
+    from logic.bump_optimizer import (
         _bump_assignment_counts_for_date,
         _chain_excluded_officer_ids,
         _night_minimum_uncovered_failure,
-        _normalize_shift_band,
-        _officer_schedule_working,
         _shift_retains_coverage_after_bump,
+    )
+    from logic.officers import get_officer_by_id
+    from logic.scheduling import (
+        normalize_shift_band,
+        officer_schedule_working,
     )
 
     # ensure normalize available in loop (used for min_for_band)
-    _ = _normalize_shift_band
+    _ = normalize_shift_band
 
     policy = policy or load_coverage_policy()
     req_date = parse_date(request_date)
     base_counts = _bump_assignment_counts_for_date(request_date)
     root = _SearchState(
         current_id=original_officer_id,
-        current_shift=_normalize_shift_band(shift_start) or shift_start,
+        current_shift=normalize_shift_band(shift_start) or shift_start,
         assignment_counts=dict(base_counts),
         score=0.0,
     )
@@ -405,7 +436,7 @@ def search_best_coverage_plans(
             coverage_excluded = _chain_excluded_officer_ids(state.steps, requesting_officer_id=original_officer_id)
             if state.steps and _shift_retains_coverage_after_bump(
                 state.current_id,
-                _normalize_shift_band(state.current_shift),
+                normalize_shift_band(state.current_shift),
                 squad,
                 schedule_context,
                 coverage_excluded,
@@ -448,7 +479,7 @@ def search_best_coverage_plans(
                 repl_context = schedule_context.get(replacement["id"], {})
                 on_duty = replacement.get("_bump_on_duty")
                 if on_duty is None:
-                    on_duty = _officer_schedule_working(repl_context)
+                    on_duty = officer_schedule_working(repl_context)
                 on_duty = bool(on_duty)
                 repl_shift = repl_context.get("shift_start") or replacement.get("shift_start") or ""
                 new_steps = list(state.steps)
@@ -473,13 +504,14 @@ def search_best_coverage_plans(
                 if not on_duty:
                     plan_score = _plan_score(policy, new_steps, new_step_scores)
                     primary = get_officer_by_id(new_chain[0][1])
+                    n_assign = len(new_chain)
                     suggestion = BumpChainSuggestion(
                         success=True,
                         chain=new_chain,
                         steps=new_steps,
                         primary_replacement_name=primary["name"] if primary else None,
                         message=(
-                            f"Coverage via off-duty call-in — {len(new_chain)} assignment(s) (score {plan_score:.0f})"
+                            f"Coverage via off-duty call-in — {n_assign} assignment{'s' if n_assign != 1 else ''}"
                         ),
                         plan_score=plan_score,
                         alternatives_considered=explored,
@@ -490,7 +522,7 @@ def search_best_coverage_plans(
 
                 # Stop if vacated band still meets per-band min staffing
                 vacate_excluded = _chain_excluded_officer_ids(new_steps, requesting_officer_id=original_officer_id)
-                min_rem = policy.min_for_band(_normalize_shift_band(repl_shift) or repl_shift)
+                min_rem = policy.min_for_band(normalize_shift_band(repl_shift) or repl_shift)
                 if _shift_retains_coverage_after_bump(
                     replacement["id"],
                     repl_shift,
@@ -501,12 +533,13 @@ def search_best_coverage_plans(
                 ):
                     plan_score = _plan_score(policy, new_steps, new_step_scores)
                     primary = get_officer_by_id(new_chain[0][1])
+                    n_assign = len(new_chain)
                     suggestion = BumpChainSuggestion(
                         success=True,
                         chain=new_chain,
                         steps=new_steps,
                         primary_replacement_name=primary["name"] if primary else None,
-                        message=(f"Best coverage plan — {len(new_chain)} assignment(s) (score {plan_score:.0f})"),
+                        message=(f"Coverage plan ready — {n_assign} assignment{'s' if n_assign != 1 else ''}"),
                         plan_score=plan_score,
                         alternatives_considered=explored,
                         score_components=score_components_for_plan(policy, new_steps, new_step_scores),
@@ -544,6 +577,18 @@ def search_best_coverage_plans(
         if len(unique) >= policy.max_plans:
             break
 
+    # Tag option rank on complete plans (1 = best). Scores stay internal only.
+    success_plans = [p for p in unique if p.success]
+    total_ok = len(success_plans)
+    for option_n, plan in enumerate(success_plans, 1):
+        n_assign = len(plan.chain or [])
+        off_duty = any(not s.replacement_on_duty for s in (plan.steps or []))
+        if off_duty:
+            plan.message = f"Option {option_n}: off-duty call-in — {n_assign} assignment{'s' if n_assign != 1 else ''}"
+        else:
+            plan.message = f"Option {option_n}: {n_assign} assignment{'s' if n_assign != 1 else ''}"
+        plan.alternatives_considered = total_ok
+
     if unique:
         return unique
 
@@ -569,19 +614,21 @@ def optimize_day_off_coverage(
     max_depth: int = 8,
 ) -> BumpChainSuggestion:
     """Entry for day-off / bump: best complete chain or manual-review failure."""
-    from logic.officers import get_officer_by_id
-    from logic.scheduling import (
+    from logic.bump_optimizer import (
         _bump_assignment_counts_for_date,
         _consecutive_days_manual_failure,
-        _get_generated_schedule_day_context,
         _minimum_rest_manual_failure,
-        _normalize_shift_band,
+    )
+    from logic.officers import get_officer_by_id
+    from logic.scheduling import (
+        get_generated_schedule_day_context,
+        normalize_shift_band,
     )
 
     policy = load_coverage_policy()
     policy.max_cascade_depth = max_depth
     req_date = parse_date(request_date)
-    schedule_context = _get_generated_schedule_day_context(req_date)
+    schedule_context = get_generated_schedule_day_context(req_date)
     enforce = not supervisor_override
 
     plans = search_best_coverage_plans(
@@ -597,19 +644,18 @@ def optimize_day_off_coverage(
     best = plans[0]
     if best.success:
         n = len([p for p in plans if p.success])
+        n_assign = len(best.chain or [])
         if n > 1:
-            best.message = (
-                f"Best of {n} viable plans — {len(best.chain)} assignment(s) (score {best.plan_score or 0:.0f})"
-            )
+            best.message = f"Best of {n} options — {n_assign} assignment{'s' if n_assign != 1 else ''}"
         else:
-            best.message = f"Auto-approve ready — {len(best.chain)} assignment(s)"
+            best.message = f"Auto-approve ready — {n_assign} assignment{'s' if n_assign != 1 else ''}"
         best.alternatives_considered = n
         return best
 
     # Soft failures → manual paths (rest / consecutive)
     officer = get_officer_by_id(original_officer_id)
     name = officer["name"] if officer else "Officer"
-    band = _normalize_shift_band(shift_start)
+    band = normalize_shift_band(shift_start)
     counts = _bump_assignment_counts_for_date(request_date)
     excluded: Set[int] = {original_officer_id}
     if enforce:
@@ -626,111 +672,19 @@ def optimize_day_off_coverage(
     return best
 
 
-def optimize_staffing_scenarios(
-    *,
-    rotation_types: Optional[List[str]] = None,
-    officer_counts: Optional[List[int]] = None,
-    min_per_shift_options: Optional[List[int]] = None,
-    shift_length_hours: Optional[float] = None,
-    annual_hours_target: Optional[float] = None,
-    shift_starts: Optional[List[str]] = None,
-    simulation_days: int = 28,
-) -> Dict:
-    """
-    Sweep simulator configs and rank by coverage quality.
+def optimize_staffing_scenarios(**kwargs) -> Dict:
+    """Shim → logic.staffing_optimizer (schedule sim search; NOT bump cascade)."""
+    from logic.staffing_optimizer import optimize_staffing_scenarios as _opt
 
-    Optimizes for: fewest zero-staff gaps, then night-min compliance, then
-    closest annual hours to target.
-    """
-    from logic.rotation_config import get_rotation_config
-    from logic.staffing_config import get_staffing_config
-    from simulator import ROTATION_PRESETS, SimulatorConfig, simulate_schedule
+    return _opt(**kwargs)
 
-    staffing = get_staffing_config()
-    rot = get_rotation_config()
-    if rotation_types is None:
-        rotation_types = list(ROTATION_PRESETS.keys())[:6]
-        active = rot.get("preset_name") or rot.get("active_preset")
-        if active and active not in rotation_types:
-            rotation_types.insert(0, active)
-    base_officers = staffing.get("active_officer_count") or staffing.get("target_officer_count") or 16
-    if officer_counts is None:
-        officer_counts = sorted(
-            {
-                max(4, base_officers - 4),
-                base_officers,
-                base_officers + 2,
-                base_officers + 4,
-                staffing.get("target_officer_count") or base_officers,
-            }
-        )
-    if min_per_shift_options is None:
-        min_per_shift_options = [1, 2]
-    length = shift_length_hours if shift_length_hours is not None else float(staffing["shift_length_hours"])
-    annual = annual_hours_target if annual_hours_target is not None else float(staffing["annual_hours_target"])
-    starts = shift_starts or [b["start"] for b in staffing.get("shift_times") or []]
-    if not starts:
-        starts = list(config.SHIFT_TIMES[k][0] for k in sorted(config.SHIFT_TIMES))
 
-    results: List[Dict] = []
-    for rotation in rotation_types:
-        if rotation not in ROTATION_PRESETS:
-            continue
-        for n_off in officer_counts:
-            for min_ps in min_per_shift_options:
-                cfg = SimulatorConfig(
-                    rotation_type=rotation,
-                    num_officers=int(n_off),
-                    shift_length_hours=float(length),
-                    annual_hours_target=float(annual),
-                    shift_starts=list(starts),
-                    apply_department_rules=False,
-                    min_per_shift=int(min_ps),
-                    simulation_days=simulation_days,
-                    night_minimum=config.NIGHT_MINIMUM_OFFICERS,
-                )
-                sim = simulate_schedule(cfg)
-                if not sim.success:
-                    continue
-                m = sim.metrics or {}
-                zero_gaps = int(m.get("zero_staff_slots") or m.get("coverage_gap_count") or 0)
-                night_fails = int(m.get("night_minimum_failures") or 0)
-                hours_delta = abs(float(m.get("avg_annual_hours") or annual) - annual)
-                # Higher score = better
-                score = 10_000 - zero_gaps * 100 - night_fails * 50 - hours_delta * 0.1 - n_off * 0.5
-                results.append(
-                    {
-                        "score": round(score, 2),
-                        "rotation_type": rotation,
-                        "num_officers": n_off,
-                        "min_per_shift": min_ps,
-                        "shift_length_hours": length,
-                        "annual_hours_target": annual,
-                        "shift_starts": starts,
-                        "metrics": m,
-                        "suggestions": [
-                            {
-                                "severity": s.severity,
-                                "title": s.title,
-                                "message": s.message,
-                                "recommendation": s.recommendation,
-                            }
-                            for s in (sim.suggestions or [])
-                        ],
-                    }
-                )
-
-    results.sort(key=lambda r: -r["score"])
-    best = results[0] if results else None
-    return {
-        "success": True,
-        "scenarios_evaluated": len(results),
-        "best": best,
-        "ranked": results[:15],
-        "message": (
-            f"Best: {best['rotation_type']} · {best['num_officers']} officers · "
-            f"min {best['min_per_shift']}/shift (score {best['score']})"
-            if best
-            else "No viable scenarios"
-        ),
-    }
+# Public optimizer entrypoints for bump plans (implementation: bump_optimizer.py)
+from logic.bump_optimizer import (  # noqa: E402,F401
+    count_remaining_on_shift_band,
+    find_replacement_officer,
+    format_bump_suggestion,
+    plan_bump_chain,
+    suggest_bump_chain,
+    validate_bump_feasibility,
+)

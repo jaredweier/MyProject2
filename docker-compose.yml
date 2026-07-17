@@ -1,0 +1,43 @@
+# Chronos Command online stack — Weierworks Technologies, LLC
+# Usage:
+#   copy deploy/cloud/env.example → .env  (set SCHEDULER_STORAGE_SECRET)
+#   docker compose up -d --build
+# HTTPS cloud VM: docker compose -f deploy/cloud/docker-compose.caddy.yml up -d --build
+# Docs: docs/deploy/CLOUD_VM.md · docs/deploy/ONLINE_HOSTING.md
+
+services:
+  chronos:
+    build: .
+    image: chronos-command:latest
+    container_name: chronos-command
+    ports:
+      - "${SCHEDULER_PORT:-8080}:8080"
+    environment:
+      SCHEDULER_UI_MODE: web
+      SCHEDULER_HOST: "0.0.0.0"
+      SCHEDULER_PORT: "8080"
+      SCHEDULER_STORAGE_SECRET: ${SCHEDULER_STORAGE_SECRET:-change-me-before-production}
+      SCHEDULER_PUBLIC_URL: ${SCHEDULER_PUBLIC_URL:-}
+      SCHEDULER_SKIP_STARTUP_GATES: ${SCHEDULER_SKIP_STARTUP_GATES:-1}
+      SCHEDULER_DB_PATH: /app/persist/dodgeville_scheduler.db
+      SCHEDULER_TENANT_ID: ${SCHEDULER_TENANT_ID:-}
+      SCHEDULER_TENANT_NAME: ${SCHEDULER_TENANT_NAME:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
+    volumes:
+      - chronos_persist:/app/persist
+      - chronos_photos:/app/photos
+      - chronos_logs:/app/logs
+      - chronos_backups:/app/backups
+      - chronos_exports:/app/exports
+      - chronos_tenants:/app/tenants
+    restart: unless-stopped
+
+volumes:
+  chronos_persist:
+  chronos_photos:
+  chronos_logs:
+  chronos_backups:
+  chronos_exports:
+  chronos_tenants:

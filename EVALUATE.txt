@@ -1,32 +1,46 @@
-Dodgeville PD Scheduler — Evaluation Build
+Chronos Command — Evaluation / Virtual UAT
 ==========================================
+Vendor: Weierworks Technologies, LLC
 
-RUN THE APP
-  Double-click: Dodgeville_PD_Scheduler.exe
+VIRTUAL LAB (recommended — browser)
+  Double-click: Start Virtual Lab.bat
+  Or:  python dev.py virtual-lab
+       then  python main.py --browser --host 0.0.0.0 --port 8080
+  Doc: docs\VIRTUAL_UAT.md
+  Isolated DB: lab_data\virtual_uat.db
+  Logins: admin/admin · supervisor/supervisor · officer/officer
+  LAN: open firewall TCP 8080; clients use http://<host-ip>:8080
+  ONE server only on port 8080
+
+REMOTE TESTERS (different city)
+  Fast: Start Remote UAT Tunnel.bat
+        (install once: winget install Cloudflare.cloudflared)
+        Send them the https://… URL the tunnel prints
+  Cloud VM: docs\deploy\CLOUD_VM.md
+        docker compose -f deploy/cloud/docker-compose.caddy.yml up -d --build
+
+FROZEN BUILD (optional)
+  Double-click: Dodgeville_PD_Scheduler.exe (package name may lag brand)
 
 FIRST LAUNCH
-  - Creates dodgeville_scheduler.db; seeds demo roster from roster_seed.json if present
-  - Creates photos/, logs/, backups/ folders next to the .exe
-  - Edit roster_seed.json next to the .exe to customize names/count before first launch
+  - Creates dodgeville_scheduler.db (or lab DB if SCHEDULER_DB_PATH set)
+  - Seeds demo roster from roster_seed.json if present
+  - Creates photos/, logs/, backups/ next to app
 
-WHAT TO TEST
-  1. Dashboard — stats, pending requests, quick actions
-  2. Officers — search roster, add/edit officer, upload photo
-  3. Requests — submit day-off, approve/reject
-  4. Gantt Timeline — current 14-day cycle, today highlighted
-  5. Monthly Schedule — squad rotation calendar
-  6. Payroll — add entry, preview calculation, view ledger
+WHAT TO TEST (LE critical)
+  1. Officer — My Week, Time Off submit (working day), Open shifts, Shift exchange
+  2. Supervisor — Ops Desk KPIs, leave approve (plan pick) / reject notes, swaps, callout
+  3. Admin — Roster, Payroll/timecard, Deploy preflight, Audit trail, Security
+  4. Cross — brand Chronos Command, narrow-window My Week
 
-SAMPLE WORKFLOW
-  Officers tab → select any officer → Upload Photo (or Import Roster from CSV)
-  Requests tab → submit vacation for an officer on a working day
-  Approve the request → check Gantt for "bumped" / "covering" colors
-  Payroll tab → add 4 hours Overtime Earned → verify ledger
+KNOWN RESIDUALS (not bugs for this lab)
+  - Live SMS/email carriers deferred (in-app/file sink only)
+  - LDAP production_ready needs real AD + IT sign-off
+  - Offline leave approve blocked on purpose (supervisor safety)
 
-CLI (optional, from project source folder)
-  python cli.py officers list
-  python cli.py requests pending
+AUTOMATED PROOF
+  python dev.py virtual-lab
+  python dev.py chronos-e2e --quick
+  python dev.py verify --tier check   → logs\last_verify.json honest_gate true
 
-Reset database: delete dodgeville_scheduler.db and restart the app.
-
-Build date: evaluation package for internal review.
+Reset lab: delete lab_data\virtual_uat.db and restart.

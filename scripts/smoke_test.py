@@ -107,7 +107,9 @@ def run_smoke() -> int:
         lines.append(line)
         all_ok &= ok
 
-        sim = logic.run_schedule_simulation(
+        from logic.scheduling_sim import run_schedule_simulation
+
+        sim = run_schedule_simulation(
             "4-on-4-off",
             8,
             10.0,

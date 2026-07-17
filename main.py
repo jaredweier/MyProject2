@@ -1,4 +1,4 @@
-"""Entry point for Dodgeville PD Scheduler — Duty Console (web + desktop)."""
+"""Entry point for Chronos Command — workforce scheduler (web + desktop)."""
 
 import os
 import sys

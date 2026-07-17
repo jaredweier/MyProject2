@@ -154,9 +154,16 @@ def projected_annual_hours(
     pattern: RotationPattern,
     shift_length_hours: float,
     *,
-    days_per_year: float = 365.0,
+    days_per_year: float = 365.25,
 ) -> float:
-    """Rough annual hours from work fraction × shift length."""
+    """
+    Year-average annual hours from work fraction × shift length.
+
+    Uses 365.25 (mean Gregorian year) so leap years are averaged in.
+    Cycle length rarely divides 365/366 evenly — real calendar years will
+    differ slightly by officer phase; compare officers for fairness, not
+    exact equality to a single target hour.
+    """
     cl = pattern.cycle_length
     if cl <= 0:
         return 0.0

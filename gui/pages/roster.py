@@ -10,6 +10,7 @@ from gui.shell import layout, page_header, panel
 from logic import (
     add_custom_officer_title,
     add_officer,
+    bulk_set_station,
     delete_officer,
     get_officer_by_id,
     get_officer_title_options,
@@ -18,8 +19,10 @@ from logic import (
     get_pay_period_hours_by_officer,
     get_title_callin_limits,
     import_roster_from_csv,
+    list_station_posts,
     monthly_pay_to_per_pay_period,
     set_title_callin_limit,
+    station_staffing_board,
     suggested_hourly_rate_for_title,
     update_officer,
 )
@@ -39,9 +42,19 @@ def render_roster() -> None:
 
         page_header(
             "Patrol Roster",
-            "Active Sworn Personnel · Titles, Squads, Shifts",
+            "Active sworn personnel · titles, squads, shifts",
             kicker="Personnel",
         )
+        with ui.row().classes("gap-2 q-mb-sm flex-wrap"):
+            ui.button("Exports hub", on_click=lambda: ui.navigate.to("/exports")).classes("btn-ghost").props(
+                "no-caps outline dense"
+            )
+            ui.button("Certifications", on_click=lambda: ui.navigate.to("/certs")).classes("btn-ghost").props(
+                "no-caps outline dense"
+            )
+            ui.button("Branding & media", on_click=lambda: ui.navigate.to("/media")).classes("btn-ghost").props(
+                "no-caps outline dense"
+            )
         state: dict = {"selected": None}
 
         with ui.element("div").classes("grid-2"):
@@ -73,6 +86,7 @@ def render_roster() -> None:
                                     "id": o["id"],
                                     "name": o.get("name"),
                                     "squad": o.get("squad"),
+                                    "station": o.get("station") or "—",
                                     "shift": o.get("shift_start"),
                                     "rank": o.get("seniority_rank"),
                                     "title": o.get("job_title") or "Officer",
@@ -82,7 +96,7 @@ def render_roster() -> None:
                             # always re-create inside cleared host (grid_holder tracks element)
                             grid_holder["grid"] = aggrid_from_dicts(
                                 rows,
-                                prefer_columns=["name", "squad", "shift", "rank", "title"],
+                                prefer_columns=["name", "squad", "station", "shift", "rank", "title"],
                                 height="360px",
                                 csv_export=True,
                                 csv_name="roster",
@@ -97,7 +111,8 @@ def render_roster() -> None:
                                 with ui.element("div"):
                                     ui.label(o["name"]).classes("text-sm font-semibold")
                                     ui.label(
-                                        f"Squad {o.get('squad') or '—'} · {o.get('shift_start') or '—'} · "
+                                        f"Squad {o.get('squad') or '—'} · stn {o.get('station') or '—'} · "
+                                        f"{o.get('shift_start') or '—'} · "
                                         f"#{o.get('seniority_rank')} · {o.get('job_title') or 'Officer'}"
                                     ).classes("text-xs text-gray-500")
 
@@ -105,6 +120,37 @@ def render_roster() -> None:
                 view_mode.on("update:model-value", lambda _: refresh_list())
 
                 if session.can("officers.manage"):
+                    with ui.expansion("Stations · bulk assign", icon="apartment").classes("w-full q-mt-sm"):
+                        board = station_staffing_board()
+                        ui.label(board.get("message") or "Station board").classes("text-xs q-mb-xs").style(
+                            "color: var(--dim)"
+                        )
+                        posts = list_station_posts(active_only=False) or []
+                        codes = [p.get("code") for p in posts if p.get("code")] or ["HQ"]
+                        bulk_st = ui.select(codes, value=codes[0], label="Station code").classes("w-full")
+                        only_blank = ui.checkbox("Only unassigned officers", value=True)
+
+                        def do_bulk_station():
+                            uid = (session.current_user() or {}).get("id")
+                            r = bulk_set_station(
+                                bulk_st.value or "HQ",
+                                only_unassigned=bool(only_blank.value),
+                                only_active=True,
+                                user_id=uid,
+                            )
+                            ui.notify(
+                                r.get("message", "Done"),
+                                type="positive" if r.get("success") else "negative",
+                            )
+                            refresh_list()
+
+                        ui.button("Apply station to roster", on_click=do_bulk_station).classes(
+                            "btn-ghost q-mt-xs"
+                        ).props("no-caps outline dense")
+                        ui.label("Tip: create posts under Deploy → Stations first.").classes("text-xs q-mt-xs").style(
+                            "color: var(--dim)"
+                        )
+
                     with ui.expansion("Import roster CSV", icon="upload").classes("w-full q-mt-sm"):
                         ui.label(
                             "CSV columns typically: name, squad, shift_start, seniority_rank, job_title "

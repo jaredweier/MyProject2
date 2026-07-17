@@ -8,9 +8,15 @@ from gui import session
 from gui.pages.finance.banks import _banks
 from gui.shell import finance_subnav, layout, page_header, panel
 from logic import (
+    approve_timecard_period,
     convert_overtime_to_comp,
+    copy_timecard_from_previous_period,
+    delete_timecard_entry,
+    export_timecard_csv,
+    flsa_period_banners,
     format_pay_period_label,
     get_flsa_settings,
+    get_officer_accrual_balances,
     get_officers_by_seniority,
     get_pay_code_rules,
     get_pay_period,
@@ -20,9 +26,12 @@ from logic import (
     is_current_pay_period,
     is_pay_period_locked,
     list_pay_periods_catalog,
+    list_payroll_exceptions,
     lock_pay_period,
     prefill_timecard_from_schedule,
+    reject_timecard_period,
     save_timecard_entry,
+    schedule_to_timecard_defaults,
     search_pay_period_by_date,
     unlock_pay_period,
 )
@@ -69,6 +78,31 @@ def render_timecards() -> None:
                 "Unlock from Payroll if you have permission.</div>",
                 sanitize=False,
             )
+        else:
+            try:
+                from logic import get_pay_period_lock_reminder
+
+                rem = get_pay_period_lock_reminder(reference=start) or {}
+                if rem.get("remind") or rem.get("due_soon") or rem.get("message"):
+                    ui.html(
+                        f'<div class="alert alert-warn">{rem.get("message") or "Pay period lock window approaching."}</div>',
+                        sanitize=False,
+                    )
+            except Exception:
+                pass
+
+        with panel("FLSA / exceptions (period)", glow=False):
+            banners = [b for b in (flsa_period_banners(reference=start) or []) if b.get("level") != "ok"][:6]
+            for b in banners:
+                cls = "alert-danger" if b.get("level") == "critical" else "alert-warn"
+                ui.html(f'<div class="alert {cls}">{b.get("message")}</div>', sanitize=False)
+            if not banners:
+                ui.label("No FLSA warnings for active roster this period.").classes("text-xs text-gray-500")
+            ex = list_payroll_exceptions(reference=start)
+            if ex.get("count"):
+                ui.label(f"{ex.get('count')} payroll exception(s) — see Payroll tab / Ops Desk.").classes(
+                    "text-xs q-mt-sm"
+                )
 
         # Period tools + 7(k)-style hours meter
         with ui.row().classes("gap-2 q-mb-sm flex-wrap items-end"):
@@ -110,16 +144,104 @@ def render_timecards() -> None:
                 if not oid:
                     ui.notify("No officer for prefill", type="warning")
                     return
-                r = prefill_timecard_from_schedule(oid, start)
+                r = schedule_to_timecard_defaults(oid, period_start=start.isoformat())
+                if not r.get("success"):
+                    r = prefill_timecard_from_schedule(oid, start)
                 ui.notify(
                     r.get("message", "Prefill done") if r.get("success") else r.get("message", "Prefill failed"),
                     type="positive" if r.get("success") else "negative",
                 )
+                try:
+                    bal = get_officer_accrual_balances(int(oid), as_of=start)
+                    if bal.get("success"):
+                        ui.notify(
+                            f"Balances: sick {bal.get('sick_hours')}h · comp {bal.get('comp_hours')}h",
+                            type="info",
+                        )
+                except Exception:
+                    pass
 
             if (session.can("timecard.edit_own") or session.can("timecard.edit_all")) and not locked:
-                ui.button("Prefill from schedule", on_click=do_prefill).classes("btn-primary").props(
+                ui.button("Prefill from live schedule", on_click=do_prefill).classes("btn-primary").props(
                     "no-caps unelevated dense"
                 )
+
+                def do_copy_prev():
+                    if is_pay_period_locked(start):
+                        ui.notify("Period locked", type="warning")
+                        return
+                    oid = session.linked_officer_id()
+                    if not oid and session.can("timecard.edit_all"):
+                        offs = [o for o in get_officers_by_seniority() if o.get("active") == 1]
+                        oid = offs[0]["id"] if offs else None
+                    if not oid:
+                        ui.notify("No officer for copy", type="warning")
+                        return
+                    r = copy_timecard_from_previous_period(int(oid), period_start=start)
+                    ui.notify(
+                        r.get("message", "Copied") if r.get("success") else r.get("message", "Copy failed"),
+                        type="positive" if r.get("success") else "negative",
+                    )
+                    if r.get("success"):
+                        ui.navigate.to("/timecards")
+
+                ui.button("Copy previous period", on_click=do_copy_prev).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+
+            def do_export_tc():
+                oid = session.linked_officer_id()
+                if not oid and session.can("timecard.view_all"):
+                    offs = [o for o in get_officers_by_seniority() if o.get("active") == 1]
+                    oid = offs[0]["id"] if offs else None
+                try:
+                    r = export_timecard_csv(period_start=start, officer_id=int(oid) if oid else None)
+                except Exception as exc:
+                    r = {"success": False, "message": str(exc)}
+                ok = bool(r.get("success"))
+                ui.notify(
+                    r.get("message") or r.get("path") or "Timecard CSV",
+                    type="positive" if ok else "negative",
+                )
+
+            ui.button("Export timecard CSV", on_click=do_export_tc).classes("btn-ghost").props("no-caps outline dense")
+
+            if session.can("timecard.approve") or session.can("payroll.edit"):
+
+                def do_approve_tc():
+                    oid = session.linked_officer_id()
+                    if not oid and session.can("timecard.view_all"):
+                        offs = [o for o in get_officers_by_seniority() if o.get("active") == 1]
+                        oid = offs[0]["id"] if offs else None
+                    if not oid:
+                        ui.notify("Select/link officer first", type="warning")
+                        return
+                    uid = (session.current_user() or {}).get("id")
+                    r = approve_timecard_period(int(oid), period_start=start, user_id=uid)
+                    ui.notify(
+                        r.get("message", "Approved") if r.get("success") else r.get("message", "Failed"),
+                        type="positive" if r.get("success") else "negative",
+                    )
+
+                def do_reject_tc():
+                    oid = session.linked_officer_id()
+                    if not oid and session.can("timecard.view_all"):
+                        offs = [o for o in get_officers_by_seniority() if o.get("active") == 1]
+                        oid = offs[0]["id"] if offs else None
+                    if not oid:
+                        ui.notify("Select/link officer first", type="warning")
+                        return
+                    uid = (session.current_user() or {}).get("id")
+                    r = reject_timecard_period(
+                        int(oid), period_start=start, user_id=uid, supervisor_notes="Rejected from Chronos"
+                    )
+                    ui.notify(
+                        r.get("message", "Rejected") if r.get("success") else r.get("message", "Failed"),
+                        type="info" if r.get("success") else "negative",
+                    )
+
+                ui.button("Approve period", on_click=do_approve_tc).classes("btn-ghost").props("no-caps outline dense")
+                ui.button("Reject period", on_click=do_reject_tc).classes("btn-danger").props("no-caps outline dense")
 
             if session.can("payroll.lock_period") or session.can("payroll.edit"):
 
@@ -320,6 +442,19 @@ def _add_entry(period_start) -> None:
         )
         return
     with panel("Add timecard entry", glow=True):
+        try:
+            from logic.time_punch import get_punch_policy
+
+            pol = get_punch_policy()
+            if pol.get("punch_required") and session.is_officer() and not session.can("timecard.edit_all"):
+                ui.html(
+                    '<div class="alert alert-warn">Department requires <strong>clock in/out</strong>. '
+                    "Use Time Punch (or My Week) instead of manual hours. "
+                    "To fix a forgotten punch, request a correction for supervisor approval.</div>",
+                    sanitize=False,
+                )
+        except Exception:
+            pass
         oid = session.linked_officer_id()
         omap = {}
         officer_sel = None
@@ -361,19 +496,51 @@ def _add_entry(period_start) -> None:
         ).classes("w-full")
         hours = ui.input(label="Hours", value="8").classes("w-full")
         etype = ui.select(codes, value=codes[0], label="Pay code / entry type").classes("w-full")
+        ui.label("OT election (cash vs comp bank) — public-sector choice for overtime hours:").classes(
+            "text-xs text-gray-500 q-mt-sm"
+        )
+        try:
+            from logic.product_complete_pack import (
+                flsa_meter_for_officer,
+                get_court_min_hours,
+                get_default_ot_election,
+                get_holdover_reason_codes,
+            )
+
+            _ot_def = get_default_ot_election()
+            _hold_codes = get_holdover_reason_codes()
+            _court_min = get_court_min_hours()
+        except Exception:
+            _ot_def = "cash"
+            _hold_codes = ["Holdover end-of-shift", "Other"]
+            _court_min = 2.0
+        _ot_default_label = "Cash OT (Overtime Earned)" if _ot_def == "cash" else "Comp bank (Comp Time Earned)"
+        ot_elect = ui.radio(
+            ["Regular / other (use pay code)", "Cash OT (Overtime Earned)", "Comp bank (Comp Time Earned)"],
+            value=_ot_default_label,
+        ).props("dense")
+        ui.label(f"Court appearance minimum (CBA): {_court_min:g}h · set under Ops Reports.").classes(
+            "text-xs text-gray-500"
+        )
+        holdover = ui.select(
+            _hold_codes,
+            value=_hold_codes[0] if _hold_codes else "Other",
+            label="Holdover / Extra Hours reason",
+        ).classes("w-full")
         ui.label(
-            "Cash vs comp (NEOGOV-style election): pick Overtime Earned (cash) or "
-            "Comp Earned / Comp Time Earned (bank) — public-sector choice per entry."
-        ).classes("text-xs text-gray-500")
-        ui.label(
-            "Extra duty / special detail (TeleStaff/Netchex): use Callback or notes "
-            "tagged 'extra duty' / 'detail' for off-duty events; invoice billing is separate."
+            "Extra duty / special detail: notes tagged 'extra duty' / 'detail'; invoice billing separate."
         ).classes("text-xs text-gray-500")
         night = ui.input(label="Night differential hours", value="0").classes("w-full")
         notes = ui.input(
             label="Notes (holdover · Extra Hours · extra duty / detail reason)",
             value="",
         ).classes("w-full")
+        if oid:
+            try:
+                meter = flsa_meter_for_officer(int(oid), reference=period_start)
+                ui.label(meter.get("message") or "").classes("text-xs q-mt-xs").style("color: var(--muted)")
+            except Exception:
+                pass
 
         def save():
             nonlocal oid
@@ -395,14 +562,30 @@ def _add_entry(period_start) -> None:
             except ValueError:
                 ui.notify("Hours must be numeric", type="negative")
                 return
+            entry = etype.value or "Regular Hours"
+            elect = ot_elect.value or ""
+            if "Cash OT" in elect:
+                entry = "Overtime Earned"
+            elif "Comp bank" in elect:
+                entry = "Comp Time Earned"
+            note_txt = (notes.value or "").strip()
+            try:
+                hr = holdover.value if holdover is not None else None
+            except Exception:
+                hr = None
+            if hr:
+                note_txt = f"[{hr}] {note_txt}".strip()
+            # Supervisors may always free-enter; officers blocked when punch_required
+            is_sup = (not session.is_officer()) or session.can("timecard.edit_all") or session.can("timecard.approve")
             r = save_timecard_entry(
                 oid,
                 dt.isoformat(),
                 h,
-                entry_type=etype.value or "Regular Hours",
+                entry_type=entry,
                 night_diff_hours=nd,
-                notes=(notes.value or "").strip(),
+                notes=note_txt,
                 period_start=period_start.isoformat(),
+                override_approval=bool(is_sup),
             )
             ui.notify(
                 r.get("message", "Saved") if r.get("success") else r.get("message", "Failed"),
@@ -482,26 +665,49 @@ def _timecard(period_start) -> None:
                 )
                 return
             if not entries:
-                ui.html(
-                    '<div class="alert alert-ok">No Entries This Period Yet.</div>',
-                    sanitize=False,
+                from gui.ui_patterns import empty_state
+
+                empty_state(
+                    "No entries this period",
+                    "Prefill from schedule or add an entry on the Add Entry tab.",
+                    cta_label="Add entry tip",
                 )
                 return
-            for entry in entries[:40]:
-                if isinstance(entry, dict):
-                    raw = entry.get("work_date") or entry.get("date") or entry.get("entry_date") or ""
-                    label = format_date(raw) if raw else "—"
-                    hours = entry.get("hours") or entry.get("total_hours") or entry.get("regular_hours") or "—"
-                    etype = entry.get("entry_type") or entry.get("type") or ""
-                    text = f"{label}  ·  {hours}h  ·  {etype}"
-                else:
-                    text = str(entry)
+            can_del = (
+                session.can("timecard.edit_own") or session.can("timecard.edit_all")
+            ) and not is_pay_period_locked(period_start)
+            for entry in entries[:50]:
+                if not isinstance(entry, dict):
+                    with ui.element("div").classes("data-row"):
+                        ui.label(str(entry)).classes("text-sm mono")
+                    continue
+                raw = entry.get("work_date") or entry.get("date") or entry.get("entry_date") or ""
+                label = format_date(raw) if raw else "—"
+                hours = entry.get("hours") or entry.get("total_hours") or entry.get("regular_hours") or "—"
+                etype = entry.get("entry_type") or entry.get("type") or ""
+                eid = entry.get("id") or entry.get("timecard_id") or entry.get("entry_id")
+                text = f"{label}  ·  {hours}h  ·  {etype}"
                 with ui.element("div").classes("data-row"):
-                    ui.label(text).classes("text-sm mono")
+                    ui.label(text).classes("text-sm mono grow")
+                    if can_del and eid is not None:
+
+                        def del_entry(tid=eid, officer=oid):
+                            r = delete_timecard_entry(int(tid), int(officer), override_approval=True)
+                            ui.notify(
+                                r.get("message", "Deleted") if r.get("success") else r.get("message", "Failed"),
+                                type="positive" if r.get("success") else "negative",
+                            )
+                            if r.get("success"):
+                                refresh()
+
+                        ui.button("Delete", on_click=del_entry).classes("btn-danger").props("dense no-caps outline")
 
     if officer_sel is not None:
         officer_sel.on_value_change(lambda _: refresh())
-    with panel("Timecard Entries"):
+    with panel("Timecard entries", glow=True):
+        ui.label("Delete removes a line (period must be unlocked). Approve/reject period is above.").classes(
+            "text-xs q-mb-sm"
+        ).style("color: var(--dim)")
         ui.button("Refresh", on_click=refresh).classes("btn-ghost q-mb-sm").props("no-caps outline dense")
         refresh()
 

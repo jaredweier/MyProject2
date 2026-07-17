@@ -1,4 +1,4 @@
-"""Duty board — SHIFTVOID / PULSE mockup layout."""
+"""Duty board — one hero decision surface + severity + deck (DESIGN B+D)."""
 
 from __future__ import annotations
 
@@ -7,6 +7,7 @@ from nicegui import ui
 from gui import session
 from gui.clock import format_clock, format_local_date, today_local
 from gui.shell import layout, page_header, panel
+from gui.ui_patterns import empty_state, first_run_guide, shift_card
 from logic import (
     get_coverage_gap_board,
     get_cycle_day,
@@ -26,11 +27,10 @@ from validators import format_date
 def render_dashboard() -> None:
     def body() -> None:
         today = today_local()
-        name = session.display_name()  # full name only — no time-of-day greeting
+        name = session.display_name()
         cycle = get_cycle_day(today)
         squad = get_squad_on_duty(cycle)
         oid = session.linked_officer_id() if session.is_officer() else None
-        # Fast KPIs only — full get_dashboard_insights is multi-second and blocks the UI
         insights = get_dashboard_kpis_fast(officer_id=oid) or {}
         if not isinstance(insights, dict):
             insights = {}
@@ -41,14 +41,6 @@ def render_dashboard() -> None:
         gaps = insights.get("coverage_gap_count", 0)
         issues = insights.get("coverage_issues", 0)
 
-        page_header(
-            name,
-            f"District Duty Ops · {format_local_date(today)} · {format_clock()} · "
-            f"Cycle Day {cycle} · Squad {squad} On Duty · {n_off} Officers Active",
-            kicker="Ops Floor",
-        )
-
-        # Severity strip — dark NOC / command-center pattern (admin dashboard UX 2026)
         try:
             n_open = len(get_open_shifts(status="open", limit=50) or [])
         except Exception:
@@ -58,6 +50,141 @@ def render_dashboard() -> None:
             n_fat = int(hw.get("warning_count") or 0) + int(hw.get("critical_count") or 0)
         except Exception:
             n_fat = 0
+        try:
+            unread = get_unread_notification_count(officer_id=oid) or 0
+        except Exception:
+            unread = 0
+
+        page_header(
+            name,
+            f"District duty ops · {format_local_date(today)} · {format_clock()} · "
+            f"Cycle day {cycle} · Squad {squad} on duty · {n_off} officers active",
+            kicker="Chronos Command · ops floor",
+        )
+
+        first_run_guide()
+
+        # Pay period lock reminder (supervisor)
+        if not session.is_officer():
+            try:
+                from logic import get_pay_period_lock_reminder
+
+                rem = get_pay_period_lock_reminder() or {}
+                if rem.get("remind") or rem.get("due_soon"):
+                    ui.html(
+                        f'<div class="alert alert-warn q-mb-sm">{rem.get("message") or "Pay period lock due soon."} '
+                        f'<a href="/timecards" style="color:#6BA3F5">Open timecards</a></div>',
+                        sanitize=False,
+                    )
+            except Exception:
+                pass
+
+        # —— ONE hero decision band (merged Command Post + staffing question) ——
+        staffed = not gaps and not issues
+        hero_metric = "STAFFED" if staffed else f"GAPS · {gaps}"
+        primary_path = "/operations" if gaps or issues else ("/time-off" if pending else "/open-shifts")
+        primary_label = (
+            "Resolve gaps"
+            if gaps or issues
+            else ("Review leave" if pending else ("Claim / post vacancies" if n_open else "Ops desk"))
+        )
+        if session.is_officer():
+            primary_path = "/my-week"
+            primary_label = "My week"
+
+        with ui.element("div").classes("panel panel-glow w-full hero-decision"):
+            with ui.row().classes("w-full justify-between items-start"):
+                with ui.element("div"):
+                    ui.html('<div class="page-kicker">Next 24h staffing</div>', sanitize=False)
+                    ui.html(f'<div class="kpi-v">{hero_metric}</div>', sanitize=False)
+
+                # Dynamic Quasar telemetry status chips
+                with ui.row().classes("gap-2 items-center flex-wrap"):
+                    from gui.ui_patterns import ng_chip
+
+                    ng_chip(f"Gaps: {gaps}", level="crit" if gaps else "ok", icon="warning" if gaps else "check_circle")
+                    ng_chip(
+                        f"Night Issues: {issues}",
+                        level="crit" if issues else "ok",
+                        icon="nights_stay" if issues else "bedtime",
+                    )
+                    ng_chip(f"Open: {n_open}", level="warn" if n_open else "ok", icon="add" if n_open else "check")
+                    ng_chip(
+                        f"Leave Queue: {pending}",
+                        level="warn" if pending else "ok",
+                        icon="pending_actions" if pending else "thumb_up",
+                    )
+                    if swaps:
+                        ng_chip(f"Swaps: {swaps}", level="warn", icon="swap_horiz")
+                    if n_fat:
+                        ng_chip(f"Fatigue: {n_fat}", level="warn", icon="battery_alert")
+                    if unread:
+                        ng_chip(f"Alerts: {unread}", level="warn", icon="notifications_active")
+
+            # Compact roster count inline (was separate panel)
+            if not session.is_officer():
+                try:
+                    coverage = get_shift_coverage_counts_for_range(today, today)
+                except Exception:
+                    coverage = {}
+                bands = list(get_active_shift_times().values()) if get_active_shift_times() else []
+                parts = []
+                total_on = 0
+                for start, _end in bands:
+                    c = int(coverage.get((today.isoformat(), squad, start), 0) or 0)
+                    total_on += c
+                    parts.append(f"{start}→{c}")
+
+                with ui.row().classes("w-full gap-3 q-mt-md items-center text-xs text-slate-400 font-medium"):
+                    ui.label(f"Squad {squad} today").classes("font-semibold text-slate-200")
+                    ui.label(f"|  {total_on} assigned").classes("mono")
+                    for p in parts[:6]:
+                        ui.label(f"·  {p}").classes("mono")
+
+                try:
+                    from logic.staffing_insights import staffing_risk_snapshot
+
+                    snap = staffing_risk_snapshot() or {}
+                    lvl = snap.get("level") or "ok"
+                    line0 = (snap.get("lines") or ["Risk nominal"])[0]
+                    with ui.row().classes("w-full items-center q-mt-xs text-xs"):
+                        ui.label("Staffing Risk:").classes("text-slate-400")
+                        status_lvl = "crit" if lvl == "crit" else ("warn" if lvl == "warn" else "ok")
+                        from gui.ui_patterns import status_chip
+
+                        status_chip(lvl.upper(), level=status_lvl)
+                        ui.label(f"· {line0}").classes("text-slate-300 font-medium")
+                except Exception:
+                    pass
+
+            with ui.row().classes("gap-2 q-mt-md flex-wrap"):
+                ui.button(primary_label, on_click=lambda: ui.navigate.to(primary_path)).classes("btn-primary").props(
+                    "no-caps unelevated dense"
+                )
+                if not session.is_officer():
+                    ui.button(
+                        "Call-down board",
+                        on_click=lambda: ui.navigate.to("/callbacks"),
+                    ).classes("btn-ghost").props("no-caps outline dense")
+                    ui.button(
+                        "Open shifts",
+                        on_click=lambda: ui.navigate.to("/open-shifts"),
+                    ).classes("btn-ghost").props("no-caps outline dense")
+                    ui.button(
+                        "Ops desk",
+                        on_click=lambda: ui.navigate.to("/ops-desk"),
+                    ).classes("btn-ghost").props("no-caps outline dense")
+                else:
+                    ui.button(
+                        "Open shifts",
+                        on_click=lambda: ui.navigate.to("/open-shifts"),
+                    ).classes("btn-ghost").props("no-caps outline dense")
+                    ui.button(
+                        "Time off",
+                        on_click=lambda: ui.navigate.to("/time-off"),
+                    ).classes("btn-ghost").props("no-caps outline dense")
+
+        # Severity strip — click → filtered destinations
         try:
             from gui.tables import severity_strip
 
@@ -99,116 +226,91 @@ def render_dashboard() -> None:
                         "level": "warn" if swaps else "ok",
                         "path": "/time-off",
                     },
+                    {
+                        "label": "Alerts",
+                        "count": unread,
+                        "level": "warn" if unread else "ok",
+                        "path": "/notifications",
+                    },
                 ],
-                title="Ops severity strip",
+                title="Ops severity",
             )
         except Exception:
             pass
 
-        # Clickable KPIs → deep-link (Mark43/Linear jump pattern)
-        with ui.element("div").classes("kpi-row q-mb-md"):
-
-            def kpi_card(title, value, hint, path, danger=False, warn=False):
-                border = (
-                    "border-color:rgba(239,68,68,0.45)"
-                    if danger and value
-                    else ("border-color:rgba(245,158,11,0.45)" if warn and value else "")
-                )
-                with (
-                    ui.element("div")
-                    .classes("kpi")
-                    .style(f"cursor:pointer;{border}")
-                    .on("click", lambda _e, p=path: ui.navigate.to(p))
-                ):
-                    ui.html(f'<div class="kpi-l">{title}</div>', sanitize=False)
-                    ui.html(f'<div class="kpi-v">{value}</div>', sanitize=False)
-                    ui.html(f'<div class="kpi-hint">{hint}</div>', sanitize=False)
-
-            kpi_card("Active Officers", n_off, "Roster · click for personnel", "/roster")
-            kpi_card("Pending Leave", pending, "Awaiting review · click", "/time-off", warn=True)
-            kpi_card("Shift Swaps", swaps, "Exchange queue · click", "/time-off", warn=True)
-            kpi_card("Coverage Gaps", gaps, "48h board · click ops", "/operations", danger=True)
-            kpi_card("Night Min Issues", issues, "Staffing floor · click ops", "/operations", danger=True)
-            kpi_card("Open Vacancies", n_open, "Claim / post · click", "/open-shifts", warn=True)
-            kpi_card("Fatigue / hours", n_fat, "FLSA proximity · click payroll", "/payroll", warn=True)
-
-        # First Due / PowerTime pattern: roster count strip for today
-        if not session.is_officer():
-            with panel("Today roster count (command strip)", glow=False):
-                try:
-                    coverage = get_shift_coverage_counts_for_range(today, today)
-                except Exception:
-                    coverage = {}
-                bands = list(get_active_shift_times().values()) if get_active_shift_times() else []
-                total_on = 0
-                parts = []
-                for start, end in bands:
-                    c = int(coverage.get((today.isoformat(), squad, start), 0) or 0)
-                    total_on += c
-                    parts.append(f"{start}→{c}")
-                ui.label(
-                    f"Squad {squad} on duty · {total_on} assigned across bands · " + " · ".join(parts[:6])
-                ).classes("text-sm mono")
-                ui.label(
-                    "Industry pattern (First Due roster count / PowerTime min staffing): glance staffing before gaps."
-                ).classes("text-xs text-gray-500 q-mt-xs")
-
+        # Deck: on-duty + watch / personal week (no competing command strips)
         with ui.element("div").classes("grid-2"):
-            with panel("On-Duty Shifts", glow=True):
+            with panel("On-duty shifts", glow=True):
                 if session.is_officer():
-                    ui.html(
-                        '<div class="alert alert-ok">Open My Schedule For Your Personal Duty Window.</div>',
-                        sanitize=False,
+                    empty_state(
+                        "Personal duty window",
+                        "Open My schedule for your full cycle board.",
+                        cta_label="My schedule",
+                        cta_path="/my-schedule",
                     )
                 else:
-                    coverage = get_shift_coverage_counts_for_range(today, today)
+                    try:
+                        coverage = get_shift_coverage_counts_for_range(today, today)
+                    except Exception:
+                        coverage = {}
                     day_str = today.isoformat()
                     ui.html(
                         f'<div style="font-family:var(--mono);font-size:11px;color:var(--dim);margin-bottom:10px">'
-                        f"SQUAD {squad} · {format_clock()}</div>",
+                        f"Squad {squad} · {format_clock()}</div>",
                         sanitize=False,
                     )
-                    for start, end in get_active_shift_times().values():
+                    bands = list(get_active_shift_times().values()) if get_active_shift_times() else []
+                    if not bands:
+                        empty_state(
+                            "No shift bands configured",
+                            "Set staffing bands in deploy / settings.",
+                            cta_label="Deploy",
+                            cta_path="/deploy",
+                        )
+                    for start, end in bands:
                         count = coverage.get((day_str, squad, start), 0)
-                        dot = "shift-dot" if count else "shift-dot warn"
+                        lvl = "ok" if count else "warn"
                         with ui.element("div").classes("shift-row"):
                             with ui.row().classes("items-center gap-3"):
-                                ui.html(f'<span class="{dot}"></span>', sanitize=False)
+                                ui.html(
+                                    f'<span class="{"shift-dot" if count else "shift-dot warn"}"></span>',
+                                    sanitize=False,
+                                )
                                 with ui.element("div"):
-                                    ui.label(f"{start} – {end}").classes("text-sm font-semibold")
-                                    ui.label("Patrol Band").classes("text-xs").style("color: var(--dim)")
-                            ui.badge(f"{count} On").props(f"outline color={'positive' if count else 'warning'}")
+                                    ui.label(f"{start} – {end}").classes("text-sm font-semibold mono")
+                                    ui.label("Patrol band").classes("text-xs").style("color: var(--dim)")
+                            status_chip(f"{count} on", level=lvl)
 
-            with panel("Watch Status"):
+            with panel("Watch status"):
                 if issues:
                     ui.html(
-                        f'<div class="alert alert-crit">⚠ Severity · Night Minimum · {issues} Issue(s) This Cycle</div>',
+                        f'<div class="alert alert-crit">Night minimum · {issues} issue(s) this cycle</div>',
                         sanitize=False,
                     )
                 if gaps:
                     ui.html(
-                        f'<div class="alert alert-warn">Coverage Gaps In Next 48h: {gaps}</div>',
+                        f'<div class="alert alert-warn">Coverage gaps in next 48h: {gaps}</div>',
                         sanitize=False,
                     )
                 if not issues and not gaps:
                     ui.html(
                         '<div class="alert alert-ok">'
-                        "<strong>All Clear</strong> · No Critical Coverage Flags On This Watch. "
-                        "Coverage Floor Met · System Integrity Nominal."
+                        "<strong>All clear</strong> · No critical coverage flags on this watch."
                         "</div>",
                         sanitize=False,
                     )
-                unread = get_unread_notification_count(officer_id=oid)
                 ui.html(
                     f'<div style="margin-top:12px;font-family:var(--mono);font-size:11px;color:var(--dim)">'
-                    f"Unread Alerts · <strong style='color:var(--text)'>{unread}</strong></div>",
+                    f"Unread alerts · <strong style='color:var(--text)'>{unread}</strong></div>",
                     sanitize=False,
                 )
+                ui.button("Open alerts", on_click=lambda: ui.navigate.to("/notifications")).classes(
+                    "btn-ghost q-mt-sm"
+                ).props("no-caps outline dense")
 
-        # —— LE product patterns: My Week · Gap board · Open shifts · Hours watch ——
         with ui.element("div").classes("grid-2"):
             if session.is_officer() and oid:
-                with panel("My Week", glow=True):
+                with panel("My week", glow=True):
                     try:
                         week = get_officer_schedule_window(oid, days=7) or {}
                     except Exception as exc:
@@ -217,9 +319,11 @@ def render_dashboard() -> None:
                     if not days and week.get("message"):
                         ui.label(str(week.get("message"))).classes("text-sm text-gray-400")
                     elif not days:
-                        ui.html(
-                            '<div class="alert alert-ok">Open My Schedule for your full window.</div>',
-                            sanitize=False,
+                        empty_state(
+                            "No week rows",
+                            "Open My schedule for the full window.",
+                            cta_label="My schedule",
+                            cta_path="/my-schedule",
                         )
                     else:
                         for day in days[:7]:
@@ -228,9 +332,14 @@ def render_dashboard() -> None:
                             raw = day.get("date") or day.get("day") or ""
                             status = day.get("status") or day.get("duty") or day.get("label") or "—"
                             shift = day.get("shift_start") or day.get("shift") or ""
-                            ui.label(
-                                f"{format_date(raw) if raw else '—'} · {status}" + (f" · {shift}" if shift else "")
-                            ).classes("text-sm q-mb-xs")
+                            is_today = str(raw)[:10] == today.isoformat()
+                            cls = "mobile-day-card today" if is_today else "mobile-day-card"
+                            with ui.element("div").classes(cls):
+                                ui.label(
+                                    f"{format_date(raw) if raw else '—'} · {status}" + (f" · {shift}" if shift else "")
+                                ).classes("text-sm font-semibold")
+                                if is_today:
+                                    status_chip("Today", level="info")
             else:
                 with panel("Coverage gap board (48h)", glow=True):
                     try:
@@ -244,9 +353,11 @@ def render_dashboard() -> None:
                         f"Warn {board.get('warning_count', 0)}"
                     ).classes("text-xs text-gray-500 q-mb-sm")
                     if not gap_rows:
-                        ui.html(
-                            '<div class="alert alert-ok">No coverage gaps in the next 48 hours.</div>',
-                            sanitize=False,
+                        empty_state(
+                            "No coverage gaps",
+                            "Next 48 hours look staffed.",
+                            cta_label="Ops reports",
+                            cta_path="/operations",
                         )
                     else:
                         for g in gap_rows[:12]:
@@ -256,40 +367,46 @@ def render_dashboard() -> None:
                             band = g.get("shift_start") or g.get("band") or g.get("shift") or "—"
                             need = g.get("shortfall") or g.get("needed") or g.get("severity") or ""
                             sev = g.get("severity") or g.get("level") or ""
-                            ui.label(f"{format_date(raw) if raw else '—'} · {band} · {need} {sev}").classes(
-                                "text-sm q-mb-xs"
+                            shift_card(
+                                title=f"{format_date(raw) if raw else '—'} · {band}",
+                                subtitle=f"{need} {sev}".strip(),
+                                status=str(sev or "gap").upper()[:8] or "GAP",
+                                status_level="crit",
+                                primary_label="Ops",
+                                on_primary=lambda: ui.navigate.to("/operations"),
                             )
-                    ui.button("Ops reports", on_click=lambda: ui.navigate.to("/operations")).classes(
-                        "btn-ghost q-mt-sm"
-                    ).props("no-caps outline dense")
 
-            with panel("Open shifts · Hours watch"):
+            with panel("Open shifts · hours watch"):
                 try:
                     opens = get_open_shifts(status="open", limit=8) or []
                 except Exception:
                     opens = []
-                ui.label(f"Open vacancies: {len(opens)}").classes("text-sm font-semibold q-mb-xs")
                 if opens:
                     for sh in opens[:5]:
-                        ui.label(
-                            f"{format_date(sh.get('shift_date'))} · {sh.get('shift_start')} "
-                            f"Squad {sh.get('squad') or 'Any'}"
-                        ).classes("text-xs text-gray-400")
+                        shift_card(
+                            title=f"{format_date(sh.get('shift_date'))} · {sh.get('shift_start')}",
+                            subtitle=f"Squad {sh.get('squad') or 'Any'}",
+                            status="Open",
+                            status_level="warn",
+                            primary_label="Board",
+                            on_primary=lambda: ui.navigate.to("/open-shifts"),
+                        )
                 else:
-                    ui.label("Board clear — post from Open Shifts.").classes("text-xs text-gray-500")
-                ui.button("Open shift board", on_click=lambda: ui.navigate.to("/open-shifts")).classes(
-                    "btn-ghost q-mt-sm q-mb-md"
-                ).props("no-caps outline dense")
+                    empty_state(
+                        "Board clear",
+                        "Post vacancies from Open shifts.",
+                        cta_label="Open shift board",
+                        cta_path="/open-shifts",
+                    )
 
                 try:
                     watch = get_hours_watch(officer_id=oid) or {}
                 except Exception as exc:
                     watch = {"warnings": [], "message": str(exc)}
                 warns = watch.get("warnings") or []
-                ui.label(
-                    f"FLSA / hours watch · {watch.get('warning_count', len(warns))} warnings · "
-                    f"threshold {watch.get('period_threshold', '—')}h / period"
-                ).classes("text-sm font-semibold q-mb-xs")
+                ui.label(f"FLSA / hours · {watch.get('warning_count', len(warns))} warnings").classes(
+                    "text-sm font-semibold q-mt-md q-mb-xs"
+                )
                 if warns:
                     for w in warns[:5]:
                         if isinstance(w, dict):
@@ -302,43 +419,38 @@ def render_dashboard() -> None:
                 else:
                     ui.label("No officers near hours threshold.").classes("text-xs text-gray-500")
 
-        with panel("Quick Actions", glow=False):
-            tiles = []
+        # Outcome tiles — progressive, not a rainbow toolbar
+        with panel("Quick actions", glow=False):
             if session.is_officer():
                 tiles = [
-                    ("/my-schedule", "My Schedule", "14-Day Duty Window"),
-                    ("/time-off", "Time Off Requests", "Submit Leave"),
-                    ("/open-shifts", "Open Shifts", "Claim Vacancies"),
+                    ("/my-schedule", "My schedule", "14-day duty window"),
+                    ("/time-off", "Time off", "Submit leave"),
+                    ("/open-shifts", "Open shifts", "Claim vacancies"),
                     ("/notifications", "Alerts", "Inbox"),
-                    ("/availability", "Availability", "Blackout Days"),
-                    ("/live-schedule", "Live Schedule", "Coverage Matrix"),
-                    ("/timecards", "Timecards", "Pay Period Hours"),
-                    ("/bidding", "Shift Bidding", "Bid Cycles"),
-                    ("/certs", "My Certs", "Qualifications"),
+                    ("/time-punch", "Time punch", "Clock in / out"),
+                    ("/timecards", "Timecards", "Pay period hours"),
+                    ("/banks", "Time banks", "Comp · sick · float"),
+                    ("/availability", "Availability", "Blackout days"),
+                    ("/bidding", "Shift bidding", "Rank preferences"),
+                    ("/court", "Court & training", "Appearances"),
+                    ("/certs", "Certifications", "My quals"),
+                    ("/exports", "Exports", "iCal & downloads"),
                 ]
             else:
                 tiles = [
-                    ("/time-off", "Time Off Requests", "Approve With Coverage Plans"),
-                    ("/open-shifts", "Open Shifts", "Vacancy Board"),
-                    ("/bidding", "Shift Bidding", "Publish / Award"),
-                    ("/callbacks", "Callbacks", "OT Call-Down"),
-                    ("/notifications", "Alerts", "Inbox"),
-                    ("/certs", "Certifications", "Qual Gates"),
-                    ("/availability", "Availability", "Blackouts / Holidays"),
-                    ("/my-schedule", "My Schedule", "Unit Duty Board"),
-                    ("/live-schedule", "Live Schedule", "Live Heat Matrix"),
-                    ("/monthly-schedule", "Monthly Schedule", "Original Plan"),
-                    ("/roster", "Patrol Roster", "Personnel Command"),
-                    ("/timecards", "Timecards", "Time Entry"),
-                    ("/payroll", "Payroll", "Pay Period Ledger"),
+                    ("/ops-desk", "Ops desk", "Manual review · callout · gaps"),
+                    ("/time-off", "Time off", "Approve with coverage plans"),
+                    ("/open-shifts", "Open shifts", "Vacancy board"),
+                    ("/callbacks", "Callbacks", "OT call-down"),
+                    ("/live-schedule", "Live schedule", "Heat matrix"),
+                    ("/roster", "Patrol roster", "Personnel"),
+                    ("/exports", "Exports hub", "CSV · PDF · audit"),
+                    ("/banks", "Time banks", "Comp · FLSA"),
+                    ("/channels", "Notify channels", "SMS · email outbox"),
+                    ("/access", "Access control", "Users · roles"),
                 ]
                 if session.can("simulator.use"):
-                    tiles.append(("/simulator", "Schedule Simulator", "Best Combination"))
-                if session.can("reports.view"):
-                    tiles.append(("/operations", "Ops Reports", "Coverage & OT Equity"))
-                tiles.append(("/security", "Security & Governance", "RBAC · Audit · Targets"))
-            if session.is_officer():
-                tiles.append(("/security", "Security & Governance", "Your Access Profile"))
+                    tiles.append(("/simulator", "Simulator", "Best combination"))
             with ui.element("div").classes("grid-actions"):
                 for path, title, sub in tiles:
                     with ui.element("div").classes("action-tile").on("click", lambda _e, p=path: ui.navigate.to(p)):

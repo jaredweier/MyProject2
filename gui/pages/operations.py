@@ -10,6 +10,7 @@ from gui.shell import layout, page_header, panel
 from logic import (
     backup_database,
     create_extra_duty_event,
+    export_duty_roster_for_cad,
     export_extra_duty_invoice_csv,
     export_requests_pdf,
     export_roster_csv,
@@ -24,6 +25,24 @@ from logic import (
     get_labor_budget_status,
     list_extra_duty_events,
     maybe_run_auto_backup,
+    post_cad_webhook,
+)
+from logic.cad_rms_bridge import (
+    cad_bidirectional_roundtrip_smoke,
+    cad_bridge_status,
+    get_cad_bridge_config,
+    import_cad_duty_bidirectional,
+    pull_cad_from_url,
+    save_cad_bridge_config,
+)
+from logic.product_complete_pack import (
+    get_court_min_hours,
+    get_default_ot_election,
+    get_holdover_reason_codes,
+    import_cad_rms_duty_json,
+    save_holdover_reason_codes,
+    set_court_min_hours,
+    set_default_ot_election,
 )
 from validators import format_date
 
@@ -46,6 +65,45 @@ def render_operations() -> None:
         if not isinstance(insights, dict):
             insights = {}
 
+        # Equitable OT ledger first (supervisor daily default)
+        with panel("Equitable OT ledger", glow=True):
+            try:
+                ledger = get_equitable_ot_ledger() or {}
+            except TypeError:
+                ledger = get_equitable_ot_ledger(today_local()) or {}  # type: ignore[call-arg]
+            except Exception as exc:
+                ledger = {"success": False, "message": str(exc)}
+            rows = ledger.get("rows") or ledger.get("officers") or ledger.get("ledger") or ledger.get("items") or []
+            if isinstance(ledger, list):
+                rows = ledger
+            ui.label(ledger.get("message") or f"{len(rows) if isinstance(rows, list) else 0} officer rows").classes(
+                "text-xs q-mb-sm"
+            ).style("color: var(--dim)")
+            # AG Grid when available
+            if isinstance(rows, list) and rows and all(isinstance(r, dict) for r in rows[:3]):
+                cols = [
+                    {"headerName": k, "field": k, "filter": True, "sortable": True} for k in list(rows[0].keys())[:8]
+                ]
+                try:
+                    ui.aggrid(
+                        {
+                            "columnDefs": cols,
+                            "rowData": rows[:80],
+                            "defaultColDef": {"resizable": True, "floatingFilter": True},
+                        }
+                    ).classes("w-full").style("height:280px")
+                except Exception:
+                    for r in rows[:15]:
+                        ui.label(
+                            f"{r.get('officer_name') or r.get('name') or r.get('officer_id')} · "
+                            f"OT {r.get('ot_hours') or r.get('hours') or r.get('total') or '—'}"
+                        ).classes("text-xs")
+            elif isinstance(rows, list):
+                for r in rows[:15]:
+                    ui.label(str(r)[:120]).classes("text-xs")
+            else:
+                ui.label("No OT equity rows yet.").classes("text-xs text-gray-500")
+
         try:
             budget = get_labor_budget_status() or {}
         except Exception as exc:
@@ -62,6 +120,180 @@ def render_operations() -> None:
                 ).classes("text-sm")
                 if budget.get("message"):
                     ui.label(str(budget["message"])).classes("text-xs text-gray-500")
+
+        with panel("CBA knobs · court min · holdover codes · OT election"):
+            court_h = ui.input(label="Court appearance min hours", value=str(get_court_min_hours())).classes("w-full")
+            codes = get_holdover_reason_codes()
+            code_box = (
+                ui.textarea(
+                    value="\n".join(codes),
+                    label="Holdover reason codes (one per line)",
+                )
+                .classes("w-full")
+                .props("outlined dense dark rows=6")
+            )
+            ot_def = (
+                ui.select(
+                    {"cash": "Cash OT default", "comp": "Comp bank default"},
+                    value=get_default_ot_election(),
+                    label="Default OT election",
+                )
+                .classes("w-full")
+                .props("dark dense emit-value map-options")
+            )
+
+            def save_cba():
+                uid = (session.current_user() or {}).get("id")
+                try:
+                    set_court_min_hours(float(court_h.value or 2), user_id=uid)
+                except ValueError:
+                    pass
+                lines = [ln.strip() for ln in (code_box.value or "").splitlines() if ln.strip()]
+                save_holdover_reason_codes(lines, user_id=uid)
+                set_default_ot_election(ot_def.value or "cash", user_id=uid)
+                ui.notify("CBA knobs saved", type="positive")
+
+            ui.button("Save CBA knobs", on_click=save_cba).classes("btn-primary").props("no-caps unelevated dense")
+
+        with panel("CAD / RMS bidirectional bridge", glow=True):
+            st = cad_bridge_status()
+            cfg = get_cad_bridge_config()
+            ui.label(st.get("message") or "").classes("text-xs q-mb-sm").style("color: var(--dim)")
+            ui.label(
+                f"Recent audits: {', '.join(st.get('recent_audits') or []) or 'none'} · "
+                f"POST /api/cad/inbound · GET pull URL"
+            ).classes("text-xs q-mb-sm").style("color: var(--muted)")
+            pull_url = ui.input("CAD pull URL (GET JSON)", value=cfg.get("pull_url") or "").classes("w-full")
+            inbound_tok = ui.input(
+                "Inbound token (optional X-Chronos-CAD-Token)",
+                value="",
+                password=True,
+            ).classes("w-full")
+            apply_on = ui.switch(
+                "Apply cover pairs on import (original + replacement IDs)",
+                value=bool(cfg.get("apply_on_import")),
+            )
+
+            def save_cad_cfg():
+                uid = (session.current_user() or {}).get("id")
+                r = save_cad_bridge_config(
+                    pull_url=pull_url.value or "",
+                    inbound_token=inbound_tok.value or "",
+                    apply_on_import=bool(apply_on.value),
+                    user_id=uid,
+                )
+                ui.notify(r.get("message", "Saved"), type="positive" if r.get("success") else "negative")
+
+            def do_cad_export():
+                r = export_duty_roster_for_cad(days=1)
+                ui.notify(r.get("message", "Exported"), type="positive" if r.get("success") else "negative")
+
+            def _vendor_export(vendor: str):
+                """Export duty roster reshaped for Mark43 / Tyler consumers."""
+                from pathlib import Path
+
+                from logic.cad_vendors import export_duty_for_vendor
+                from paths import data_path
+
+                exp = export_duty_roster_for_cad(days=1)
+                if not exp.get("success"):
+                    ui.notify(exp.get("message", "CAD export failed"), type="negative")
+                    return
+                rows = []
+                jp = exp.get("json_path") or exp.get("path")
+                if jp and Path(jp).is_file():
+                    import json
+
+                    try:
+                        payload = json.loads(Path(jp).read_text(encoding="utf-8"))
+                        rows = payload.get("rows") or payload.get("duty") or []
+                    except Exception:
+                        rows = []
+                if not rows and isinstance(exp.get("rows"), list):
+                    rows = exp["rows"]
+                shaped = export_duty_for_vendor(rows or [], vendor=vendor)
+                out_dir = Path(data_path("exports"))
+                out_dir.mkdir(parents=True, exist_ok=True)
+                from datetime import datetime
+
+                stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                out = out_dir / f"cad_{vendor}_{stamp}.json"
+                import json
+
+                out.write_text(json.dumps(shaped, indent=2, default=str), encoding="utf-8")
+                ui.notify(f"{vendor} export → {out} · rows={shaped.get('row_count', 0)}", type="positive")
+
+            def do_cad_hook():
+                r = post_cad_webhook()
+                ui.notify(r.get("message", "Webhook"), type="info")
+
+            def do_cad_import_dry():
+                from pathlib import Path
+
+                from paths import data_path
+
+                exp_dir = Path(data_path("exports"))
+                files = sorted(exp_dir.glob("cad_duty_roster_*.json"), reverse=True) if exp_dir.is_dir() else []
+                if not files:
+                    r = export_duty_roster_for_cad(days=1)
+                    if r.get("json_path"):
+                        files = [Path(r["json_path"])]
+                if not files:
+                    ui.notify("No CAD export to validate", type="warning")
+                    return
+                r = import_cad_duty_bidirectional(files[0], dry_run=True)
+                ui.notify(r.get("message", "Validated"), type="positive" if r.get("success") else "negative")
+
+            def do_cad_import_store():
+                from pathlib import Path
+
+                from paths import data_path
+
+                uid = (session.current_user() or {}).get("id")
+                exp_dir = Path(data_path("exports"))
+                files = sorted(exp_dir.glob("cad_duty_roster_*.json"), reverse=True) if exp_dir.is_dir() else []
+                if not files:
+                    ui.notify("Export first", type="warning")
+                    return
+                r = import_cad_duty_bidirectional(files[0], dry_run=False, user_id=uid)
+                ui.notify(r.get("message", "Imported"), type="positive" if r.get("success") else "negative")
+
+            def do_cad_pull():
+                uid = (session.current_user() or {}).get("id")
+                r = pull_cad_from_url(pull_url.value or None, dry_run=False, user_id=uid)
+                ui.notify(r.get("message", "Pull"), type="positive" if r.get("success") else "warning")
+
+            def do_cad_roundtrip():
+                uid = (session.current_user() or {}).get("id")
+                r = cad_bidirectional_roundtrip_smoke(user_id=uid)
+                ui.notify(r.get("message", "Roundtrip"), type="positive" if r.get("success") else "negative")
+
+            with ui.row().classes("gap-2 flex-wrap"):
+                ui.button("Save CAD bridge", on_click=save_cad_cfg).classes("btn-primary").props(
+                    "no-caps unelevated dense"
+                )
+                ui.button("Export duty for CAD", on_click=do_cad_export).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+                ui.button("Export Mark43 shape", on_click=lambda: _vendor_export("mark43")).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+                ui.button("Export Tyler shape", on_click=lambda: _vendor_export("tyler")).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+                ui.button("POST CAD webhook", on_click=do_cad_hook).classes("btn-ghost").props("no-caps outline dense")
+                ui.button("Dry import last export", on_click=do_cad_import_dry).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+                ui.button("Store import (apply if enabled)", on_click=do_cad_import_store).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+                ui.button("Pull from CAD URL", on_click=do_cad_pull).classes("btn-ghost").props("no-caps outline dense")
+                ui.button("Roundtrip smoke", on_click=do_cad_roundtrip).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+            # keep product pack helper referenced for parity
+            _ = import_cad_rms_duty_json
 
         with panel("Exports (wall roster / schedule PDF)"):
             with ui.row().classes("gap-2 flex-wrap"):
@@ -103,6 +335,51 @@ def render_operations() -> None:
                 )
                 ui.button("Export pending leave PDF", on_click=do_req_pdf).classes("btn-ghost").props(
                     "no-caps outline dense"
+                )
+
+                def do_cov():
+                    try:
+                        from logic.exports import export_coverage_pdf
+
+                        r = export_coverage_pdf(today, today)
+                    except Exception as exc:
+                        r = {"success": False, "message": str(exc)}
+                    ok = bool(r.get("success"))
+                    ui.notify(
+                        r.get("message") or r.get("path") or "Coverage PDF",
+                        type="positive" if ok else "negative",
+                    )
+
+                def do_diff():
+                    try:
+                        from logic import export_schedule_diff_csv
+
+                        r = export_schedule_diff_csv(today.year, today.month)
+                    except Exception as exc:
+                        r = {"success": False, "message": str(exc)}
+                    ok = bool(r.get("success")) if isinstance(r, dict) else bool(r)
+                    ui.notify(
+                        (r.get("message") if isinstance(r, dict) else None) or "Diff CSV",
+                        type="positive" if ok else "negative",
+                    )
+
+                def do_full_insights():
+                    try:
+                        ins = get_dashboard_insights() or {}
+                        ui.notify(
+                            f"Insights loaded · pending={ins.get('pending_requests')} gaps={ins.get('coverage_gap_count')}",
+                            type="info",
+                        )
+                    except Exception as exc:
+                        ui.notify(str(exc), type="negative")
+
+                ui.button("Coverage PDF", on_click=do_cov).classes("btn-ghost").props("no-caps outline dense")
+                ui.button("Schedule diff CSV", on_click=do_diff).classes("btn-ghost").props("no-caps outline dense")
+                ui.button("Load full dashboard insights", on_click=do_full_insights).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+                ui.button("Open exports hub", on_click=lambda: ui.navigate.to("/exports")).classes("btn-primary").props(
+                    "no-caps unelevated dense"
                 )
 
         # TeleStaff-style extra duty / special detail (evaluated from UKG + Netchex)

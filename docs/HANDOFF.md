@@ -1,25 +1,92 @@
+## NEXT SESSION
+- Simulator UI overhauled to remove Quickstart and Annual Live calculators, shifting to a clean dense grid layout.
+- Folder boundaries enforced in agent_kit.py.
+
 # Session Handoff — Dodgeville PD Scheduler
 
 **Purpose:** Living memory for agents (and humans) to resume work without re-reading full chat history.
 **Human-readable mirror:** [`PROJECT_README.md`](PROJECT_README.md) — keep both in sync when updating.
 **Update this file** when you finish a meaningful chunk of work (features, fixes, renames, perf passes).
 
-**Last updated:** 2026-07-13 (session close — handoff for next agent)
-**Verification:** run `python dev.py verify --tier check` before ship (do not trust stale counts). **`honest_gate: true` required** for any done/ship claim.
-**Next agent start pack:** [`docs/NEXT_AGENT_PROMPT.md`](NEXT_AGENT_PROMPT.md) · [`logs/NEXT_SESSION_BRIEF.md`](../logs/NEXT_SESSION_BRIEF.md) · [`logs/SESSION_CONTRACT.md`](../logs/SESSION_CONTRACT.md) · pack head only
+**Last updated:** 2026-07-17 (simulator UI · agency brand strip · NiceGUI UX · live SMS deferred)
+**Verification:** ship only → `verify --tier check` + `honest_gate: true`. Day-to-day → **one focused test** + human Chronos click. Logic green ≠ UI works.
+**Next agent start pack (auto):** `logs/SESSION_CONTRACT.md` · `logs/NEXT_SESSION_BRIEF.md` · `logs/agent_pack/latest.md` · `docs/AGENT_TRUST_AND_MISTAKES.md` · this § NEXT SESSION · [`docs/NEXT_AGENT_PROMPT.md`](NEXT_AGENT_PROMPT.md)
 
 ---
 
 ## NEXT SESSION (read this first)
 
-### What the human is doing
-**Live manual testing of Chronos** (`python main.py`). Expect UI half-wires, wrong click paths, date-format confusion. Prefer fix-from-logs + real handlers over process essays.
+### Trust / criticism (binding)
+Human called out **false "fixed" claims**, half-jobs, and late bug discovery. Full list: **`docs/AGENT_TRUST_AND_MISTAKES.md`**. Auto-injected into **`logs/SESSION_CONTRACT.md`** via `session_auto_bootstrap.py`.
+**Prove user scenario first. Never claim fixed without residual honesty.**
 
-### Verified at session close
+### What the human is doing
+Chronos Command **purchase / implement** + **supervisor testing** (esp. **simulator/optimizer**) + **remote UAT** when always-on is up.
+Binding landings: **`logs/NEXT_SESSION_BRIEF.md`**.
+
+### Brand (do not strip / do not re-break)
+- Product string (config): **`Chronos Command`** — Title Case in `APP_NAME` / `PRODUCT_NAME`
+- **Display:** **CHRONOS COMMAND** via CSS uppercase on brand classes only
+- **Never** uppercase credentials or mutate `APP_NAME` to all-caps in Python
+- **Agency-neutral UI:** no **Dodgeville** in user-facing defaults (dept `"Police Department"`, rotation **`2-2-3 (14-day)`**); legacy keys remapped on read
+- Vendor: **Weierworks Technologies, LLC** · Logo: `/media`
+- After CSS pulls: **Ctrl+F5**
+
+### Real-world sim reference (user)
+**8h** · **2008±20** annual · multi-block **6-2,5-3 | 6-3,5-2** · 24/7 min 1 · Fri+Sat 19:00–03:00 min 2 · **7** officers often thin weekend night → hard pack often needs **8**.
+Hard eval **always 28-day** (do not ship 14-day hard as truth). Unit: `test_real_world_eight_hour_multiblock_annual_and_nights`.
+
+### Verified at handoff (2026-07-17 simulator + brand + NiceGUI UX)
 | Gate | Result |
 |------|--------|
-| `python dev.py verify --tier check` | **PASS** · `honest_gate: true` · ~**424** unittest discover · 2026-07-13T05:21Z (`logs/last_verify.json`) |
-| Product | Chronos still **partial** (logic smoke ≠ browser e2e) |
+| Last ship `verify --tier check` | **PASS** · `honest_gate: true` (~06:07Z UTC) |
+| Simulator UI | Command surface · Standard/Deep free-N · chips · KPI · splitter · refreshable options · throttle |
+| NiceGUI | **3.14.0** (= latest) · patterns in `gui/ui_patterns.py` · skip-link · a11y CSS |
+| Agency brand | Dodgeville stripped from Chronos UI defaults + export titles |
+| Always-on UAT | Task still installed; **:8080 may be down** between sessions — start Chronos or always-on |
+| Local URL | `http://127.0.0.1:8080` · admin/admin when UAT lab |
+| Open residual | Supervisor **click** Find best · live SMS deferred · LDAP AD · tunnel URL stability |
+
+### Always-on rules (do not re-break)
+- User wants remote UAT when PC is on; code saves → restart Chronos; testers **Ctrl+F5**
+- **One process on :8080**
+- Doc: `docs/VIRTUAL_UAT.md` · Cloud VM: `docs/deploy/CLOUD_VM.md`
+
+### Product rules (do not re-break)
+**Simulator:** last-saved constraints only · OFF days OFF unless opt-in · multi-block in `staffing_optimizer` · user 8h/2008 first · **Standard free-N near hint; Deep 4–20; hard 28d**.
+**Sensitivity:** cheap default; deep only if asked.
+**Punch / tenant / notify / publish / CAD / LDAP / offline / stations / fatigue / UAT lab:** unchanged (see prior handoffs).
+
+### Hot modules (2026-07-17 evening)
+```
+gui/pages/simulator.py · gui/ui_patterns.py · gui/shell.py · gui/static/chronos.css
+config.py · seed_data.py · logic/operations.py · logic/rotation_config.py · logic/optimizer_features.py
+tests/test_simulator_constraints.py · tests/test_feature_ui_static.py
+logs/NEXT_SESSION_BRIEF.md · logs/remote_uat_url.txt
+```
+
+### Default work if user says "continue"
+1. Simulator / supervisor test path if they care (prove browser Find best)
+2. Keep always-on intact; one :8080; restart if down
+3. Do **not** put Dodgeville back in UI
+4. Live notify only if user escalates
+5. Re-`check` after product edits
+
+### Landed A→B→C (2026-07-13)
+
+| Phase | What |
+|-------|------|
+| **A** | Leave smoke re-proved; chronos-e2e extended (payroll FLSA, callbacks, OT election chrome); officer nav slim (`OFFICER_NAV_PATHS`); read_guard tests match lean modules |
+| **B** | **Deep Chrome** tokens in `gui/theme.py` + `chronos.css` (DESIGN.md B); silver CTAs, no violet; shell always syncs CSS; dashboard hero decision band |
+| **C** | Cert-gate supervisor open-shift assign; callback call-down “Log OT offer to next”; OT cash/comp radio on timecards; FLSA base date M/D/YY display; notify channel hooks UI + `logic/notify_channels.py` on schedule publish |
+
+### Agency-neutral branding (2026-07-14)
+
+- Removed shipped `logo.png` / `team_photo.jpg` / `photos/dept_*` / static brand copies
+- Runtime only: `photos/chronos_logo.png`, `dept_logo.png`, `dept_photo.jpg`
+- UI **Branding & Media**: Chronos logo + department logo/photo + Clear
+- Login/shell: product mark + **Chronos Command**; optional agency seal + hero photo
+- Builds/probes no longer require root brand assets
 
 ### Landed this session (do not re-break)
 
@@ -43,45 +110,54 @@ Static guards: `tests/test_feature_ui_static.py` (no `make_order(True/False)`, n
 - **Sources:** `config.py` DATE_* · `validators_dates.py` · GUI defaults use `format_date()`, not raw `.isoformat()`.
 - **Mistake avoided:** an interim day-first (D/M) attempt was **reverted** after user said **mm-dd-yy**. Do not re-apply D/M.
 
+### Landed 2026-07-14 (simulator + optimizer UX)
+
+| Area | What |
+|------|------|
+| Simulator UI | Locks, extra DOW/time windows, readable ranked Option buttons, label **Minimum officers per shift** — `gui/pages/simulator.py` |
+| Optimizer | Uses form constraints (not days=14 only); `logic/scheduling_sim.py` + `coverage_optimizer.optimize_staffing_scenarios` |
+| Engine | `extra_windows` evaluated in `simulator.py` |
+| Bump/plans | Scores internal; leave Plans = ranked options — `bump_optimizer` / `coverage_optimizer`, `plan_explain`, `leave.py` |
+| Brand | Tiny root placeholders + chronos logo; readiness tests updated |
+
 ### Default work if user says “continue”
-1. Relaunch Chronos; retest Time Off OT board, Simulator run, Timecard period jump, nav clocks
-2. Browser / `chronos-e2e` for leave approve + order-in (still **unproven**)
-3. P2 Chronos depth only with dual-rate honesty
-4. Optional: `rg` remaining user-visible ISO in `gui/`
+1. **Human retest simulator** (primary): locks → Find Best → click Option N → windows → Generate
+2. Fix only reported click failures; **one focused test** per fix
+3. Leave OT / order-in browser still unproven if they switch
+4. Full check only if ship claim
 
 ### Do not waste tokens on
+- Full `verify --tier check` every turn
 - Re-reading full `docs/archived_skills/`
 - Explore/plan subagents for gates
-- Claiming leave/payroll “complete” without browser proof
+- Claiming complete without human click proof
 - OSS / graphify / vision unless user asks
 
-### Trust status (2026-07-13 close)
+### Trust status (2026-07-14)
 
 | Check | Status |
 |-------|--------|
-| Slice registry | **Fixed** — `gui/pages/*` + `ui/pages/*`; mostly `partial` |
-| feature-map UI column | **Fixed** — file existence |
-| Full unittest | **~424 OK** in last check run (re-prove after edits) |
-| `verify --tier check` | **PASS** · `honest_gate: true` |
-| Chronos product depth | **Partial** — P2 table below |
-| Domain engine | **Strong** |
-| Leave / payroll / notifications | Logic smoke OK; **browser click paths unproven** |
+| Domain / unit | Strong for covered paths |
+| Full check | Green earlier this day — not a substitute for UI |
+| Chronos product | **Partial** |
+| Simulator | Code landed; **manual retest open** |
+| Leave / payroll browser | Still unproven |
 
-Trust maps restored. Product dual-rated **partial**.
+### Three brains (2026-07-16)
 
-### Scheduling modularization (2026-07-09)
+Contract: `docs/THREE_BRAINS_CONTRACT.md`. Boundary test: `tests/test_three_brains_boundary.py`.
 
-`logic/scheduling.py` split (public API unchanged — `import logic` / `from logic.scheduling import …`):
+| Brain | Modules |
+|-------|---------|
+| **Generator** | `scheduling.py`, `scheduling_matrix.py`, `rotation_*`, `shift_assignment`, `snapshots`, `rust_bridge` |
+| **Optimizer** | `coverage_optimizer.py`, `bump_optimizer.py`, `scheduling_sim.py`, `staffing_optimizer.py`, `optimized_schedule_apply.py`, `ot_fill.py` |
+| **Payroll** | `logic/payroll/*` |
 
-| Module | Role |
-|--------|------|
-| `logic/scheduling.py` | Rotation/rest core + re-exports (~450 lines) |
-| `logic/scheduling_bump.py` | Bump chain / replacement / format / validate |
-| `logic/scheduling_matrix.py` | Matrix, day status, override maps |
-| `logic/scheduling_sim.py` | Simulator + multi-plan preview (earlier extract) |
+`logic.scheduling` and package `import logic` do **not** re-export bump/sim.
+Prefer: `from logic.coverage_optimizer import suggest_bump_chain` / `from logic.scheduling_sim import run_schedule_simulation`.
+Tooling resolves symbols via `scripts/logic_resolve.py`.
 
-Scripts: `scripts/split_scheduling_bump.py`, `scripts/split_scheduling_matrix.py` (idempotent).
-**Validators split (same session):** facade `validators.py` + `validators_dates|rules|officer|auth|ops.py`; config gates lazy-re-exported from `validators_config.py`. Script: `scripts/split_validators.py`.
+**Validators split:** facade `validators.py` + `validators_dates|rules|officer|auth|ops.py`.
 ---
 
 ## Quick resume

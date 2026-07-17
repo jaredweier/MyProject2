@@ -11,6 +11,7 @@ from config import DATE_INPUT_HINT, OFFICER_SQUAD_OPTIONS
 from gui import session
 from gui.clock import today_local
 from gui.shell import layout, page_header, panel
+from gui.ui_patterns import empty_state, shift_card
 from logic import (
     create_open_shift,
     fill_open_shift,
@@ -19,6 +20,8 @@ from logic import (
     rank_open_shift_candidates,
 )
 from logic.certifications import officer_meets_shift_cert_requirements
+from logic.extra_duty import claim_extra_duty_event, create_extra_duty_event, marketplace_board
+from logic.product_complete_pack import giveaway_shift_as_open, run_vacancy_digest
 from logic.staffing_config import get_active_shift_times, get_officer_shift_options
 from validators import format_date, parse_date
 
@@ -27,8 +30,8 @@ def render_open_shifts() -> None:
     def body() -> None:
         page_header(
             "Open Shifts",
-            "Vacancy board · post coverage holes · claim or assign",
-            kicker="Self-service · LE pattern",
+            "Vacancies · claim/assign (cert-gated) · extra duty board",
+            kicker="Self-Service",
         )
         host = ui.element("div")
 
@@ -41,20 +44,50 @@ def render_open_shifts() -> None:
             ui.button("Refresh board", on_click=refresh).classes("btn-ghost").props("no-caps outline dense")
 
             def run_digest():
-                try:
-                    from scripts.open_shift_digest import run_open_shift_digest
+                uid = (session.current_user() or {}).get("id")
+                r = run_vacancy_digest(dry_run=False, user_id=uid)
+                if not r.get("success"):
+                    try:
+                        from scripts.open_shift_digest import run_open_shift_digest
 
-                    code = run_open_shift_digest(dry_run=False)
-                    ui.notify(
-                        "Vacancy digest sent to active officers" if code == 0 else "Digest finished with issues",
-                        type="positive" if code == 0 else "warning",
-                    )
-                except Exception as exc:
-                    ui.notify(str(exc), type="negative")
+                        code = run_open_shift_digest(dry_run=False)
+                        ui.notify(
+                            "Vacancy digest sent to active officers" if code == 0 else "Digest finished with issues",
+                            type="positive" if code == 0 else "warning",
+                        )
+                        return
+                    except Exception as exc:
+                        ui.notify(str(exc), type="negative")
+                        return
+                ui.notify(r.get("message", "Digest done"), type="positive" if r.get("success") else "warning")
 
             if session.can("open_shifts.manage") or session.can("notifications.manage"):
                 ui.button("Notify officers (digest)", on_click=run_digest).classes("btn-primary").props(
                     "no-caps unelevated dense"
+                )
+
+        oid_self = session.linked_officer_id()
+        if oid_self and (session.is_officer() or session.can("open_shifts.claim")):
+            with panel("Give away my shift", glow=False):
+                gd = ui.input(label="Date", value=format_date(today_local())).classes("w-full")
+                gn = ui.input(label="Note", value="Giveaway").classes("w-full")
+
+                def do_giveaway():
+                    uid = (session.current_user() or {}).get("id")
+                    r = giveaway_shift_as_open(
+                        int(oid_self),
+                        gd.value or today_local(),
+                        notes=(gn.value or "Giveaway").strip(),
+                        user_id=uid,
+                    )
+                    ui.notify(
+                        r.get("message", "Posted") if r.get("success") else r.get("message", "Failed"),
+                        type="positive" if r.get("success") else "negative",
+                    )
+                    refresh()
+
+                ui.button("Post giveaway as open shift", on_click=do_giveaway).classes("btn-ghost").props(
+                    "no-caps outline dense"
                 )
 
         can_post = session.can("open_shifts.manage") or session.can("schedule.updated.edit")
@@ -112,7 +145,51 @@ def render_open_shifts() -> None:
                     else:
                         ui.notify(result.get("message", "Failed to post"), type="negative")
 
-                ui.button("Post vacancy", on_click=post).classes("btn-primary q-mt-sm").props("no-caps unelevated")
+                ui.button("Post Vacancy", on_click=post).classes("btn-primary q-mt-sm").props("no-caps unelevated")
+
+            with panel("Post Extra Duty (Off-Duty Detail)"):
+                ed_name = ui.input(label="Event Name", value="Extra Duty").classes("w-full")
+                ed_loc = ui.input(label="Location", value="").classes("w-full")
+                ed_bill = ui.input(label="Billing Code", value="").classes("w-full")
+                ed_date = ui.input(
+                    label=f"Date ({DATE_INPUT_HINT})",
+                    value=format_date(today_local()),
+                ).classes("w-full")
+                ed_start = ui.select(
+                    starts or ["19:00"],
+                    value=(starts or ["19:00"])[-1],
+                    label="Start",
+                ).classes("w-full")
+                ed_end = ui.input(
+                    label="End (HH:MM)",
+                    value=end_map.get((starts or ["19:00"])[-1], "06:00"),
+                ).classes("w-full")
+
+                def post_extra():
+                    dt = parse_date((ed_date.value or "").strip())
+                    if not dt:
+                        ui.notify("Invalid date", type="negative")
+                        return
+                    uid = (session.current_user() or {}).get("id")
+                    r = create_extra_duty_event(
+                        dt.isoformat(),
+                        ed_start.value,
+                        (ed_end.value or "").strip() or "06:00",
+                        event_name=(ed_name.value or "Extra Duty").strip(),
+                        location=(ed_loc.value or "").strip(),
+                        billing_code=(ed_bill.value or "").strip(),
+                        user_id=uid,
+                    )
+                    ui.notify(
+                        r.get("message", "Posted") if r.get("success") else r.get("message", "Failed"),
+                        type="positive" if r.get("success") else "negative",
+                    )
+                    if r.get("success"):
+                        refresh()
+
+                ui.button("Post Extra Duty", on_click=post_extra).classes("btn-primary q-mt-sm").props(
+                    "no-caps unelevated"
+                )
 
         refresh()
 
@@ -121,60 +198,125 @@ def render_open_shifts() -> None:
 
 def _board() -> None:
     oid = session.linked_officer_id()
+    # Extra-duty marketplace strip
+    try:
+        market = marketplace_board(limit=20) or {}
+        extra_open = market.get("open") or []
+    except Exception:
+        extra_open = []
+    if extra_open:
+        with panel(f"Extra Duty Board · {len(extra_open)}", glow=True):
+            for ev in extra_open[:15]:
+                with ui.element("div").classes("data-row"):
+                    with ui.element("div").classes("grow"):
+                        ui.label(
+                            f"{ev.get('date_display') or format_date(ev.get('shift_date') or '')} · "
+                            f"{ev.get('event_name') or 'Extra Duty'} · "
+                            f"{ev.get('shift_start')}–{ev.get('shift_end')} · "
+                            f"{ev.get('location') or ''}"
+                        ).classes("text-sm font-semibold")
+                        ui.label(f"Billing {ev.get('billing_code') or '—'} · {ev.get('notes') or ''}").classes(
+                            "text-xs text-gray-500"
+                        )
+                    if session.is_officer() and oid:
+
+                        def claim_ed(sid=ev.get("id"), officer=oid):
+                            uid = (session.current_user() or {}).get("id")
+                            r = claim_extra_duty_event(int(sid), int(officer), user_id=uid)
+                            ui.notify(
+                                r.get("message", "Claimed") if r.get("success") else r.get("message", "Failed"),
+                                type="positive" if r.get("success") else "negative",
+                            )
+                            if r.get("success"):
+                                ui.navigate.to("/open-shifts")
+
+                        ui.button("Claim Detail", on_click=claim_ed).classes("btn-primary").props(
+                            "dense no-caps unelevated"
+                        )
+
     if session.is_officer() and oid:
         rows = get_open_shifts(status="open", limit=50, officer_id=oid)
     else:
         rows = get_open_shifts(status="open", limit=50)
 
+    # Filter EXTRA_DUTY out of regular board (shown above)
+    rows = [r for r in (rows or []) if not str(r.get("notes") or "").startswith("EXTRA_DUTY|")]
+
     if not rows:
-        ui.html(
-            '<div class="alert alert-ok">No open vacancies. Supervisors post coverage holes above '
-            "(Aladtec/Snap-style open-shift marketplace).</div>",
-            sanitize=False,
+        empty_state(
+            "No open vacancies",
+            "Supervisors can post coverage holes above. Officers: check back after a giveaway or digest.",
+            cta_label="My week" if session.is_officer() else "Duty board",
+            cta_path="/my-week" if session.is_officer() else "/",
         )
         return
 
     with panel(f"Open vacancies · {len(rows)}", glow=True):
         for sh in rows:
-            with ui.element("div").classes("data-row"):
-                with ui.element("div").classes("grow"):
-                    d = format_date(sh.get("shift_date") or "")
-                    ui.label(
-                        f"{d} · {sh.get('shift_start') or '—'}–{sh.get('shift_end') or '—'} · "
-                        f"Squad {sh.get('squad') or 'Any'}"
-                    ).classes("text-sm font-semibold")
-                    ui.label(sh.get("notes") or "No notes").classes("text-xs text-gray-500")
+            d = format_date(sh.get("shift_date") or "")
+            start_band = sh.get("shift_start") or ""
+            title = f"{d} · {start_band or '—'}–{sh.get('shift_end') or '—'}"
+            sub = f"Squad {sh.get('squad') or 'Any'}"
+            notes = sh.get("notes") or "No notes"
+            ok_cert, cert_msg = True, ""
+            if session.is_officer() and oid:
+                try:
+                    ok_cert, cert_msg = officer_meets_shift_cert_requirements(oid, start_band)
+                except Exception:
+                    ok_cert, cert_msg = True, ""
 
-                if session.is_officer() and oid:
-                    start_band = sh.get("shift_start") or ""
+            card_id = f"open-shift-{sh.get('id')}"
+
+            def claim(sid=sh["id"], officer=oid, band=start_band, cid=card_id):
+                # Optimistic UI — fade card immediately
+                try:
+                    ui.run_javascript(f'document.getElementById({cid!r})?.classList.add("claimed-optimistic");')
+                except Exception:
+                    pass
+                try:
+                    meets, msg = officer_meets_shift_cert_requirements(officer, band or "")
+                except Exception:
+                    meets, msg = True, ""
+                if not meets:
+                    ui.notify(msg or "Missing required certification for this band", type="warning")
                     try:
-                        ok_cert, cert_msg = officer_meets_shift_cert_requirements(oid, start_band)
+                        ui.run_javascript(f'document.getElementById({cid!r})?.classList.remove("claimed-optimistic");')
                     except Exception:
-                        ok_cert, cert_msg = True, ""
-                    if not ok_cert:
-                        ui.label(f"Cert: {cert_msg or 'requirements not met'}").classes("text-xs text-amber-400")
+                        pass
+                    return
+                uid = (session.current_user() or {}).get("id")
+                result = fill_open_shift(sid, officer, user_id=uid)
+                if result.get("success"):
+                    ui.notify("Shift claimed", type="positive")
+                    ui.navigate.to("/open-shifts")
+                else:
+                    ui.notify(result.get("message", "Claim failed"), type="negative")
+                    try:
+                        ui.run_javascript(f'document.getElementById({cid!r})?.classList.remove("claimed-optimistic");')
+                    except Exception:
+                        pass
 
-                    def claim(sid=sh["id"], officer=oid, band=start_band):
-                        try:
-                            meets, msg = officer_meets_shift_cert_requirements(officer, band or "")
-                        except Exception:
-                            meets, msg = True, ""
-                        if not meets:
-                            ui.notify(msg or "Missing required certification for this band", type="warning")
-                            return
-                        uid = (session.current_user() or {}).get("id")
-                        result = fill_open_shift(sid, officer, user_id=uid)
-                        if result.get("success"):
-                            ui.notify("Shift claimed", type="positive")
-                            ui.navigate.to("/open-shifts")
-                        else:
-                            ui.notify(result.get("message", "Claim failed"), type="negative")
-
-                    claim_btn = (
-                        ui.button("Claim", on_click=claim).classes("btn-primary").props("dense no-caps unelevated")
-                    )
-                    if start_band and not ok_cert:
-                        claim_btn.props("disable")
+            if session.is_officer() and oid:
+                shift_card(
+                    title=title,
+                    subtitle=sub if ok_cert else f"{sub} · cert: {cert_msg or 'blocked'}",
+                    meta=notes,
+                    status="Open" if ok_cert else "Cert",
+                    status_level="warn" if ok_cert else "crit",
+                    primary_label="Claim",
+                    on_primary=claim,
+                    disabled_primary=bool(start_band and not ok_cert),
+                    card_id=card_id,
+                )
+            else:
+                shift_card(
+                    title=title,
+                    subtitle=sub,
+                    meta=notes,
+                    status="Open",
+                    status_level="warn",
+                    card_id=card_id,
+                )
 
         if not session.is_officer() and (session.can("open_shifts.manage") or session.can("schedule.updated.edit")):
             officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
@@ -196,6 +338,21 @@ def _board() -> None:
                     if not off_id or not sid:
                         ui.notify("Select vacancy and officer", type="warning")
                         return
+                    # Cert-gate supervisor assign (same rule as officer claim)
+                    band = ""
+                    for r in rows:
+                        if r.get("id") == sid:
+                            band = r.get("shift_start") or ""
+                            break
+                    if band:
+                        try:
+                            meets, msg = officer_meets_shift_cert_requirements(int(off_id), band)
+                        except Exception as exc:
+                            ui.notify(f"Cert check failed: {exc}", type="negative")
+                            return
+                        if not meets:
+                            ui.notify(msg or "Officer missing required certification for this band", type="warning")
+                            return
                     uid = (session.current_user() or {}).get("id")
                     result = fill_open_shift(int(sid), int(off_id), user_id=uid)
                     ok = result.get("success")

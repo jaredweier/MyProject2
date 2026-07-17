@@ -1,0 +1,60 @@
+# Full stack: Chronos + Caddy TLS (use alone from repo root)
+#   cp deploy/cloud/env.example .env   # edit secrets + CHRONOS_DOMAIN
+#   docker compose -f deploy/cloud/docker-compose.caddy.yml up -d --build
+#
+# DNS: A record CHRONOS_DOMAIN → this VM public IP (ports 80 + 443 open)
+
+services:
+  chronos:
+    build:
+      context: ../..
+      dockerfile: Dockerfile
+    image: chronos-command:latest
+    container_name: chronos-command
+    environment:
+      SCHEDULER_UI_MODE: web
+      SCHEDULER_HOST: "0.0.0.0"
+      SCHEDULER_PORT: "8080"
+      SCHEDULER_STORAGE_SECRET: ${SCHEDULER_STORAGE_SECRET:-change-me-before-production}
+      SCHEDULER_PUBLIC_URL: https://${CHRONOS_DOMAIN:-localhost}
+      SCHEDULER_SKIP_STARTUP_GATES: "1"
+      SCHEDULER_DB_PATH: /app/persist/dodgeville_scheduler.db
+      SCHEDULER_TENANT_ID: ${SCHEDULER_TENANT_ID:-}
+      SCHEDULER_TENANT_NAME: ${SCHEDULER_TENANT_NAME:-}
+    volumes:
+      - chronos_persist:/app/persist
+      - chronos_photos:/app/photos
+      - chronos_logs:/app/logs
+      - chronos_backups:/app/backups
+      - chronos_exports:/app/exports
+      - chronos_tenants:/app/tenants
+    restart: unless-stopped
+    # localhost only — public traffic goes through Caddy
+    expose:
+      - "8080"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: chronos-caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      CHRONOS_DOMAIN: ${CHRONOS_DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - chronos
+
+volumes:
+  chronos_persist:
+  chronos_photos:
+  chronos_logs:
+  chronos_backups:
+  chronos_exports:
+  chronos_tenants:
+  caddy_data:
+  caddy_config:

@@ -1,6 +1,8 @@
-"""Schedule matrix, day status, and override maps.
+"""Schedule matrix, day status, and override maps — **generator** brain.
 
-Extracted from ``logic.scheduling``. Re-exported via ``logic.scheduling``.
+Public fact APIs for payroll/optimizer: ``get_officer_day_status``,
+``shift_hours``, ``officer_shift_hours``, ``officer_work_days_per_cycle``.
+Private ``_`` names kept as aliases for back-compat.
 """
 
 from __future__ import annotations
@@ -223,7 +225,8 @@ def _officer_history_reason(cursor, officer_id: int) -> Optional[str]:
     return None
 
 
-def _officer_shift_hours(officer: Dict) -> float:
+def officer_shift_hours(officer: Dict) -> float:
+    """Generator fact: hours for an officer's assigned shift band."""
     start = officer["shift_start"].split(":")
     end = officer["shift_end"].split(":")
     start_m = int(start[0]) * 60 + int(start[1])
@@ -233,7 +236,11 @@ def _officer_shift_hours(officer: Dict) -> float:
     return round((end_m - start_m) / 60, 2)
 
 
-def _officer_work_days_per_cycle(officer: Dict) -> int:
+_officer_shift_hours = officer_shift_hours  # back-compat
+
+
+def officer_work_days_per_cycle(officer: Dict) -> int:
+    """Generator fact: on-duty days in the active rotation cycle for this officer's squad."""
     count = 0
     cycle_length = get_active_rotation_cycle_length()
     for day in range(1, cycle_length + 1):
@@ -242,13 +249,17 @@ def _officer_work_days_per_cycle(officer: Dict) -> int:
     return count
 
 
+_officer_work_days_per_cycle = officer_work_days_per_cycle  # back-compat
+
+
 def _rotation_only_status(officer: Dict, target_date: date) -> str:
     if _scheduling().officer_base_rotation_working(officer, target_date):
         return "working"
     return "off"
 
 
-def _shift_hours(shift_start: str, shift_end: str) -> float:
+def shift_hours(shift_start: str, shift_end: str) -> float:
+    """Generator fact: length in hours of a shift start/end pair (overnight-aware)."""
     start_h, start_m = map(int, shift_start.split(":"))
     end_h, end_m = map(int, shift_end.split(":"))
     start_mins = start_h * 60 + start_m
@@ -256,6 +267,9 @@ def _shift_hours(shift_start: str, shift_end: str) -> float:
     if end_mins <= start_mins:
         end_mins += 24 * 60
     return round((end_mins - start_mins) / 60, 2)
+
+
+_shift_hours = shift_hours  # back-compat
 
 
 def get_monthly_rotation_summary(year: int, month: int) -> List[Dict]:
@@ -349,5 +363,5 @@ def get_officer_effective_shift_band(officer_id: int, target_date: date) -> Opti
         conn.close()
         if row and row["covered_shift_start"]:
             shift_start = row["covered_shift_start"]
-            shift_end = _scheduling()._shift_end_for_start(shift_start)
+            shift_end = _scheduling().shift_end_for_start_active(shift_start)
     return shift_start, shift_end

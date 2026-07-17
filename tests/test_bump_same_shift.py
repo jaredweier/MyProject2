@@ -10,6 +10,7 @@ class BumpSameShiftTests(unittest.TestCase):
         with test_database():
             import logic
             from database import get_connection
+            from logic.coverage_optimizer import suggest_bump_chain
             from logic.staffing_config import save_staffing_settings
             from validators import officer_uses_command_staff_schedule
 
@@ -56,7 +57,7 @@ class BumpSameShiftTests(unittest.TestCase):
             requester = officers[0]
             work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
 
-            suggestion = logic.suggest_bump_chain(
+            suggestion = suggest_bump_chain(
                 requester["id"],
                 work_day,
                 requester["squad"],

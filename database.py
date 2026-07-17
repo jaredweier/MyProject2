@@ -8,7 +8,23 @@ from typing import Iterator
 from paths import data_path, ensure_data_dirs
 
 ensure_data_dirs()
-DB_PATH = os.environ.get("SCHEDULER_DB_PATH", data_path("dodgeville_scheduler.db"))
+
+
+def _resolve_db_path() -> str:
+    env = (os.environ.get("SCHEDULER_DB_PATH") or "").strip()
+    if env:
+        parent = os.path.dirname(os.path.abspath(env))
+        if parent and not os.path.isdir(parent):
+            try:
+                os.makedirs(parent, exist_ok=True)
+            except OSError:
+                pass
+        return env
+    # Multi-tenant: SCHEDULER_TENANT_ID → tenants/<id>/dodgeville_scheduler.db via data_path
+    return data_path("dodgeville_scheduler.db")
+
+
+DB_PATH = _resolve_db_path()
 
 
 @contextmanager
@@ -298,12 +314,20 @@ def init_database():
     conn.commit()
     conn.close()
 
-    from seed_data import seed_holidays_if_empty, seed_if_empty, seed_settings_if_empty, seed_users_if_empty
+    from seed_data import (
+        seed_default_stations,
+        seed_holidays_if_empty,
+        seed_if_empty,
+        seed_settings_if_empty,
+        seed_users_if_empty,
+    )
 
     seed_if_empty()
     seed_users_if_empty()
     seed_holidays_if_empty()
     seed_settings_if_empty()
+    # After officers exist: HQ post + assign blank station → HQ (idempotent)
+    seed_default_stations()
 
 
 def _ensure_schema_migrations(cursor) -> None:
@@ -434,6 +458,108 @@ def _migrate_frontier_features(cursor) -> None:
                 )
             except Exception:
                 pass
+
+    # Notify outbox + OT equity + stations + geofence (online product paths)
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS notify_outbox (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            channel TEXT NOT NULL,
+            template_key TEXT,
+            subject TEXT,
+            body TEXT,
+            officer_id INTEGER,
+            recipient TEXT,
+            status TEXT NOT NULL DEFAULT 'queued',
+            attempts INTEGER DEFAULT 0,
+            last_error TEXT,
+            provider_ref TEXT,
+            meta_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            sent_at TIMESTAMP,
+            user_id INTEGER
+        )
+        """
+    )
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_notify_outbox_status ON notify_outbox(status, created_at)")
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS ot_equity_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            officer_id INTEGER NOT NULL,
+            entry_type TEXT NOT NULL,
+            hours REAL NOT NULL DEFAULT 0,
+            event_date DATE,
+            source TEXT,
+            source_id INTEGER,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_by_user_id INTEGER,
+            FOREIGN KEY (officer_id) REFERENCES officers(id)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS station_posts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            code TEXT NOT NULL UNIQUE,
+            name TEXT NOT NULL,
+            min_staff INTEGER DEFAULT 1,
+            active INTEGER DEFAULT 1,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS geofence_punches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            officer_id INTEGER NOT NULL,
+            punch_type TEXT NOT NULL,
+            lat REAL,
+            lon REAL,
+            accuracy_m REAL,
+            within_fence INTEGER,
+            distance_m REAL,
+            notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            edited INTEGER DEFAULT 0,
+            original_created_at TIMESTAMP,
+            FOREIGN KEY (officer_id) REFERENCES officers(id)
+        )
+        """
+    )
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS punch_edit_requests (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            punch_id INTEGER NOT NULL,
+            officer_id INTEGER NOT NULL,
+            requested_by_user_id INTEGER,
+            current_punch_type TEXT,
+            current_created_at TEXT,
+            proposed_punch_type TEXT,
+            proposed_created_at TEXT,
+            reason TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            reviewed_by_user_id INTEGER,
+            review_notes TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            reviewed_at TIMESTAMP,
+            FOREIGN KEY (punch_id) REFERENCES geofence_punches(id),
+            FOREIGN KEY (officer_id) REFERENCES officers(id)
+        )
+        """
+    )
+    # Default punch policy off (free time entry)
+    cursor.execute("SELECT value FROM department_settings WHERE key = ?", ("punch_required",))
+    if not cursor.fetchone():
+        cursor.execute(
+            "INSERT INTO department_settings (key, value) VALUES (?, ?)",
+            ("punch_required", "0"),
+        )
 
 
 def _migrate_demo_password_policy(cursor) -> None:
@@ -910,9 +1036,23 @@ def restore_database(backup_path: str) -> str:
             live_conn.close()
     except sqlite3.Error:
         pass
+    import time
+
     for suffix in ("", "-wal", "-shm"):
         path = f"{live_path}{suffix}"
-        if os.path.isfile(path):
-            os.remove(path)
+        if not os.path.isfile(path):
+            continue
+        # Windows: brief retry if a short-lived connection still holds the file
+        last_err: Exception | None = None
+        for _ in range(8):
+            try:
+                os.remove(path)
+                last_err = None
+                break
+            except OSError as exc:
+                last_err = exc
+                time.sleep(0.05)
+        if last_err is not None:
+            raise last_err
     shutil.copy2(backup_path, live_path)
     return safety

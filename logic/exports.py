@@ -29,7 +29,17 @@ def export_schedule_pdf(
     if not output_path:
         suffix = f"_officer_{officer_id}" if officer_id else ""
         output_path = data_path(f"exports/schedule_{format_date(start_date)}_{format_date(end_date)}{suffix}.pdf")
-    title = f"Dodgeville PD Schedule {format_date(start_date)} – {format_date(end_date)}"
+    try:
+        from config import APP_NAME
+        from logic.operations import get_department_setting
+
+        dept = (get_department_setting("department_name", "") or "").strip()
+        brand = dept or APP_NAME
+    except Exception:
+        from config import APP_NAME
+
+        brand = APP_NAME
+    title = f"{brand} Schedule {format_date(start_date)} – {format_date(end_date)}"
     if officer_id:
         officer = get_officer_by_id(officer_id)
         if officer:
@@ -91,7 +101,7 @@ def export_officer_schedule_ical(
     lines = [
         "BEGIN:VCALENDAR",
         "VERSION:2.0",
-        "PRODID:-//Dodgeville PD Scheduler//EN",
+        "PRODID:-//Chronos Command//EN",
         "CALSCALE:GREGORIAN",
         f"X-WR-CALNAME:{officer['name']} Schedule",
     ]
@@ -101,7 +111,7 @@ def export_officer_schedule_ical(
         day_date = day["date"]
         shift_start = officer["shift_start"]
         shift_end = officer["shift_end"]
-        uid = f"dpd-{officer_id}-{day_date}@dodgeville.local"
+        uid = f"chronos-{officer_id}-{day_date}@chronos.local"
         dt = day_date.replace("-", "")
         lines.extend(
             [

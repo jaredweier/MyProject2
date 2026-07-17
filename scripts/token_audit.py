@@ -301,6 +301,11 @@ def run_token_audit(*, strict: bool = False) -> int:
             "gui/pages/schedules.py",
             "gui/pages/self_service.py",
             "gui/pages/simulator.py",
+            "logic/staffing_optimizer.py",
+            "logic/optimizer_features.py",
+            "logic/coverage_optimizer.py",
+            "logic/bump_optimizer.py",
+            "simulator.py",
         }
         surprise = [e["path"] for e in indexed if e["path"] not in allowed_large]
         checks.append(

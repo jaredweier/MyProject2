@@ -9,14 +9,20 @@ from nicegui import ui
 
 from gui import session
 from gui.shell import layout, page_header, panel
+from gui.ui_patterns import empty_state
 from logic import (
+    auto_close_expired_shift_bid_events,
+    cancel_shift_bid_event,
     create_shift_bid_event,
     finalize_shift_bid_event,
+    get_officer_shift_bid_awards,
+    get_officers_by_seniority,
     get_shift_bid_event,
     get_shift_bid_events,
     get_shift_bid_participation_report,
     preview_shift_bid_awards,
     publish_shift_bid_event,
+    reassign_shift_bid_option,
     submit_shift_bid_rankings,
     update_shift_bid_assignments,
 )
@@ -27,8 +33,18 @@ def render_bidding() -> None:
     def body() -> None:
         page_header(
             "Shift Bidding",
-            "Publish bid events · officer rankings · seniority awards",
-            kicker="Self-service · LE pattern",
+            "Season workflow: Draft → Publish → Officers rank → Preview awards → Finalize",
+            kicker="Chronos Command · CBA pattern",
+        )
+        # Season wizard strip
+        ui.html(
+            '<div class="kpi-row q-mb-md">'
+            '<div class="kpi g"><div class="kpi-l">1 · Draft</div><div class="kpi-v" style="font-size:16px">Create event</div></div>'
+            '<div class="kpi"><div class="kpi-l">2 · Publish</div><div class="kpi-v" style="font-size:16px">Open rankings</div></div>'
+            '<div class="kpi"><div class="kpi-l">3 · Rank</div><div class="kpi-v" style="font-size:16px">Officers bid</div></div>'
+            '<div class="kpi"><div class="kpi-l">4 · Award</div><div class="kpi-v" style="font-size:16px">Preview · Finalize</div></div>'
+            "</div>",
+            sanitize=False,
         )
         host = ui.element("div")
 
@@ -39,12 +55,20 @@ def render_bidding() -> None:
                     _officer_bid_form()
                 _event_list()
 
-        with ui.row().classes("gap-2 q-mb-md"):
+        with ui.row().classes("gap-2 q-mb-md flex-wrap"):
             ui.button("Refresh", on_click=refresh).classes("btn-ghost").props("no-caps outline dense")
+            if session.can("shift_bids.manage"):
+
+                def auto_close():
+                    n = auto_close_expired_shift_bid_events()
+                    ui.notify(f"Closed {n} expired bid event(s)", type="positive" if n else "info")
+                    refresh()
+
+                ui.button("Auto-close expired", on_click=auto_close).classes("btn-ghost").props("no-caps outline dense")
 
         if session.can("shift_bids.manage"):
-            with panel("Create bid event (supervisor)", glow=True):
-                title = ui.input(label="Title", value="Shift bid cycle").classes("w-full")
+            with panel("Create bid season (supervisor)", glow=True):
+                title = ui.input(label="Season title", value="Annual shift bid").classes("w-full")
                 begins = ui.input(label="Shifts begin (M/D/YYYY or ISO)", value="8/1/2026").classes("w-full")
                 due = ui.input(label="Bids due by", value="7/25/2026 17:00").classes("w-full")
                 starts = ui.input(
@@ -52,15 +76,16 @@ def render_bidding() -> None:
                     value="06:00,10:00,15:00,19:00",
                 ).classes("w-full")
                 n_shifts = ui.input(label="Number of shifts", value="4").classes("w-full")
-                length = ui.input(label="Shift length (hours)", value="11").classes("w-full")
-                notes = ui.input(label="Notes").classes("w-full")
+                length = ui.input(label="Shift length (hours)", value="8").classes("w-full")
+                notes = ui.input(label="Notes / CBA reference").classes("w-full")
+                notify_on_pub = ui.switch("Notify officers when published (email/SMS if enabled)", value=True)
 
                 def create():
                     uid = (session.current_user() or {}).get("id")
                     result = create_shift_bid_event(
                         title=(title.value or "Shift bid").strip(),
                         number_of_shifts=(n_shifts.value or "4").strip(),
-                        shift_length=(length.value or "11").strip(),
+                        shift_length=(length.value or "8").strip(),
                         rotation="A",
                         shift_start_times=(starts.value or "").strip(),
                         shifts_begin=(begins.value or "").strip(),
@@ -74,9 +99,49 @@ def render_bidding() -> None:
                     else:
                         ui.notify(result.get("message", "Create failed"), type="negative")
 
-                ui.button("Create draft event", on_click=create).classes("btn-primary q-mt-sm").props(
-                    "no-caps unelevated"
-                )
+                def create_and_publish():
+                    uid = (session.current_user() or {}).get("id")
+                    result = create_shift_bid_event(
+                        title=(title.value or "Shift bid").strip(),
+                        number_of_shifts=(n_shifts.value or "4").strip(),
+                        shift_length=(length.value or "8").strip(),
+                        rotation="A",
+                        shift_start_times=(starts.value or "").strip(),
+                        shifts_begin=(begins.value or "").strip(),
+                        bids_due_by=(due.value or "").strip(),
+                        notes=(notes.value or "").strip(),
+                        user_id=uid,
+                    )
+                    if not result.get("success"):
+                        ui.notify(result.get("message", "Create failed"), type="negative")
+                        return
+                    eid = result.get("event_id")
+                    pub = publish_shift_bid_event(eid, user_id=uid)
+                    if pub.get("success") and notify_on_pub.value:
+                        try:
+                            from logic import dispatch_template, get_officers_by_seniority
+
+                            oids = [o["id"] for o in (get_officers_by_seniority() or []) if o.get("active", 1)]
+                            dispatch_template(
+                                "shift_bid_open",
+                                officer_ids=oids[:80],
+                                user_id=uid,
+                                title=(title.value or "Shift bid").strip(),
+                                due=(due.value or "").strip(),
+                            )
+                        except Exception:
+                            pass
+                    ui.notify(
+                        pub.get("message", "Published") if pub.get("success") else pub.get("message", "Fail"),
+                        type="positive" if pub.get("success") else "negative",
+                    )
+                    refresh()
+
+                with ui.row().classes("gap-2 q-mt-sm flex-wrap"):
+                    ui.button("1 · Create draft", on_click=create).classes("btn-ghost").props("no-caps outline")
+                    ui.button("1+2 · Create & publish season", on_click=create_and_publish).classes(
+                        "btn-primary"
+                    ).props("no-caps unelevated")
 
         refresh()
 
@@ -106,6 +171,10 @@ def _officer_bid_form() -> None:
             if (e.get("status") or "").lower() == "open"
         ]
     if not open_events:
+        empty_state(
+            "No open bid seasons",
+            "When a supervisor publishes a season, rank your preferred shifts here.",
+        )
         return
 
     with panel("Submit my bid rankings", glow=True):
@@ -180,12 +249,31 @@ def _event_list() -> None:
     include_drafts = session.can("shift_bids.manage")
     events = get_shift_bid_events(include_drafts=include_drafts, limit=30)
     if not events:
-        ui.html(
-            '<div class="alert alert-ok">No bid events yet. Supervisors create a draft, publish, '
-            "then finalize awards (Snap Schedule–style annual/cycle bidding).</div>",
-            sanitize=False,
+        empty_state(
+            "No bid events yet",
+            "Supervisors create a draft, publish, then finalize awards (annual/cycle bidding).",
         )
         return
+
+    # Officer awards strip
+    oid_self = session.linked_officer_id()
+    if oid_self:
+        try:
+            awards = get_officer_shift_bid_awards(int(oid_self)) or []
+            if isinstance(awards, dict):
+                awards = awards.get("awards") or awards.get("rows") or []
+            if awards:
+                with panel("My bid awards", glow=False):
+                    for a in (awards if isinstance(awards, list) else [])[:8]:
+                        if isinstance(a, dict):
+                            ui.label(
+                                f"{a.get('event_title') or a.get('title') or 'Event'} · "
+                                f"{a.get('option_label') or a.get('shift') or a.get('status') or a}"
+                            ).classes("text-sm q-mb-xs")
+                        else:
+                            ui.label(str(a)[:100]).classes("text-sm")
+        except Exception:
+            pass
 
     with panel(f"Bid events · {len(events)}"):
         for ev in events:
@@ -200,7 +288,7 @@ def _event_list() -> None:
                         f"Options {ev.get('option_count', 0)} · Bids {ev.get('respondent_count', 0)}"
                     ).classes("text-xs text-gray-500")
                 if session.can("shift_bids.manage"):
-                    with ui.row().classes("gap-1"):
+                    with ui.row().classes("gap-1 flex-wrap"):
                         st = (ev.get("status") or "").lower()
                         if st == "draft":
 
@@ -214,6 +302,21 @@ def _event_list() -> None:
                                 ui.navigate.to("/bidding")
 
                             ui.button("Publish", on_click=pub).classes("btn-primary").props("dense no-caps unelevated")
+
+                        if st in ("draft", "open", "published", "bidding"):
+
+                            def cancel(eid=ev["id"]):
+                                uid = (session.current_user() or {}).get("id")
+                                r = cancel_shift_bid_event(int(eid), user_id=uid)
+                                ui.notify(
+                                    r.get("message", "Cancelled") if r.get("success") else r.get("message", "Fail"),
+                                    type="info" if r.get("success") else "negative",
+                                )
+                                if r.get("success"):
+                                    ui.navigate.to("/bidding")
+
+                            ui.button("Cancel", on_click=cancel).classes("btn-danger").props("dense no-caps outline")
+
                         if st in ("open", "published", "closed", "bidding", "finalized", "awarded"):
 
                             def prev(eid=ev["id"]):
@@ -321,7 +424,73 @@ def _event_list() -> None:
                                 )
                                 ui.navigate.to("/bidding")
 
+                            def reassign_ui(eid=ev["id"], est=st):
+                                """Manual reassign one option slot (finalized events only)."""
+                                if est != "finalized" and est != "awarded":
+                                    ui.notify(
+                                        "Reassign works after Finalize (supervisor override of awards)",
+                                        type="warning",
+                                    )
+                                detail = get_shift_bid_event(int(eid)) or {}
+                                opts = detail.get("options") or []
+                                if not opts:
+                                    ui.notify("No options on this event", type="warning")
+                                    return
+                                officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
+                                onames = ["(clear award)"] + [o["name"] for o in officers]
+                                omap = {o["name"]: o["id"] for o in officers}
+                                olabels = {
+                                    f"#{o.get('id')} · {o.get('label') or o.get('shift_start') or 'opt'} · "
+                                    f"award={o.get('awarded_officer_id') or '—'}": o["id"]
+                                    for o in opts
+                                    if o.get("id") is not None
+                                }
+                                if not olabels:
+                                    ui.notify("No option ids", type="warning")
+                                    return
+                                with (
+                                    ui.dialog() as dlg,
+                                    ui.card().classes("w-full").style("min-width:min(420px,94vw);max-width:520px"),
+                                ):
+                                    ui.label(f"Reassign option · event #{eid} (finalized)").classes(
+                                        "text-sm font-semibold q-mb-sm"
+                                    )
+                                    opick = ui.select(
+                                        list(olabels.keys()),
+                                        value=list(olabels.keys())[0],
+                                        label="Option",
+                                    ).classes("w-full")
+                                    off_pick = ui.select(onames, value=onames[0], label="Officer").classes("w-full")
+
+                                    def do_re():
+                                        oid_opt = olabels.get(opick.value)
+                                        if oid_opt is None:
+                                            return
+                                        off_id = None
+                                        if off_pick.value and off_pick.value != "(clear award)":
+                                            off_id = omap.get(off_pick.value)
+                                        uid = (session.current_user() or {}).get("id")
+                                        r = reassign_shift_bid_option(int(eid), int(oid_opt), off_id, user_id=uid)
+                                        ui.notify(
+                                            r.get("message", "Reassigned")
+                                            if r.get("success")
+                                            else r.get("message", "Failed"),
+                                            type="positive" if r.get("success") else "negative",
+                                        )
+                                        if r.get("success"):
+                                            dlg.close()
+                                            ui.navigate.to("/bidding")
+
+                                    ui.button("Apply reassignment", on_click=do_re).classes(
+                                        "btn-primary q-mt-sm"
+                                    ).props("no-caps unelevated dense")
+                                    ui.button("Close", on_click=dlg.close).classes("btn-ghost").props(
+                                        "no-caps flat dense"
+                                    )
+                                dlg.open()
+
                             ui.button("Preview", on_click=prev).props("dense no-caps flat")
                             ui.button("Participation", on_click=report).props("dense no-caps flat")
                             ui.button("Apply preview", on_click=apply_preview).props("dense no-caps flat")
+                            ui.button("Reassign slot", on_click=reassign_ui).props("dense no-caps flat")
                             ui.button("Finalize", on_click=fin).classes("btn-ghost").props("dense no-caps outline")

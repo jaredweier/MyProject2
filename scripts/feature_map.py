@@ -32,8 +32,8 @@ def _ui_files_exist(feat: dict) -> bool:
 
 def run_feature_map() -> int:
     import database
-    import logic
     import permissions
+    from scripts.logic_resolve import logic_has
 
     print("Dodgeville PD Scheduler — feature map")
     print("=" * 72)
@@ -42,11 +42,13 @@ def run_feature_map() -> int:
 
     gaps = []
     for feat in FEATURES:
-        logic_ok = all(hasattr(logic, fn) for fn in feat["logic"] if fn != "simulator module via ui")
+        logic_ok = all(logic_has(fn) for fn in feat["logic"] if fn != "simulator module via ui")
         for fn in feat.get("extra", []):
             mod_name, _, attr = fn.partition(".")
-            mod = database if mod_name == "database" else logic
-            logic_ok = logic_ok and hasattr(mod, attr)
+            if mod_name == "database":
+                logic_ok = logic_ok and hasattr(database, attr)
+            else:
+                logic_ok = logic_ok and logic_has(fn if "." in fn else attr)
         ui_ok = _ui_files_exist(feat)
         cli_ok = bool(feat["cli"])
         mark_l = "✓" if logic_ok else "—"

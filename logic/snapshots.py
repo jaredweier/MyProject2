@@ -249,6 +249,9 @@ def create_manual_coverage_override(
     override_date: str,
     reason: str = "Manual Coverage",
     actor_user_id: Optional[int] = None,
+    *,
+    rest_override: bool = False,
+    rest_override_reason: str = "",
 ) -> Dict:
     from logic.requests import create_notification
     from logic.users import log_audit_action
@@ -261,6 +264,27 @@ def create_manual_coverage_override(
         return {"success": False, "message": check.message}
 
     override_date = storage_date_str(override_date)
+    # LE wellness: hard rest/fatigue gate on replacement (open-shift parity)
+    try:
+        from logic.fatigue_gates import check_rest_hard_stop
+
+        rest = check_rest_hard_stop(
+            int(replacement_officer_id),
+            work_date=override_date,
+            shift_start=(replacement or {}).get("shift_start") or (original or {}).get("shift_start"),
+            override=bool(rest_override),
+            override_reason=rest_override_reason or reason or "",
+            user_id=actor_user_id,
+        )
+        if rest.get("blocked"):
+            return {
+                "success": False,
+                "message": rest.get("message") or "Rest/fatigue hard stop on replacement",
+                "requires_override": True,
+                "rest_violation": rest.get("violation") or rest.get("message"),
+            }
+    except Exception:
+        pass
     conn = get_connection()
     cursor = conn.cursor()
     try:

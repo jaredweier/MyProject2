@@ -56,7 +56,7 @@ class LoginFrame(ctk.CTkFrame):
                     self._photo_label.configure(image=team, text="")
                 else:
                     self._photo_label.configure(
-                        text="Place team_photo.jpg in the project folder.",
+                        text="Upload agency photo in Chronos Branding & Media (or skip).",
                         font=font("body"),
                         text_color=UI_TEXT_MUTED,
                         image=None,

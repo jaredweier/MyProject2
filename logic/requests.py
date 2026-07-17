@@ -17,7 +17,6 @@ from logic.scheduling import (
     get_shift_coverage_counts_for_range,
     officer_meets_minimum_rest,
     resolve_officer_shift_band,
-    suggest_bump_chain,
 )
 from logic.snapshots import _insert_override_record
 from models import ProcessRequestResult, ProcessSwapResult, SwapValidationResult
@@ -659,6 +658,8 @@ def process_day_off_request(
                 )
             suggestion = type("S", (), {"success": True, "failure_reason": None, "message": "Selected coverage plan"})()
         else:
+            from logic.coverage_optimizer import suggest_bump_chain
+
             suggestion = suggest_bump_chain(
                 request["officer_id"],
                 request["request_date"],
@@ -776,7 +777,31 @@ def process_day_off_request(
                     break
         except Exception:
             pass
-        _notify_day_off_processed(request, officer, "Approved", replacement_id, replacement_name)
+        # Accrual debit (vacation/sick/comp) — non-blocking if bank short
+        try:
+            from logic.leave_accruals import maybe_deduct_on_day_off_approve
+
+            maybe_deduct_on_day_off_approve(request, user_id=actor_user_id)
+        except Exception:
+            pass
+        # Plan text for notifications (who covers whom)
+        plan_text = ""
+        if steps:
+            parts = []
+            for step in steps[:6]:
+                parts.append(
+                    f"{getattr(step, 'replacement_officer_name', '?')} covers "
+                    f"{getattr(step, 'original_officer_name', '?')}"
+                )
+            plan_text = "; ".join(parts)
+        _notify_day_off_processed(
+            request,
+            officer,
+            "Approved",
+            replacement_id,
+            replacement_name,
+            plan_text=plan_text,
+        )
         return ProcessRequestResult(
             success=True,
             status="Approved",
@@ -825,6 +850,8 @@ def bulk_approve_auto_ok_requests() -> Dict:
             home_shift_start=req.get("shift_start"),
             home_shift_end=req.get("shift_end"),
         )
+        from logic.coverage_optimizer import suggest_bump_chain
+
         suggestion = suggest_bump_chain(
             req["officer_id"],
             req["request_date"],
@@ -1062,6 +1089,7 @@ def _notify_day_off_processed(
     action: str,
     replacement_id: Optional[int] = None,
     replacement_name: Optional[str] = None,
+    plan_text: str = "",
 ) -> None:
     request_id = request["id"]
     request_date = format_date(request["request_date"])
@@ -1088,17 +1116,20 @@ def _notify_day_off_processed(
         _notify_supervisors(
             "day_off",
             "Day-Off Needs Review",
-            f"Request #{request_id} for {officer['name']} on {request_date} needs review.",
+            f"Request #{request_id} for {officer['name']} on {request_date} needs review. Open Ops Desk.",
             request_id,
             "day_off_request",
         )
         return
 
+    plan_suffix = f" Coverage: {plan_text}." if plan_text else ""
+    if replacement_name and not plan_text:
+        plan_suffix = f" Covered by {replacement_name}."
     create_notification(
         officer["id"],
         "day_off",
         "Request Approved",
-        f"Your time off request for {request_date} was approved.",
+        f"Your time off request for {request_date} was approved.{plan_suffix}",
         request_id,
         "day_off_request",
     )
@@ -1107,10 +1138,33 @@ def _notify_day_off_processed(
             replacement_id,
             "day_off",
             "Coverage Assignment",
-            f"You are covering {officer['name']}'s shift on {request_date}.",
+            f"You are covering {officer['name']}'s shift on {request_date}."
+            + (f" Plan: {plan_text}" if plan_text else ""),
             request_id,
             "day_off_request",
         )
+    # Outbox for email/SMS when channels configured
+    try:
+        from logic.notify_queue import enqueue_notify
+
+        body = f"Leave approved for {officer.get('name')} on {request_date}.{plan_suffix}"
+        enqueue_notify(
+            channel="email",
+            subject=f"Leave approved {request_date}",
+            body=body,
+            officer_id=int(officer["id"]),
+            template_key="leave_approved",
+        )
+        if replacement_id:
+            enqueue_notify(
+                channel="sms",
+                subject="Coverage assignment",
+                body=f"You cover {officer.get('name')} on {request_date}.",
+                officer_id=int(replacement_id),
+                template_key="leave_cover",
+            )
+    except Exception:
+        pass
 
 
 def _notify_day_off_submitted(request_id: int, officer: Dict, request_date: str, request_type: str) -> None:
@@ -1151,6 +1205,17 @@ def _notify_open_shift_filled(shift: Dict, officer: Dict) -> None:
         related_id=shift.get("id"),
         related_type="open_shift",
     )
+    try:
+        from logic.notify_channels import dispatch_channel_hooks
+
+        dispatch_channel_hooks(
+            subject="Open Shift Filled",
+            body=message,
+            officer_ids=[officer["id"]],
+            prefer_sms=True,
+        )
+    except Exception:
+        pass
 
 
 def _notify_open_shift_posted(
@@ -1162,11 +1227,13 @@ def _notify_open_shift_posted(
 ) -> None:
     squad_note = f" (Squad {squad})" if squad else ""
     message = f"{shift_date}  ·  {shift_start}–{shift_end}{squad_note}"
+    oids = []
     for officer in get_officers_by_seniority():
         if officer.get("active") != 1:
             continue
         if squad and officer["squad"] != squad:
             continue
+        oids.append(officer["id"])
         create_notification(
             officer["id"],
             "Open Shift",
@@ -1175,6 +1242,21 @@ def _notify_open_shift_posted(
             related_id=shift_id,
             related_type="open_shift",
         )
+    try:
+        from logic.notify_channels import dispatch_template
+
+        dispatch_template(
+            "open_shift",
+            officer_ids=oids,
+            prefer_sms=True,
+            date=shift_date,
+            start=shift_start,
+            end=shift_end,
+            squad=squad or "",
+            notes="",
+        )
+    except Exception:
+        pass
 
 
 def _notify_shift_bid_event_published(event_id: int, event: Dict) -> None:
@@ -1257,11 +1339,14 @@ def _notify_shift_swap_processed(swap_id: int, officer1: Dict, officer2: Dict, s
 
 
 def _notify_schedule_published(year: int, month: int, snapshot_id: int) -> None:
-    label = f"{month:02d}/{year}"
+    # Display-friendly label; storage keys stay ISO elsewhere
+    label = f"{month}/{year}"
     message = f"The current monthly schedule for {label} has been published."
+    oids = []
     for officer in get_officers_by_seniority():
         if officer.get("active") != 1:
             continue
+        oids.append(officer["id"])
         create_notification(
             officer["id"],
             "schedule",
@@ -1270,6 +1355,17 @@ def _notify_schedule_published(year: int, month: int, snapshot_id: int) -> None:
             related_id=snapshot_id,
             related_type="schedule_snapshot",
         )
+    try:
+        from logic.notify_channels import dispatch_template
+
+        dispatch_template(
+            "schedule_published",
+            officer_ids=oids,
+            prefer_sms=False,
+            label=label,
+        )
+    except Exception:
+        pass
 
 
 def _notify_shift_swap_submitted(swap_id: int, officer1: Dict, officer2: Dict, swap_date: str, status: str) -> None:

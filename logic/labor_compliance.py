@@ -79,7 +79,9 @@ def save_flsa_settings(
         ("flsa_207k_base_date", storage_date_str(base_date.isoformat())),
     ]
     if dual_workforce is not None:
-        pairs.append(("flsa_dual_workforce", "1" if dual_workforce else "0"))
+        on = "1" if dual_workforce else "0"
+        pairs.append(("flsa_dual_workforce", on))
+        pairs.append(("dual_flsa_enabled", on))
     if civilian_weekly_threshold is not None:
         try:
             thr = max(1.0, min(float(civilian_weekly_threshold), 80.0))
@@ -88,12 +90,16 @@ def save_flsa_settings(
         pairs.append(("flsa_civilian_weekly_threshold", str(thr)))
     if sworn_comp_cap is not None:
         try:
-            pairs.append(("flsa_comp_cap_sworn", str(max(1.0, float(sworn_comp_cap)))))
+            scap = str(max(1.0, float(sworn_comp_cap)))
+            pairs.append(("flsa_comp_cap_sworn", scap))
+            pairs.append(("comp_cap_sworn", scap))
         except (TypeError, ValueError):
             return {"success": False, "message": "Sworn comp cap must be numeric"}
     if civilian_comp_cap is not None:
         try:
-            pairs.append(("flsa_comp_cap_civilian", str(max(1.0, float(civilian_comp_cap)))))
+            ccap = str(max(1.0, float(civilian_comp_cap)))
+            pairs.append(("flsa_comp_cap_civilian", ccap))
+            pairs.append(("comp_cap_civilian", ccap))
         except (TypeError, ValueError):
             return {"success": False, "message": "Civilian comp cap must be numeric"}
 
@@ -120,22 +126,32 @@ def get_flsa_settings() -> Dict:
     days = get_flsa_work_period_days()
     base = get_flsa_base_date()
     start, end = get_flsa_work_period()
-    dual_raw = get_department_setting("flsa_dual_workforce", "0").strip()
-    dual = dual_raw in ("1", "true", "yes", "on")
+    # Prefer unified dual_workforce module (keeps Deploy + Payroll knobs in sync)
     try:
-        civ_thr = float(get_department_setting("flsa_civilian_weekly_threshold", "40") or 40)
-    except ValueError:
-        civ_thr = 40.0
-    try:
-        sworn_cap = float(
-            get_department_setting("flsa_comp_cap_sworn", str(FLSA_COMP_TIME_MAX_HOURS)) or FLSA_COMP_TIME_MAX_HOURS
-        )
-    except ValueError:
-        sworn_cap = float(FLSA_COMP_TIME_MAX_HOURS or 480)
-    try:
-        civ_cap = float(get_department_setting("flsa_comp_cap_civilian", "240") or 240)
-    except ValueError:
-        civ_cap = 240.0
+        from logic.dual_workforce import get_dual_workforce_settings
+
+        dw = get_dual_workforce_settings()
+        dual = bool(dw.get("dual_flsa_enabled"))
+        civ_thr = float(dw.get("civilian_weekly_threshold") or 40)
+        sworn_cap = float(dw.get("comp_cap_sworn") or FLSA_COMP_TIME_MAX_HOURS or 480)
+        civ_cap = float(dw.get("comp_cap_civilian") or 240)
+    except Exception:
+        dual_raw = get_department_setting("flsa_dual_workforce", "0").strip()
+        dual = dual_raw in ("1", "true", "yes", "on")
+        try:
+            civ_thr = float(get_department_setting("flsa_civilian_weekly_threshold", "40") or 40)
+        except ValueError:
+            civ_thr = 40.0
+        try:
+            sworn_cap = float(
+                get_department_setting("flsa_comp_cap_sworn", str(FLSA_COMP_TIME_MAX_HOURS)) or FLSA_COMP_TIME_MAX_HOURS
+            )
+        except ValueError:
+            sworn_cap = float(FLSA_COMP_TIME_MAX_HOURS or 480)
+        try:
+            civ_cap = float(get_department_setting("flsa_comp_cap_civilian", "240") or 240)
+        except ValueError:
+            civ_cap = 240.0
     return {
         "success": True,
         "work_period_days": days,
@@ -203,8 +219,49 @@ def sum_officer_work_hours(officer_id: int, start_date: date, end_date: date) ->
 
 
 def get_flsa_207k_status(officer_id: int, reference: Optional[date] = None) -> Dict:
-    """Hours in current §207(k) work period vs threshold for configured FLSA period."""
+    """Hours in current §207(k) work period vs threshold for configured FLSA period.
+
+    Dual workforce: civilians use weekly threshold (not §7(k)).
+    """
     ref = reference or date.today()
+    # Dual engine: civilian officers skip 7k period math
+    try:
+        from logic.dual_workforce import flsa_profile_for_officer, get_dual_workforce_settings
+        from logic.officers import get_officer_by_id
+
+        officer = get_officer_by_id(int(officer_id))
+        profile = flsa_profile_for_officer(officer)
+        if get_dual_workforce_settings().get("dual_flsa_enabled") and profile.get("ot_basis") == "weekly_40":
+            thr = float(profile.get("weekly_threshold") or 40)
+            week_start = ref - timedelta(days=ref.weekday())
+            week_end = week_start + timedelta(days=6)
+            hours = sum_officer_work_hours(officer_id, week_start, week_end)
+            warn_at = thr * FLSA_HOURS_WARN_PCT
+            if hours >= thr:
+                severity = "critical"
+                message = f"Civilian weekly {hours:.1f}h ≥ {thr:.0f}h — overtime required"
+            elif hours >= warn_at:
+                severity = "warning"
+                message = f"Civilian weekly {hours:.1f}h approaching {thr:.0f}h"
+            else:
+                severity = None
+                message = ""
+            return {
+                "officer_id": officer_id,
+                "period_start": week_start,
+                "period_end": week_end,
+                "period_days": 7,
+                "hours": round(hours, 2),
+                "threshold": thr,
+                "over_threshold_hours": round(max(0.0, hours - thr), 2),
+                "severity": severity,
+                "message": message,
+                "workforce_class": "civilian",
+                "ot_basis": "weekly_40",
+            }
+    except Exception:
+        pass
+
     period_start, period_end = get_flsa_work_period(ref)
     period_days = get_flsa_work_period_days()
     threshold = flsa_threshold_for_period_days(period_days)
@@ -231,6 +288,8 @@ def get_flsa_207k_status(officer_id: int, reference: Optional[date] = None) -> D
         "over_threshold_hours": round(max(0.0, hours - threshold), 2),
         "severity": severity,
         "message": message,
+        "workforce_class": "sworn",
+        "ot_basis": "7k_work_period",
     }
 
 
@@ -388,7 +447,13 @@ def get_labor_compliance_report(officer_id: Optional[int] = None) -> Dict:
 
         banks = _officer_comp_hours(oid)
         comp_hours = banks.get("comp_hours", 0.0)
-        if comp_hours >= FLSA_COMP_TIME_MAX_HOURS:
+        try:
+            from logic.dual_workforce import comp_cap_for_officer
+
+            cap_h = float(comp_cap_for_officer(officer))
+        except Exception:
+            cap_h = float(FLSA_COMP_TIME_MAX_HOURS)
+        if comp_hours >= cap_h:
             comp_warnings += 1
             issues.append(
                 {
@@ -396,13 +461,10 @@ def get_labor_compliance_report(officer_id: Optional[int] = None) -> Dict:
                     "officer_name": officer["name"],
                     "category": "comp_cap",
                     "severity": "critical",
-                    "message": (
-                        f"Comp bank {comp_hours:.1f}h at FLSA cap ({FLSA_COMP_TIME_MAX_HOURS:.0f}h) "
-                        "— cash overtime required"
-                    ),
+                    "message": (f"Comp bank {comp_hours:.1f}h at FLSA cap ({cap_h:.0f}h) — cash overtime required"),
                 }
             )
-        elif comp_hours >= FLSA_COMP_TIME_MAX_HOURS * FLSA_HOURS_WARN_PCT:
+        elif comp_hours >= cap_h * FLSA_HOURS_WARN_PCT:
             comp_warnings += 1
             issues.append(
                 {
@@ -410,7 +472,7 @@ def get_labor_compliance_report(officer_id: Optional[int] = None) -> Dict:
                     "officer_name": officer["name"],
                     "category": "comp_cap",
                     "severity": "warning",
-                    "message": (f"Comp bank {comp_hours:.1f}h approaching FLSA cap ({FLSA_COMP_TIME_MAX_HOURS:.0f}h)"),
+                    "message": (f"Comp bank {comp_hours:.1f}h approaching FLSA cap ({cap_h:.0f}h)"),
                 }
             )
 
@@ -453,6 +515,205 @@ def _officer_comp_hours(officer_id: int) -> Dict:
     from logic.operations import get_officer_time_banks
 
     return get_officer_time_banks(officer_id)
+
+
+def force_use_comp_time(
+    officer_id: int,
+    use_date: str,
+    hours: float,
+    *,
+    notes: str = "Supervisor force-use (comp bank cap)",
+    user_id: Optional[int] = None,
+) -> Dict:
+    """Debit comp bank via a Comp Time day-off request + optional timecard debit.
+
+    Used when officer is at/near FLSA 480h cap and must burn banked time.
+    """
+    from logic.officers import get_officer_by_id
+    from logic.requests import create_day_off_request
+    from validators import storage_date_str
+
+    officer = get_officer_by_id(officer_id)
+    if not officer:
+        return {"success": False, "message": "Officer not found"}
+    try:
+        use_date = storage_date_str(use_date)
+        hours_f = float(hours)
+    except (TypeError, ValueError) as exc:
+        return {"success": False, "message": str(exc)}
+    if hours_f <= 0:
+        return {"success": False, "message": "Hours must be positive"}
+
+    banks = _officer_comp_hours(officer_id)
+    comp = float(banks.get("comp_hours") or 0)
+    if hours_f > comp + 0.01:
+        return {
+            "success": False,
+            "message": f"Cannot force-use {hours_f:.1f}h — bank only {comp:.1f}h",
+            "comp_hours": comp,
+        }
+
+    req = create_day_off_request(
+        officer_id,
+        use_date,
+        "Comp Time",
+        notes=f"{notes} · {hours_f:.1f}h",
+    )
+    if not req.get("success"):
+        return req
+
+    # Best-effort bank debit via timecard (signature: hours before entry_type)
+    debit_result = None
+    try:
+        # Prefer a known pay code; fall back to Comp Time / Regular
+        from config import TIMECARD_ENTRY_TYPES
+        from logic.payroll.timecard import save_timecard_entry
+
+        entry_type = (
+            "Comp Taken"
+            if "Comp Taken" in TIMECARD_ENTRY_TYPES
+            else ("Comp Time" if "Comp Time" in TIMECARD_ENTRY_TYPES else TIMECARD_ENTRY_TYPES[0])
+        )
+        debit_result = save_timecard_entry(
+            officer_id,
+            use_date,
+            hours_f,
+            entry_type,
+            notes=notes,
+        )
+    except Exception as exc:
+        debit_result = {"success": False, "message": str(exc)[:160]}
+
+    from logic.users import log_audit_action
+
+    log_audit_action(
+        "comp.force_use",
+        "officer",
+        officer_id,
+        user_id,
+        f"{officer.get('name')} {hours_f}h on {use_date}",
+    )
+    return {
+        "success": True,
+        "request": req,
+        "debit": debit_result,
+        "comp_before": comp,
+        "message": (
+            f"Force-use {hours_f:.1f}h for {officer.get('name')} on {use_date} "
+            f"(request #{req.get('request_id') or req.get('id') or 'ok'})"
+        ),
+    }
+
+
+def export_flsa_vs_contract_ot_csv(
+    *,
+    period_start: Optional[str] = None,
+    period_end: Optional[str] = None,
+    output_path: Optional[str] = None,
+) -> Dict:
+    """Split FLSA 7(k) overtime hours vs contract/daily OT for payroll handoff.
+
+    FLSA OT = hours above 7(k) threshold in the work period.
+    Contract OT = scheduled OT-like pay codes that are not pure FLSA premium.
+    """
+    import csv
+    from datetime import datetime
+    from pathlib import Path
+
+    from logic.officers import get_officers_by_seniority
+    from validators import is_officer_active, parse_date
+
+    if period_start and period_end:
+        try:
+            p_start = parse_date(period_start)
+            p_end = parse_date(period_end)
+        except ValueError as exc:
+            return {"success": False, "message": str(exc)}
+    else:
+        p_start, p_end = get_flsa_work_period()
+
+    period_days = (p_end - p_start).days + 1
+    threshold = flsa_threshold_for_period_days(get_flsa_work_period_days() if period_days >= 7 else period_days)
+
+    root = Path(__file__).resolve().parent.parent
+    out_dir = root / "exports"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    path = (
+        Path(output_path)
+        if output_path
+        else out_dir / f"flsa_vs_contract_ot_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    )
+
+    fields = [
+        "officer_id",
+        "officer_name",
+        "period_start",
+        "period_end",
+        "hours_worked",
+        "flsa_threshold",
+        "flsa_ot_hours",
+        "contract_ot_hours",
+        "comp_bank_hours",
+        "notes",
+    ]
+    rows_out: List[Dict] = []
+    for officer in get_officers_by_seniority():
+        if not is_officer_active(officer):
+            continue
+        oid = officer["id"]
+        worked = float(sum_officer_work_hours(oid, p_start, p_end) or 0)
+        flsa_ot = max(0.0, worked - float(threshold))
+        # Contract OT: timecard types that look like OT but aren't pure FLSA calc
+        contract_ot = 0.0
+        try:
+            conn = get_connection()
+            cur = conn.cursor()
+            cur.execute(
+                """
+                SELECT entry_type, hours FROM timecard_entries
+                WHERE officer_id = ? AND entry_date >= ? AND entry_date <= ?
+                """,
+                (oid, p_start.isoformat(), p_end.isoformat()),
+            )
+            for r in cur.fetchall():
+                et = (r["entry_type"] or "").lower()
+                if any(k in et for k in ("overtime", "ot earned", "callback", "call-back", "call back")):
+                    if "comp" not in et:
+                        contract_ot += float(r["hours"] or 0)
+            conn.close()
+        except Exception:
+            pass
+        banks = _officer_comp_hours(oid)
+        rows_out.append(
+            {
+                "officer_id": oid,
+                "officer_name": officer.get("name"),
+                "period_start": p_start.isoformat(),
+                "period_end": p_end.isoformat(),
+                "hours_worked": round(worked, 2),
+                "flsa_threshold": threshold,
+                "flsa_ot_hours": round(flsa_ot, 2),
+                "contract_ot_hours": round(contract_ot, 2),
+                "comp_bank_hours": round(float(banks.get("comp_hours") or 0), 2),
+                "notes": "FLSA OT = max(0, worked−7(k) threshold); contract = OT-like pay codes",
+            }
+        )
+
+    with path.open("w", newline="", encoding="utf-8") as f:
+        w = csv.DictWriter(f, fieldnames=fields)
+        w.writeheader()
+        for row in rows_out:
+            w.writerow(row)
+
+    return {
+        "success": True,
+        "path": str(path),
+        "count": len(rows_out),
+        "period_start": p_start.isoformat(),
+        "period_end": p_end.isoformat(),
+        "flsa_threshold": threshold,
+        "message": f"Exported FLSA vs contract OT for {len(rows_out)} officer(s)",
+    }
 
 
 def get_fatigue_score_threshold() -> float:

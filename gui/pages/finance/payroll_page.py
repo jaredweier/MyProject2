@@ -11,7 +11,9 @@ from logic import (
     count_pay_periods_in_year,
     donate_leave_hours,
     export_adp_payroll_pack,
+    export_pay_pack,
     export_payroll_pdf,
+    flsa_period_banners,
     format_pay_period_label,
     get_flsa_settings,
     get_officers_by_seniority,
@@ -20,6 +22,8 @@ from logic import (
     get_pay_period,
     is_current_pay_period,
     list_leave_donations,
+    list_payroll_exceptions,
+    list_roster_accrual_balances,
     lock_pay_period,
     save_flsa_settings,
     save_pay_code_rules,
@@ -40,6 +44,52 @@ def render_payroll() -> None:
         ui.label(f"{format_pay_period_label(start, end)}{cur} · {n_year} periods in {start.year}").classes(
             "text-sm q-mb-md"
         ).style("color: var(--muted)")
+
+        # FLSA autopilot banners + exception queue + pay pack
+        with panel("FLSA autopilot — hours to OT threshold", glow=True):
+            banners = flsa_period_banners(reference=start) or []
+            hot = [b for b in banners if b.get("level") in ("critical", "warning")][:10]
+            if not hot:
+                ui.label("All active officers under FLSA warn band for current period.").classes(
+                    "text-xs text-gray-500"
+                )
+            for b in hot:
+                sev = b.get("level")
+                cls = "alert-danger" if sev == "critical" else "alert-warn"
+                ui.html(f'<div class="alert {cls}">{b.get("message")}</div>', sanitize=False)
+
+        with panel("Payroll exception queue"):
+            ex = list_payroll_exceptions(reference=start)
+            items = ex.get("items") or []
+            ui.label(ex.get("message") or f"{len(items)} exception(s)").classes("text-xs q-mb-sm")
+            for item in items[:15]:
+                ui.label(item.get("message") or item.get("kind")).classes("text-xs")
+            if not items:
+                ui.html('<div class="alert alert-ok">No exceptions detected.</div>', sanitize=False)
+
+        with panel("Accrual balances (roster)"):
+            bal = list_roster_accrual_balances(as_of=start)
+            for row in (bal.get("rows") or [])[:20]:
+                ui.label(
+                    f"{row.get('officer_name')}: sick {row.get('sick_hours')}h · "
+                    f"comp {row.get('comp_hours')}h · float {row.get('float_holiday_hours')}h · "
+                    f"holiday {row.get('holiday_hours')}h"
+                ).classes("text-xs")
+
+        with panel("Pay export pack"):
+
+            def do_pay_pack():
+                r = export_pay_pack(period_start=start.isoformat() if hasattr(start, "isoformat") else str(start))
+                paths = r.get("paths") or []
+                ui.notify(
+                    r.get("message") or (f"{len(paths)} file(s)" if paths else "Failed"),
+                    type="positive" if r.get("success") else "negative",
+                )
+
+            ui.button("Export full pay pack (ADP + dual OT + equity + exceptions)", on_click=do_pay_pack).classes(
+                "btn-primary"
+            ).props("no-caps unelevated dense")
+
         if session.can("payroll.lock_period") or session.can("payroll.edit"):
             from logic import is_pay_period_locked, unlock_pay_period
 
@@ -112,8 +162,8 @@ def render_payroll() -> None:
         if session.can("payroll.edit"):
             _payroll_entry_form(start)
         if session.can("payroll.view_all") or session.can("payroll.edit") or session.can("exports.run"):
-            with panel("Payroll export pack (PowerTime / ADP handoff pattern)", glow=False):
-                ui.label("Industry: schedule → timesheet → payroll export. PDF pack for finance review.").classes(
+            with panel("Payroll Export Pack", glow=False):
+                ui.label("Schedule → timesheet → payroll export. PDF pack for finance review.").classes(
                     "text-xs text-gray-500 q-mb-sm"
                 )
 
@@ -133,11 +183,27 @@ def render_payroll() -> None:
                     else:
                         ui.notify(r.get("message", "Export failed"), type="negative")
 
+                def do_flsa_split():
+                    from logic.labor_compliance import export_flsa_vs_contract_ot_csv
+
+                    r = export_flsa_vs_contract_ot_csv(
+                        period_start=start.isoformat() if hasattr(start, "isoformat") else str(start)
+                    )
+                    ui.notify(
+                        r.get("message") or r.get("path") or "Exported"
+                        if r.get("success")
+                        else r.get("message", "Export failed"),
+                        type="positive" if r.get("success") else "negative",
+                    )
+
                 with ui.row().classes("gap-2 flex-wrap"):
-                    ui.button("Export payroll PDF", on_click=do_pdf).classes("btn-primary").props(
+                    ui.button("Export Payroll PDF", on_click=do_pdf).classes("btn-primary").props(
                         "no-caps unelevated dense"
                     )
-                    ui.button("ADP / Paychex CSV pack", on_click=do_adp).classes("btn-ghost").props(
+                    ui.button("ADP / Paychex CSV Pack", on_click=do_adp).classes("btn-ghost").props(
+                        "no-caps outline dense"
+                    )
+                    ui.button("FLSA Vs Contract OT", on_click=do_flsa_split).classes("btn-ghost").props(
                         "no-caps outline dense"
                     )
 
@@ -289,17 +355,32 @@ def _pay_code_rules_panel() -> None:
 
 
 def _flsa_panel() -> None:
-    """§7(k) work-period knobs — industry LE payroll pattern."""
-    with panel("FLSA §7(k) work period", glow=True):
+    """§7(k) work-period knobs — full admin surface (days, base, dual, caps, 207k status)."""
+    with panel("FLSA §7(k) / 207(k) work period (full knobs)", glow=True):
         try:
             settings = get_flsa_settings() or {}
         except Exception as exc:
             ui.label(f"Unable to load FLSA settings: {exc}").classes("text-sm text-red-400")
             return
         ui.label(
-            "Law enforcement often uses a 14-day work period (~86h OT threshold) instead of weekly 40h. "
-            "Not legal advice — configure to match your CBA / policy."
+            "Law enforcement often uses a 14-day work period (~86h OT threshold) or 28-day (~171h). "
+            "Dual workforce: sworn 7(k) + civilian weekly 40h. Not legal advice — match your CBA."
         ).classes("text-xs text-gray-500 q-mb-sm")
+        # Current period strip
+        ui.html(
+            f'<div class="kpi-row q-mb-sm">'
+            f'<div class="kpi g"><div class="kpi-l">Work period</div>'
+            f'<div class="kpi-v" style="font-size:18px">{settings.get("work_period_days") or "—"}d</div></div>'
+            f'<div class="kpi"><div class="kpi-l">Threshold</div>'
+            f'<div class="kpi-v" style="font-size:18px">{settings.get("hours_threshold") or "—"}h</div></div>'
+            f'<div class="kpi"><div class="kpi-l">Current FLSA window</div>'
+            f'<div class="kpi-v" style="font-size:14px">{settings.get("current_period_start") or "—"} – '
+            f"{settings.get('current_period_end') or '—'}</div></div>"
+            f'<div class="kpi"><div class="kpi-l">Dual workforce</div>'
+            f'<div class="kpi-v" style="font-size:16px">{"ON" if settings.get("dual_workforce") else "off"}</div></div>'
+            f"</div>",
+            sanitize=False,
+        )
         # Netchex / NEOGOV dual workforce (sworn 7(k) vs civilian 40h)
         dual = ui.checkbox(
             "Dual workforce mode (sworn 7(k) + civilian weekly threshold)",
@@ -309,9 +390,19 @@ def _flsa_panel() -> None:
             label="Sworn work period days (7–28)",
             value=str(settings.get("work_period_days") or settings.get("flsa_work_period_days") or "14"),
         ).classes("w-full")
+        raw_base = str(settings.get("base_date") or settings.get("flsa_base_date") or "")
+        try:
+            from validators import format_date as _fd
+            from validators import parse_date as _pd
+
+            _bd = _pd(raw_base) if raw_base else None
+            base_disp = _fd(_bd) if _bd else raw_base
+        except Exception:
+            base_disp = raw_base
         base = ui.input(
-            label="FLSA base date (optional ISO)",
-            value=str(settings.get("base_date") or settings.get("flsa_base_date") or ""),
+            label="FLSA base date (M/D/YY · stored ISO)",
+            value=base_disp,
+            placeholder="e.g. 1/1/26",
         ).classes("w-full")
         civ_thr = ui.input(
             label="Civilian weekly OT threshold (hours)",
@@ -327,7 +418,8 @@ def _flsa_panel() -> None:
         ).classes("w-full")
         ui.label(
             f"Live sworn threshold this period: {settings.get('hours_threshold', '—')}h · "
-            f"dual={'on' if settings.get('dual_workforce') else 'off'}"
+            f"dual={'on' if settings.get('dual_workforce') else 'off'} · "
+            f"sworn cap {settings.get('sworn_comp_cap')}h · civ cap {settings.get('civilian_comp_cap')}h"
         ).classes("text-xs text-gray-500 q-mb-sm")
 
         use_blend = ui.checkbox(
@@ -366,6 +458,18 @@ def _flsa_panel() -> None:
                 civilian_comp_cap=ccap,
             )
             try:
+                from logic.dual_workforce import save_dual_workforce_settings
+
+                save_dual_workforce_settings(
+                    dual_flsa_enabled=bool(dual.value),
+                    civilian_weekly_threshold=cthr,
+                    comp_cap_sworn=scap,
+                    comp_cap_civilian=ccap,
+                    user_id=uid,
+                )
+            except Exception:
+                pass
+            try:
                 from logic.operations import set_department_setting
 
                 set_department_setting(
@@ -380,4 +484,116 @@ def _flsa_panel() -> None:
                 type="positive" if r.get("success") else "negative",
             )
 
-        ui.button("Save FLSA settings", on_click=save).classes("btn-primary q-mt-sm").props("no-caps unelevated")
+        with ui.row().classes("gap-2 q-mt-sm flex-wrap"):
+            ui.button("Save FLSA settings", on_click=save).classes("btn-primary").props("no-caps unelevated")
+
+            dual_grid_host = ui.element("div").classes("w-full q-mt-sm")
+
+            def exp_dual():
+                try:
+                    from gui.tables import aggrid_from_dicts
+                    from logic.dual_workforce import export_dual_ot_ledger_csv, run_dual_period_ot_ledger
+
+                    led = run_dual_period_ot_ledger()
+                    ex = export_dual_ot_ledger_csv()
+                    dual_grid_host.clear()
+                    with dual_grid_host:
+                        rows = []
+                        for r in led.get("rows") or []:
+                            if not isinstance(r, dict):
+                                continue
+                            rows.append(
+                                {
+                                    "name": r.get("officer_name"),
+                                    "class": r.get("workforce_class"),
+                                    "basis": r.get("basis_label") or r.get("ot_basis"),
+                                    "total_h": r.get("total_hours"),
+                                    "regular_h": r.get("regular_hours"),
+                                    "ot_h": r.get("overtime_hours"),
+                                    "comp_cap": r.get("comp_cap"),
+                                }
+                            )
+                        if rows:
+                            aggrid_from_dicts(
+                                rows,
+                                prefer_columns=[
+                                    "name",
+                                    "class",
+                                    "basis",
+                                    "total_h",
+                                    "regular_h",
+                                    "ot_h",
+                                    "comp_cap",
+                                ],
+                                height="320px",
+                                csv_export=True,
+                                csv_name="dual_ot_ledger",
+                            )
+                        else:
+                            ui.label("No dual OT rows for this period.").classes("text-xs").style("color: var(--dim)")
+                    ui.notify(
+                        f"Dual OT ledger: {led.get('count')} officers · "
+                        f"sworn OT {led.get('sworn_ot_hours')}h · civ OT {led.get('civilian_ot_hours')}h · "
+                        f"{ex.get('path')}",
+                        type="positive" if ex.get("success") else "warning",
+                        multi_line=True,
+                    )
+                except Exception as exc:
+                    ui.notify(str(exc)[:200], type="negative")
+
+            ui.button("Run dual OT ledger / export", on_click=exp_dual).classes("btn-ghost").props("no-caps outline")
+            ui.label("Grid fills after Run dual OT ledger / export.").classes("text-xs q-mt-xs").style(
+                "color: var(--dim)"
+            )
+
+        # Officer-level §207(k) status + payroll summary
+        ui.separator()
+        ui.label("Officer §207(k) status & payroll summary").classes("text-xs text-gray-500 q-mb-xs")
+        officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
+        names = [o["name"] for o in officers] or ["—"]
+        omap = {o["name"]: o["id"] for o in officers}
+        flsa_off = ui.select(names, value=names[0], label="Officer").classes("w-full")
+        flsa_host = ui.element("div")
+
+        def load_207k():
+            flsa_host.clear()
+            oid = omap.get(flsa_off.value)
+            with flsa_host:
+                if not oid:
+                    ui.label("No officer").classes("text-xs")
+                    return
+                try:
+                    from logic.labor_compliance import get_flsa_207k_status, get_flsa_payroll_summary
+
+                    st = get_flsa_207k_status(int(oid)) or {}
+                    sm = get_flsa_payroll_summary(int(oid)) or {}
+                except Exception as exc:
+                    ui.label(str(exc)).classes("text-sm text-red-400")
+                    return
+                ui.label(st.get("message") or str(st)[:200]).classes("text-sm font-semibold")
+                for k in (
+                    "hours",
+                    "threshold",
+                    "ot_hours",
+                    "period_start",
+                    "period_end",
+                    "percent",
+                    "level",
+                ):
+                    if st.get(k) is not None:
+                        ui.label(f"{k}: {st.get(k)}").classes("text-xs mono")
+                if sm:
+                    ui.label(sm.get("message") or "Payroll summary").classes("text-xs q-mt-sm").style(
+                        "color: var(--muted)"
+                    )
+                    for k, v in list(sm.items())[:12]:
+                        if k in ("success", "message"):
+                            continue
+                        ui.label(f"{k}: {v}").classes("text-xs mono")
+
+        try:
+            flsa_off.on_value_change(lambda _: load_207k())
+        except Exception:
+            pass
+        ui.button("Load §207(k) status", on_click=load_207k).classes("btn-ghost q-mt-xs").props("no-caps outline dense")
+        load_207k()

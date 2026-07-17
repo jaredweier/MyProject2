@@ -67,6 +67,7 @@ Generated: {ts}
 - No explore/plan subagents. No subagents for gates.
 - Chain: usage-brief → outline/symbol → edit → `verify --tier fast`
 - Ship: `verify --tier check` + honest_gate true
+- ONLY alter the Antigravity Chronos Command folder, NEVER MyProject.
 
 ## Free cmds
 | Need | Cmd |

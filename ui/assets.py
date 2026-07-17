@@ -1,4 +1,4 @@
-"""Brand image loading for Dodgeville PD UI."""
+"""Brand image loading for Chronos Command UI."""
 
 import os
 from typing import Dict, List, Optional, Tuple

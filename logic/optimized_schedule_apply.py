@@ -14,13 +14,65 @@ DEFAULTS_KEY = "schedule_builder_defaults_json"
 LAST_PLAN_KEY = "last_optimized_plan_json"
 
 
-def recommend_implement_dates(reference: Optional[date] = None) -> Dict:
-    """Recommend implement dates from payroll pay periods."""
-    from logic.payroll.period import format_pay_period_label, get_adjacent_pay_period, get_pay_period
+def _snap_hhmm_half_hour(label: str) -> str:
+    """Duty-board rule: shift starts on :00 or :30 only."""
+    try:
+        parts = (label or "00:00").strip().split(":")
+        h = int(parts[0]) % 24
+        m = int(parts[1]) if len(parts) > 1 else 0
+    except (TypeError, ValueError, IndexError):
+        return "00:00"
+    total = (h * 60 + m + 15) // 30 * 30
+    total %= 24 * 60
+    return f"{total // 60:02d}:{total % 60:02d}"
 
+
+def _normalize_half_hour_starts(starts: List[Any]) -> List[str]:
+    out: List[str] = []
+    seen = set()
+    for raw in starts or []:
+        if raw is None:
+            continue
+        s = _snap_hhmm_half_hour(str(raw).strip())
+        if s in seen:
+            continue
+        seen.add(s)
+        out.append(s)
+    return out
+
+
+def _pay_period_window(reference: date) -> tuple[date, date]:
+    """Calendar-only pay period bounds from config (no payroll package import)."""
+    from datetime import timedelta
+
+    from config import PAY_PERIOD_BASE_DATE, PAY_PERIOD_LENGTH
+
+    period_index = (reference - PAY_PERIOD_BASE_DATE).days // PAY_PERIOD_LENGTH
+    start = PAY_PERIOD_BASE_DATE + timedelta(days=period_index * PAY_PERIOD_LENGTH)
+    end = start + timedelta(days=PAY_PERIOD_LENGTH - 1)
+    return start, end
+
+
+def _adjacent_pay_period(period_start: date, direction: int) -> tuple[date, date]:
+    from datetime import timedelta
+
+    start, end = _pay_period_window(period_start)
+    if direction < 0:
+        return _pay_period_window(start - timedelta(days=1))
+    if direction > 0:
+        return _pay_period_window(end + timedelta(days=1))
+    return start, end
+
+
+def _format_period_label(period_start: date, period_end: date) -> str:
+    return f"{format_date(period_start)} – {format_date(period_end)} (14 days)"
+
+
+def recommend_implement_dates(reference: Optional[date] = None) -> Dict:
+    """Recommend implement dates from pay-period calendar (config; not payroll math)."""
     ref = reference or date.today()
-    cur_start, cur_end = get_pay_period(ref)
-    next_start, next_end = get_adjacent_pay_period(cur_start, direction=1)
+    cur_start, cur_end = _pay_period_window(ref)
+    next_start, next_end = _adjacent_pay_period(cur_start, direction=1)
     # Prefer next pay period start if we're past day 1 of current; else current start if not started
     if ref <= cur_start:
         recommended = cur_start
@@ -31,13 +83,13 @@ def recommend_implement_dates(reference: Optional[date] = None) -> Dict:
     options = [
         {
             "date": cur_start.isoformat(),
-            "label": format_pay_period_label(cur_start, cur_end),
+            "label": _format_period_label(cur_start, cur_end),
             "kind": "current_pay_period",
             "recommended": recommended == cur_start,
         },
         {
             "date": next_start.isoformat(),
-            "label": format_pay_period_label(next_start, next_end),
+            "label": _format_period_label(next_start, next_end),
             "kind": "next_pay_period",
             "recommended": recommended == next_start,
         },
@@ -64,7 +116,7 @@ def recommend_implement_dates(reference: Optional[date] = None) -> Dict:
     return {
         "success": True,
         "recommended_date": recommended.isoformat(),
-        "recommended_label": format_pay_period_label(*get_pay_period(recommended)),
+        "recommended_label": _format_period_label(*_pay_period_window(recommended)),
         "reason": reason,
         "options": options,
     }
@@ -241,6 +293,56 @@ def _unlock_base_if_needed(year: int, month: int) -> None:
         conn.close()
 
 
+def preview_implement_plan(
+    *,
+    start_date: str = "",
+    result: Optional[Dict] = None,
+    config: Optional[Dict] = None,
+    apply_officer_assignments: bool = True,
+) -> Dict:
+    """B6 — dry-run publish: what would be written (no DB mutation)."""
+    plan = result or {}
+    cfg = config or plan.get("simulation_config") or {}
+    if not plan.get("success"):
+        return {"success": False, "message": "No successful plan to preview", "dry_run": True}
+    slots = plan.get("officer_slots") or []
+    metrics = plan.get("metrics") or {}
+    rec = recommend_implement_dates()
+    starts = cfg.get("shift_starts") or []
+    lines = [
+        "Publish Preview (Dry Run — nothing written)",
+        f"Start date input: {start_date or '(use recommended)'}",
+        f"Recommended: {rec.get('recommended_date')} — {rec.get('reason')}",
+        f"Officers / slots: {len(slots)}",
+        f"Shift starts: {', '.join(str(s) for s in starts) if starts else '—'}",
+        f"Length: {cfg.get('shift_length_hours', '—')}h · Annual target: {cfg.get('annual_hours_target', '—')}",
+        f"Apply officer assignments: {bool(apply_officer_assignments)}",
+        f"Hard OK: {metrics.get('hard_constraints_ok', '—')}",
+        "",
+        "Would create/update original + live monthly snapshots for the implement month.",
+        "Officer home starts would update only if apply_officer_assignments is on.",
+    ]
+    for s in slots[:12]:
+        if not isinstance(s, dict):
+            s = getattr(s, "__dict__", {}) or {}
+        lines.append(
+            f"  · {s.get('label') or s.get('slot_id')}: "
+            f"{s.get('shift_start')}–{s.get('shift_end')} squad {s.get('squad')}"
+        )
+    if len(slots) > 12:
+        lines.append(f"  … +{len(slots) - 12} more slots")
+    return {
+        "success": True,
+        "dry_run": True,
+        "message": "Preview only — click Publish to apply",
+        "text": "\n".join(lines),
+        "recommended_date": rec.get("recommended_date"),
+        "slot_count": len(slots),
+        "metrics": metrics,
+        "config": cfg,
+    }
+
+
 def implement_optimized_plan(
     *,
     start_date: str,
@@ -270,16 +372,33 @@ def implement_optimized_plan(
     except ValueError as exc:
         return {"success": False, "message": str(exc)}
 
-    # Build defaults from config + result metrics
-    starts = config.get("shift_starts") or []
-    if isinstance(starts, str):
-        start_list = [s.strip() for s in starts.replace(";", ",").split(",") if s.strip()]
-    else:
-        start_list = list(starts)
+    # Prefer best-plan starts on result (optimizer truth) over form config
+    def _as_start_list(raw) -> List[str]:
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [s.strip() for s in raw.replace(";", ",").split(",") if s.strip()]
+        return [str(s).strip() for s in list(raw) if s is not None and str(s).strip()]
 
+    res_starts = (
+        result.get("shift_starts")
+        or (result.get("best") or {}).get("shift_starts")
+        or (result.get("metrics") or {}).get("shift_starts")
+        or (result.get("simulation_config") or {}).get("shift_starts")
+    )
+    start_list = _as_start_list(res_starts)
+    if not start_list:
+        start_list = _as_start_list(config.get("shift_starts"))
     templates = result.get("shift_templates") or []
     if not start_list and templates:
         start_list = [t[0] if isinstance(t, (list, tuple)) else t.get("start") for t in templates]
+    # Duty board: :00 / :30 only (snap odd minutes e.g. :07 → :00)
+    start_list = _normalize_half_hour_starts(start_list)
+    if not start_list:
+        return {
+            "success": False,
+            "message": "Plan has no valid half-hour shift starts (:00 / :30 only)",
+        }
 
     defaults = {
         "shift_length_hours": float(config.get("shift_length_hours") or 11),
@@ -302,16 +421,41 @@ def implement_optimized_plan(
         "source": "optimized_plan",
     }
 
-    if save_as_defaults:
-        set_schedule_builder_defaults(defaults, user_id=user_id)
-
-    applied = apply_schedule_builder_defaults_to_department(user_id=user_id)
-    if not applied.get("success"):
-        return applied
+    # Always persist defaults for apply path; honor save_as_defaults for long-term store
+    set_schedule_builder_defaults(defaults, user_id=user_id)
+    if not save_as_defaults:
+        # Apply once for this implement, then clear persistent builder defaults
+        applied = apply_schedule_builder_defaults_to_department(user_id=user_id)
+        if not applied.get("success"):
+            return applied
+        set_department_setting(DEFAULTS_KEY, "", user_id=user_id)
+    else:
+        applied = apply_schedule_builder_defaults_to_department(user_id=user_id)
+        if not applied.get("success"):
+            return applied
 
     officer_updates = 0
     if apply_officer_assignments:
-        officer_updates = _apply_slots_to_officers(result.get("officer_slots") or [], user_id=user_id)
+        cert_codes = config.get("required_cert_codes") or config.get("required_certs") or []
+        if isinstance(cert_codes, str):
+            cert_codes = [c.strip() for c in cert_codes.replace(";", ",").split(",") if c.strip()]
+        officer_updates = _apply_slots_to_officers(
+            result.get("officer_slots") or [],
+            user_id=user_id,
+            required_cert_codes=list(cert_codes) if cert_codes else None,
+        )
+
+    try:
+        from logic.staffing_insights import append_publish_audit
+
+        append_publish_audit(
+            config=defaults,
+            result=result,
+            user_id=user_id,
+            message=f"implement_optimized_plan {storage_date_str(start.isoformat())}",
+        )
+    except Exception:
+        pass
 
     year, month = start.year, start.month
     if force_regenerate:
@@ -372,10 +516,23 @@ def implement_optimized_plan(
     }
 
 
-def _apply_slots_to_officers(slots: List[Any], *, user_id: Optional[int] = None) -> int:
-    """Map simulation slots onto real officers when slot_id matches officer id."""
+def _apply_slots_to_officers(
+    slots: List[Any],
+    *,
+    user_id: Optional[int] = None,
+    required_cert_codes: Optional[List[str]] = None,
+) -> int:
+    """Map simulation slots onto real officers when slot_id matches officer id.
+
+    Skips officers who fail required cert codes or band cert requirements.
+    """
+    from logic.certifications import (
+        officer_has_cert_codes,
+        officer_meets_shift_cert_requirements,
+    )
     from logic.officers import get_officer_by_id, update_officer
 
+    codes = [str(c).strip() for c in (required_cert_codes or []) if str(c).strip()]
     updated = 0
     for raw in slots:
         s = raw if isinstance(raw, dict) else getattr(raw, "__dict__", {})
@@ -387,12 +544,22 @@ def _apply_slots_to_officers(slots: List[Any], *, user_id: Optional[int] = None)
         officer = get_officer_by_id(oid)
         if not officer:
             continue
+        st = s.get("shift_start")
+        if codes:
+            ok, _msg = officer_has_cert_codes(oid, codes)
+            if not ok:
+                continue
+        if st:
+            ok, _msg = officer_meets_shift_cert_requirements(oid, str(st))
+            if not ok:
+                continue
         fields = {}
         if s.get("squad") in ("A", "B"):
             fields["squad"] = s["squad"]
-        if s.get("shift_start"):
-            fields["shift_start"] = s["shift_start"]
-            fields["shift_end"] = s.get("shift_end") or officer.get("shift_end")
+        if st:
+            fields["shift_start"] = _snap_hhmm_half_hour(str(st))
+            end_raw = s.get("shift_end") or officer.get("shift_end")
+            fields["shift_end"] = _snap_hhmm_half_hour(str(end_raw)) if end_raw else fields["shift_start"]
         # pattern fields if present on slot
         if s.get("rotation_pattern"):
             fields["rotation_pattern"] = s["rotation_pattern"]

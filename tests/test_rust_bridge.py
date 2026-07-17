@@ -16,8 +16,15 @@ class RustBridgeTests(unittest.TestCase):
         self.assertLessEqual(day, ROTATION_CYCLE_LENGTH)
 
     def test_squad_on_duty(self):
-        self.assertEqual(rust_bridge.get_squad_on_duty(1), "A")
-        self.assertEqual(rust_bridge.get_squad_on_duty(3), "B")
+        """Parity with active rotation config (not hard-coded 2-2-3 day map)."""
+        from logic.rotation_config import get_squad_on_duty as config_squad_on_duty
+
+        for day in range(1, 15):
+            self.assertEqual(
+                rust_bridge.get_squad_on_duty(day),
+                config_squad_on_duty(day),
+                f"cycle day {day}",
+            )
 
     def test_backend_reports_python_when_extension_missing(self):
         if rust_bridge.available():
@@ -102,7 +109,9 @@ class RustBridgeTests(unittest.TestCase):
             ]
             officer = officers[0]
             work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
-            suggestion = logic.suggest_bump_chain(officer["id"], work_day, officer["squad"], officer["shift_start"])
+            from logic.coverage_optimizer import suggest_bump_chain
+
+            suggestion = suggest_bump_chain(officer["id"], work_day, officer["squad"], officer["shift_start"])
             self.assertTrue(suggestion.success, suggestion.message)
             self.assertTrue(suggestion.steps)
             self.assertTrue(all(step.replacement_on_duty for step in suggestion.steps))
@@ -115,6 +124,7 @@ class RustBridgeTests(unittest.TestCase):
 
         with test_database():
             import logic
+            from logic.coverage_optimizer import suggest_bump_chain
 
             officer = next(
                 o
@@ -123,12 +133,8 @@ class RustBridgeTests(unittest.TestCase):
             )
             work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
             with patch.object(rust_bridge, "_RUST", None):
-                py_suggestion = logic.suggest_bump_chain(
-                    officer["id"], work_day, officer["squad"], officer["shift_start"]
-                )
-            rust_suggestion = logic.suggest_bump_chain(
-                officer["id"], work_day, officer["squad"], officer["shift_start"]
-            )
+                py_suggestion = suggest_bump_chain(officer["id"], work_day, officer["squad"], officer["shift_start"])
+            rust_suggestion = suggest_bump_chain(officer["id"], work_day, officer["squad"], officer["shift_start"])
             self.assertEqual(py_suggestion.success, rust_suggestion.success)
             self.assertEqual(len(py_suggestion.chain), len(rust_suggestion.chain))
             self.assertEqual(

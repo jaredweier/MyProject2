@@ -75,8 +75,8 @@ def _probe_chronos() -> Dict[str, str]:
             get_flsa_settings,
             list_extra_duty_events,
             officer_meets_shift_cert_requirements,
-            preview_best_coverage_plans,
         )
+        from logic.scheduling_sim import preview_best_coverage_plans  # noqa: F401
 
         status["rotation"] = "HAVE"
         status["vacancy_open_shift"] = "HAVE"

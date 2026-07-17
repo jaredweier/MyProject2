@@ -45,9 +45,9 @@ class SimulatorTests(unittest.TestCase):
 
     def test_run_schedule_simulation_via_logic(self):
         with test_database():
-            import logic
+            from logic.scheduling_sim import run_schedule_simulation
 
-            result = logic.run_schedule_simulation(
+            result = run_schedule_simulation(
                 "4-on-4-off",
                 12,
                 10.0,
@@ -83,8 +83,9 @@ class SimulatorTests(unittest.TestCase):
     def test_export_simulation_csv(self):
         with test_database():
             import logic
+            from logic.scheduling_sim import run_schedule_simulation
 
-            result = logic.run_schedule_simulation(
+            result = run_schedule_simulation(
                 rotation_type="2-2-3 (Dodgeville 14-day)",
                 num_officers=12,
                 shift_length_hours=11.0,

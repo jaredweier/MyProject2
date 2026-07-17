@@ -1,4 +1,4 @@
-"""Dodgeville PD Scheduler — rebuilt UI (grid shell + modular pages)."""
+"""Chronos Command — rebuilt UI (grid shell + modular pages)."""
 
 from __future__ import annotations
 
@@ -56,7 +56,12 @@ class DodgevilleSchedulerApp(SessionMixin):
 
     def __init__(self):
         self.root = ctk.CTk()
-        self.root.title("Dodgeville Police Department Scheduler")
+        try:
+            from config import APP_NAME
+
+            self.root.title(APP_NAME)
+        except Exception:
+            self.root.title("Chronos Command")
         self.root.configure(fg_color=UI_BG)
 
         self.current_user = None
@@ -494,7 +499,7 @@ def run():
 
             err = tk.Tk()
             err.withdraw()
-            messagebox.showerror("Dodgeville Scheduler — Startup Failed", tb[-3500:] if len(tb) > 3500 else tb)
+            messagebox.showerror("Chronos Command — Startup Failed", tb[-3500:] if len(tb) > 3500 else tb)
             err.destroy()
         except Exception:
             print(tb, file=sys.stderr)

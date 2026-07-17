@@ -1,12 +1,11 @@
-"""Department logo / photo for Chronos Command UI.
+"""Brand asset sync for Chronos Command UI.
 
-Always mirrors assets into gui/static/brand/ and can emit data-URIs so images
-show even if static routes fail.
+Mirrors runtime uploads into gui/static/brand/ for stable URLs.
+Does not embed base64 (NiceGUI WebSocket size limits).
 """
 
 from __future__ import annotations
 
-import base64
 import mimetypes
 import os
 import shutil
@@ -34,70 +33,78 @@ def data_uri(path: str) -> Optional[str]:
             raw = fh.read()
         if not raw:
             return None
+        import base64
+
         b64 = base64.b64encode(raw).decode("ascii")
         return f"data:{_mime(path)};base64,{b64}"
     except OSError:
         return None
 
 
-def sync_brand_files() -> dict:
-    """Copy current department assets into /static/brand/. Returns paths dict."""
-    from photos import department_logo_path, department_photo_path
-
-    out: dict = {"logo_path": None, "photo_path": None, "logo_url": None, "photo_url": None}
+def _mirror(src: Optional[str], dest_name: str) -> dict:
+    out: dict = {"path": None, "url": None}
+    if not src or not os.path.isfile(src):
+        return out
     bdir = brand_dir()
+    dest = bdir / dest_name
+    try:
+        shutil.copy2(src, dest)
+        out["path"] = str(dest)
+        mtime = int(os.path.getmtime(dest))
+        out["url"] = f"/static/brand/{dest_name}?v={mtime}"
+    except OSError:
+        out["path"] = src
+    return out
 
-    logo = department_logo_path()
-    if logo and os.path.isfile(logo):
-        ext = os.path.splitext(logo)[1].lower() or ".png"
-        if ext not in (".png", ".jpg", ".jpeg", ".webp", ".gif"):
-            ext = ".png"
-        dest = bdir / f"dept_logo{ext}"
-        try:
-            shutil.copy2(logo, dest)
-            # Canonical name used by CSS/HTML
-            canon = bdir / "dept_logo.png"
-            if dest != canon:
-                # Also keep as png name for stable URL if source is png/jpeg
-                try:
-                    shutil.copy2(logo, canon)
-                except OSError:
-                    pass
-            out["logo_path"] = str(dest if dest.is_file() else logo)
-            mtime = int(os.path.getmtime(out["logo_path"]))
-            name = dest.name if dest.is_file() else "dept_logo.png"
-            out["logo_url"] = f"/static/brand/{name}?v={mtime}"
-            out["logo_data_uri"] = data_uri(out["logo_path"])
-        except OSError:
-            out["logo_path"] = logo
-            out["logo_data_uri"] = data_uri(logo)
 
-    photo = department_photo_path()
-    if photo and os.path.isfile(photo):
-        dest = bdir / "dept_photo.jpg"
-        try:
-            shutil.copy2(photo, dest)
-            out["photo_path"] = str(dest)
-            mtime = int(os.path.getmtime(dest))
-            out["photo_url"] = f"/static/brand/dept_photo.jpg?v={mtime}"
-            out["photo_data_uri"] = data_uri(str(dest))
-        except OSError:
-            out["photo_path"] = photo
-            out["photo_data_uri"] = data_uri(photo)
+def sync_brand_files() -> dict:
+    """Copy current brand assets into /static/brand/. Returns paths/urls dict."""
+    from photos import (
+        CHRONOS_LOGO_NAME,
+        DEPT_LOGO_NAME,
+        DEPT_PHOTO_NAME,
+        chronos_logo_path,
+        department_logo_path,
+        department_photo_path,
+    )
+
+    out: dict = {
+        "chronos_path": None,
+        "chronos_url": None,
+        "logo_path": None,
+        "logo_url": None,
+        "photo_path": None,
+        "photo_url": None,
+    }
+
+    c = _mirror(chronos_logo_path(), CHRONOS_LOGO_NAME)
+    out["chronos_path"] = c.get("path")
+    out["chronos_url"] = c.get("url")
+
+    logo = _mirror(department_logo_path(), DEPT_LOGO_NAME)
+    out["logo_path"] = logo.get("path")
+    out["logo_url"] = logo.get("url")
+
+    photo = _mirror(department_photo_path(), DEPT_PHOTO_NAME)
+    out["photo_path"] = photo.get("path")
+    out["photo_url"] = photo.get("url")
 
     return out
 
 
 def logo_display() -> Tuple[Optional[str], Optional[str]]:
-    """Return (data_uri_unused, static_url) for department logo.
-
-    data_uri is always None — embedding base64 in NiceGUI messages overflows WebSocket limits.
-    """
+    """Return (None, static_url) for department logo."""
     assets = sync_brand_files()
     return None, assets.get("logo_url")
 
 
 def photo_display() -> Tuple[Optional[str], Optional[str]]:
-    """Return (data_uri_unused, static_url) for department / team photo."""
+    """Return (None, static_url) for department photo."""
     assets = sync_brand_files()
     return None, assets.get("photo_url")
+
+
+def chronos_display() -> Tuple[Optional[str], Optional[str]]:
+    """Return (None, static_url) for Chronos product logo."""
+    assets = sync_brand_files()
+    return None, assets.get("chronos_url")

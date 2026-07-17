@@ -6,7 +6,8 @@ Shared infrastructure lives in SHARED_KERNEL — not slices.
 
 Primary product UI is Chronos NiceGUI under gui/pages/.
 Legacy CustomTkinter lives under ui/pages/ (reference / some tests).
-status: complete | partial | planned — Logic-strong ≠ Chronos-complete.
+status: complete | partial | planned — overall (min of logic/chronos).
+logic_status / chronos_status: dual honesty — unit/API vs Chronos click-path.
 """
 
 from __future__ import annotations
@@ -18,7 +19,10 @@ class SliceDef(TypedDict, total=False):
     id: str
     name: str
     summary: str
-    status: str  # complete | partial | planned
+    status: str  # complete | partial | planned (overall)
+    logic_status: str  # complete | partial | planned
+    chronos_status: str  # complete | partial | planned | unproven
+    brain: str  # generator | optimizer | payroll | shared — see docs/THREE_BRAINS_CONTRACT.md
     ui_pages: List[str]
     ui_mixin: str  # primary Chronos page path (may be empty if no dedicated UI)
     ui_files: List[str]  # all UI files that must exist for feature-map UI ✓
@@ -72,6 +76,8 @@ SLICES: List[SliceDef] = [
         "name": "Command Post Dashboard",
         "summary": "Role-scoped ops home: KPIs, alerts, coverage counts (Chronos partial vs full boards).",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
         "ui_pages": ["dashboard"],
         "ui_mixin": "gui/pages/dashboard.py",
         "ui_files": ["gui/pages/dashboard.py", "ui/pages/dashboard.py"],
@@ -96,6 +102,8 @@ SLICES: List[SliceDef] = [
         "name": "Officer Roster",
         "summary": "Patrol roster CRUD, photos, title/squad/shift assignment.",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
         "ui_pages": ["officers"],
         "ui_mixin": "gui/pages/roster.py",
         "ui_files": ["gui/pages/roster.py", "ui/pages/roster.py"],
@@ -130,6 +138,9 @@ SLICES: List[SliceDef] = [
         "name": "Day-Off Requests",
         "summary": "Submit and approve time off with bump preview, cascade, manual review.",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
+        "brain": "optimizer",
         "ui_pages": ["requests"],
         "ui_mixin": "gui/pages/leave.py",
         "ui_files": ["gui/pages/leave.py", "ui/pages/leave.py"],
@@ -181,6 +192,8 @@ SLICES: List[SliceDef] = [
         "touch_together": [
             "logic/requests.py",
             "logic/scheduling.py",
+            "logic/bump_optimizer.py",
+            "logic/coverage_optimizer.py",
             "logic/scheduling_sim.py",
             "logic/ot_fill.py",
             "logic/bump_off_duty.py",
@@ -209,6 +222,8 @@ SLICES: List[SliceDef] = [
         "name": "Shift Swaps",
         "summary": "Exchange shifts between officers with feasibility checks.",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
         "ui_pages": ["swaps"],
         "ui_mixin": "gui/pages/leave.py",
         "ui_files": ["gui/pages/leave.py", "ui/pages/leave.py"],
@@ -241,6 +256,9 @@ SLICES: List[SliceDef] = [
         "name": "Schedules & Gantt",
         "summary": "Monthly calendars, cycle matrix, publish/sync, manual coverage.",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
+        "brain": "generator",
         "ui_pages": ["base_schedule", "live_schedule", "timeline"],
         "ui_mixin": "gui/pages/schedules.py",
         "ui_files": ["gui/pages/schedules.py", "ui/pages/schedules.py"],
@@ -297,6 +315,9 @@ SLICES: List[SliceDef] = [
         "name": "Payroll & Timecard",
         "summary": "Timecard entry, pay-period totals, payroll ledger, banked time.",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
+        "brain": "payroll",
         "ui_pages": ["timecard", "banked_time", "payroll"],
         "ui_mixin": "gui/pages/finance/__init__.py",
         "ui_files": [
@@ -379,6 +400,8 @@ SLICES: List[SliceDef] = [
         "name": "Alerts & Notifications",
         "summary": "In-app alerts; Chronos shows counts — full inbox parity incomplete.",
         "status": "partial",
+        "logic_status": "partial",
+        "chronos_status": "partial",
         "ui_pages": ["notifications"],
         "ui_mixin": "gui/pages/dashboard.py",
         "ui_files": ["gui/pages/dashboard.py"],
@@ -408,6 +431,8 @@ SLICES: List[SliceDef] = [
         "name": "Ops Reports & Analytics",
         "summary": "Coverage, OT, labor budget, audit log surfaces.",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
         "ui_pages": ["reports"],
         "ui_mixin": "gui/pages/operations.py",
         "ui_files": ["gui/pages/operations.py", "ui/pages/operations.py"],
@@ -458,6 +483,8 @@ SLICES: List[SliceDef] = [
         "name": "Blackout Dates & Holidays",
         "summary": "Officer unavailability and department holiday calendar.",
         "status": "partial",
+        "logic_status": "partial",
+        "chronos_status": "partial",
         "ui_pages": ["availability"],
         "ui_mixin": "gui/pages/operations.py",
         "ui_files": ["gui/pages/operations.py", "ui/pages/operations.py"],
@@ -491,6 +518,8 @@ SLICES: List[SliceDef] = [
         "name": "Shift Bidding",
         "summary": "Bid events and awards; Chronos publish/preview/finalize wired.",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
         "ui_pages": ["simulator"],
         "ui_mixin": "gui/pages/bidding.py",
         "ui_files": ["gui/pages/bidding.py"],
@@ -547,6 +576,8 @@ SLICES: List[SliceDef] = [
         "name": "Open Shifts",
         "summary": "Post/claim open coverage vacancy board (Aladtec/Snap pattern).",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
         "ui_pages": ["dashboard"],
         "ui_mixin": "gui/pages/self_service.py",
         "ui_files": ["gui/pages/self_service.py", "gui/pages/dashboard.py"],
@@ -571,6 +602,8 @@ SLICES: List[SliceDef] = [
         "name": "User Accounts & Auth",
         "summary": "Login, roles, password reset, access control.",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
         "ui_pages": ["users"],
         "ui_mixin": "gui/pages/access.py",
         "ui_files": ["gui/pages/access.py", "gui/pages/login.py", "ui/pages/access.py", "ui/login.py"],
@@ -607,6 +640,8 @@ SLICES: List[SliceDef] = [
         "name": "Schedule & Document Exports",
         "summary": "PDF/CSV/iCal via logic and CLI; Chronos export UX limited.",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
         "ui_pages": ["timeline", "payroll", "requests", "reports"],
         "ui_mixin": "gui/pages/schedules.py",
         "ui_files": ["gui/pages/schedules.py", "exports.py", "logic/exports.py"],
@@ -632,6 +667,9 @@ SLICES: List[SliceDef] = [
         "name": "Scenario Trainer",
         "summary": "Supervisor training simulator for rotation/staffing what-if (UI-only CLI gap OK).",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "unproven",
+        "brain": "optimizer",
         "ui_pages": ["simulator"],
         "ui_mixin": "gui/pages/simulator.py",
         "ui_files": ["gui/pages/simulator.py", "ui/pages/simulator.py"],
@@ -657,6 +695,9 @@ SLICES: List[SliceDef] = [
         "verify": [],
         "touch_together": [
             "simulator.py",
+            "logic/scheduling_sim.py",
+            "logic/staffing_optimizer.py",
+            "logic/coverage_optimizer.py",
             "logic/optimized_schedule_apply.py",
             "logic/rotation_patterns.py",
             "logic/rust_bridge.py",
@@ -666,13 +707,15 @@ SLICES: List[SliceDef] = [
             "tests/test_simulator_constraints.py",
             "tests/test_optimized_schedule_apply.py",
         ],
-        "future_module": "logic/operations.py",
+        "future_module": "logic/scheduling_sim.py",
     },
     {
         "id": "database-backup",
         "name": "Database Backup",
         "summary": "Manual/auto SQLite backup from security/admin and CLI.",
         "status": "partial",
+        "logic_status": "complete",
+        "chronos_status": "partial",
         "ui_pages": ["dashboard"],
         "ui_mixin": "gui/pages/security.py",
         "ui_files": ["gui/pages/security.py"],

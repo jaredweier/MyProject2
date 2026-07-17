@@ -58,11 +58,17 @@ def run_doctor(verbose: bool = False) -> int:
         lines.append(line)
         all_ok &= ok
 
-    for asset in ("logo.png", "team_photo.jpg"):
-        path = os.path.join(ROOT, asset)
-        ok, line = _check(f"asset {asset}", os.path.isfile(path), path if verbose else "")
-        lines.append(line)
-        all_ok &= ok
+    # Brand images are runtime uploads (photos/) — not required on disk for healthy install
+    try:
+        from photos import chronos_logo_path, department_logo_path, department_photo_path
+
+        brand_ok = True
+        _ = chronos_logo_path(), department_logo_path(), department_photo_path()
+        ok, line = _check("brand path APIs", brand_ok, "optional uploads under photos/")
+    except Exception as exc:
+        ok, line = _check("brand path APIs", False, str(exc))
+    lines.append(line)
+    all_ok &= ok
 
     from database import DB_PATH, init_database
 

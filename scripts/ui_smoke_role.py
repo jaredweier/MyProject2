@@ -30,7 +30,6 @@ def main() -> int:
         headless_login,
         visit_all_pages,
     )
-    from ui.assets import load_logo, load_team_photo
 
     errors: list[str] = []
     user = authenticate_role(args.username, args.password)
@@ -46,10 +45,14 @@ def main() -> int:
             assert_nav_contains(app, "simulator", errors, role=args.role_label)
         if args.role_label == "Officer":
             assert_nav_excludes(app, "simulator", errors, role=args.role_label)
-        if load_logo((72, 72)) is None:
-            errors.append("load_logo returned None")
-        if load_team_photo((320, 148), cover=True) is None:
-            errors.append("load_team_photo returned None")
+        # Brand images optional (runtime upload) — API only
+        try:
+            from photos import chronos_logo_path, department_logo_path
+
+            chronos_logo_path()
+            department_logo_path()
+        except Exception as exc:
+            errors.append(f"brand APIs: {exc}")
         visited = visit_all_pages(app, errors)
         if visited < 10:
             errors.append(f"only visited {visited} pages")

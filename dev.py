@@ -496,6 +496,7 @@ def cmd_chronos_e2e(args):
         username=getattr(args, "user", "admin"),
         password=getattr(args, "password", "admin"),
         headed=getattr(args, "headed", False),
+        quick=bool(getattr(args, "quick", False)),
     )
 
 
@@ -518,6 +519,24 @@ def cmd_notification_flow_smoke(_args):
     from scripts.notification_flow_smoke import run_notification_flow_smoke
 
     return run_notification_flow_smoke()
+
+
+def cmd_virtual_lab(args):
+    """Virtual UAT readiness: doctor + readiness + LE scenarios + residual (+ optional ship)."""
+    from scripts.virtual_lab import print_uat_card, run_virtual_lab
+
+    if getattr(args, "print_card_only", False):
+        print_uat_card(
+            host=getattr(args, "host", "127.0.0.1") or "127.0.0.1",
+            port=int(getattr(args, "port", 8080) or 8080),
+        )
+        return 0
+    return run_virtual_lab(
+        ship=bool(getattr(args, "ship", False)),
+        scenarios_only=bool(getattr(args, "scenarios_only", False)),
+        print_card=not bool(getattr(args, "no_card", False)),
+        skip_residual=bool(getattr(args, "skip_residual", False)),
+    )
 
 
 def cmd_tool_stack(_args):
@@ -1048,12 +1067,17 @@ def main():
     local_d.add_argument("--exec", action="store_true", help="Execute first free-machine command")
     chronos_e2e = sub.add_parser(
         "chronos-e2e",
-        help="Optional Playwright smoke for NiceGUI Chronos (install playwright separately)",
+        help="Optional Playwright smoke for NiceGUI Chronos (one server only; install playwright separately)",
     )
     chronos_e2e.add_argument("--base-url", default="http://127.0.0.1:8080")
     chronos_e2e.add_argument("--user", default="admin")
     chronos_e2e.add_argument("--password", default="admin")
     chronos_e2e.add_argument("--headed", action="store_true")
+    chronos_e2e.add_argument(
+        "--quick",
+        action="store_true",
+        help="Critical paths only (CHRONOS_E2E_QUICK=1). Prefer when validating under load.",
+    )
     sub.add_parser(
         "leave-flow-smoke",
         help="Leave create→preview→approve/reject logic smoke (Chronos UI path, no browser)",
@@ -1066,6 +1090,34 @@ def main():
         "notification-flow-smoke",
         help="Notification Open→Chronos path map + create/mark-read smoke",
     )
+    virtual_lab = sub.add_parser(
+        "virtual-lab",
+        help="Virtual UAT readiness pack (doctor, readiness, LE scenarios, residual; optional --ship)",
+    )
+    virtual_lab.add_argument(
+        "--ship",
+        action="store_true",
+        help="Also run verify --tier check (honest_gate for ship claim)",
+    )
+    virtual_lab.add_argument(
+        "--scenarios-only",
+        action="store_true",
+        help="Only LE virtual UAT scenario smoke",
+    )
+    virtual_lab.add_argument(
+        "--skip-residual",
+        action="store_true",
+        help="Skip residual_proof_smoke",
+    )
+    virtual_lab.add_argument(
+        "--print-card",
+        dest="print_card_only",
+        action="store_true",
+        help="Print human UAT card only",
+    )
+    virtual_lab.add_argument("--no-card", action="store_true", help="Skip UAT card after gates")
+    virtual_lab.add_argument("--host", default="127.0.0.1")
+    virtual_lab.add_argument("--port", type=int, default=8080)
     sub.add_parser("tool-stack", help="Print external math/UI/token tool stack summary")
     parity = sub.add_parser(
         "parity-audit",
@@ -1246,6 +1298,7 @@ def main():
         "math-scenarios": cmd_math_scenarios,
         "local-dispatch": cmd_local_dispatch,
         "chronos-e2e": cmd_chronos_e2e,
+        "virtual-lab": cmd_virtual_lab,
         "leave-flow-smoke": cmd_leave_flow_smoke,
         "payroll-flow-smoke": cmd_payroll_flow_smoke,
         "notification-flow-smoke": cmd_notification_flow_smoke,

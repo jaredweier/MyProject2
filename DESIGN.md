@@ -165,10 +165,36 @@
 | 2026-07-13 | Silver badge accent, not gold | User preference |
 | 2026-07-13 | Agency-neutral LE identity | User: modern LE, not Dodgeville-specific branding |
 | 2026-07-13 | v1 mockups not final | User not satisfied — schedule refined mockup pass |
+| 2026-07-16 | **CTA system locked** | Silver filled CTAs failed contrast on deep navy in Quasar/NiceGUI |
 
-## Next visual pass (before implementation sprint)
+## CTA system (locked — do not re-litigate without contrast proof)
 
-1. Single mockup: **B chrome + D rail** side-by-side proof
-2. Reduce panel count — one hero metric, one primary table, one dock
-3. Verify silver CTAs on deep navy (contrast check)
-4. Optional: re-run Codex outside voice after `OPENAI_API_KEY` or `codex login`
+| Role | Token / style | Use |
+|------|----------------|-----|
+| **Primary action** | Command blue `#3B7DD8` → `#6BA3F5` gradient, light text | One filled CTA per region (`.btn-primary`) |
+| **Secondary** | Blue outline / ghost (`.btn-ghost`) or silver outline (`.btn-secondary-silver`) | Secondary paths |
+| **Danger** | Outline red (`.btn-danger`) | Reject / destructive |
+| **Chrome accent** | Silver `#C5CED9` | Active nav inset, selected row, hero left bar, LIVE chrome — **not** primary button fill |
+| **Semantic** | success / warning / danger / info | Status chips and severity only |
+
+Rationale: pure silver primary buttons rendered unreadable on navy (white-on-grey). Silver remains the badge/chrome accent per Variant B spirit; actionable fill is command blue for WCAG readability.
+
+## Implementation status (2026-07-16 UI audit pack)
+
+Shipped in Chronos NiceGUI (`gui/`):
+
+1. **Fonts** — Rajdhani + IBM Plex Sans/Mono via Google Fonts CDN; system fallbacks offline
+2. **Shell D layout** — collapsible rail (240↔72), right **Command queue** dock, bottom status
+3. **Duty board** — single hero decision band + severity strip + deck (no stacked command panels)
+4. **Nav** — badge counts, progressive “More admin tools”, Ctrl+K palette with favorites, Ctrl+B rail, Ctrl+. dock
+5. **Empty states / skeletons / shift cards** — `gui/ui_patterns.py`
+6. **Mobile cards** — My Week, open shifts, leave, alerts
+7. **Optimistic UI** — claim open shift, mark notification read
+8. **Schedule matrix** — today column silver highlight, richer cell tooltips, drag-cover assign on live
+9. **Table chrome** — 48px rows, selected silver inset, empty_state on zero rows
+
+## Next visual pass
+
+1. Human browser walkthrough on dept roster (residual 4b)
+2. Optional vision PNG pass after static polish
+3. Re-open silver primary CTAs only with measured contrast ≥ 4.5:1 on navy

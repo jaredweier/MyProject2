@@ -147,6 +147,52 @@ def export_extra_duty_invoice_csv(
     }
 
 
+def claim_extra_duty_event(
+    shift_id: int,
+    officer_id: int,
+    *,
+    user_id: Optional[int] = None,
+) -> Dict:
+    """Officer claims an EXTRA_DUTY open shift (marketplace fill)."""
+    from database import get_connection
+    from logic.operations import fill_open_shift
+
+    conn = get_connection()
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM open_shifts WHERE id = ?", (int(shift_id),))
+    row = cur.fetchone()
+    conn.close()
+    if not row:
+        return {"success": False, "message": "Extra-duty shift not found"}
+    shift = dict(row)
+    meta = _decode_notes(shift.get("notes"))
+    if not meta.get("is_extra_duty"):
+        return {"success": False, "message": "Shift is not tagged as extra duty"}
+    if (shift.get("status") or "").lower() != "open":
+        return {"success": False, "message": f"Shift not open ({shift.get('status')})"}
+
+    result = fill_open_shift(int(shift_id), int(officer_id), user_id=user_id)
+    if result.get("success"):
+        result["extra_duty"] = True
+        result["event_name"] = meta.get("event_name")
+        result["message"] = result.get("message") or f"Claimed extra duty: {meta.get('event_name')}"
+    return result
+
+
+def marketplace_board(*, limit: int = 50) -> Dict:
+    """Open + recent filled extra-duty board for Chronos self-service."""
+    open_ev = list_extra_duty_events(status="open", limit=limit).get("events") or []
+    filled_ev = list_extra_duty_events(status="filled", limit=min(limit, 20)).get("events") or []
+    return {
+        "success": True,
+        "open": open_ev,
+        "filled_recent": filled_ev,
+        "open_count": len(open_ev),
+        "filled_count": len(filled_ev),
+        "message": f"{len(open_ev)} open extra-duty post(s)",
+    }
+
+
 def list_extra_duty_events(
     *,
     status: str = "open",

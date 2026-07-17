@@ -53,18 +53,27 @@ class FeatureUiStaticTests(unittest.TestCase):
     def test_simulator_implement_and_constraints(self):
         src = _read("gui/pages/simulator.py")
         for needle in (
-            "Generate Schedule",
-            "View optimized plan",
-            "Implement as monthly",
-            "Annual hours",
+            "Generate schedule",
+            "Plan detail",
+            "Publish as monthly",
+            "ui.chip",
+            "ui.splitter",
+            "ui.spinner",
+            "ui.refreshable",
+            "throttled",
+            "Annual Hours",
             "variance",
             "24/7",
             "Avoid FLSA",
             "Variations",
-            "auto minimum",
             "implement_optimized_plan",
             "format_optimized_plan_view",
             "recommend_implement_dates",
+            "Find best",
+            "Real-world 8h pack",
+            "search_depth",
+            "sim-hero",
+            "sim-option-card",
         ):
             self.assertIn(needle, src)
 
@@ -96,7 +105,9 @@ class FeatureUiStaticTests(unittest.TestCase):
         src = _read("gui/pages/simulator.py")
         # Regression: lines.append("", "Suggestions:") crashes at runtime
         self.assertNotIn('lines.append("", "Suggestions:")', src)
-        self.assertIn("Suggestions:", src)
+        self.assertNotIn('lines.append("",', src)
+        # Explain path still present
+        self.assertIn("explain_staffing_result", src)
 
     def test_timecard_period_jump_wires_storage(self):
         src = _read("gui/pages/finance/timecards.py")

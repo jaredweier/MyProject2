@@ -24,8 +24,10 @@ SKIP_FILES = {
 def _logic_exports() -> Set[str]:
     if ROOT not in sys.path:
         sys.path.insert(0, ROOT)
-    logic = importlib.import_module("logic")
-    return {name for name in dir(logic) if not name.startswith("_")}
+    from scripts.logic_resolve import all_public_logic_names
+
+    # Package surface + brain modules (three-brains: optimizer not only on import logic)
+    return all_public_logic_names()
 
 
 def _collect_from_ast(path: str) -> Set[str]:

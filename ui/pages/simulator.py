@@ -7,7 +7,11 @@ from tkinter import messagebox
 import customtkinter as ctk
 
 from config import SIMULATOR_ROTATION_TYPES
-from logic import get_simulator_defaults_from_roster, run_schedule_simulation, run_staffing_optimizer
+from logic.scheduling_sim import (
+    get_simulator_defaults_from_roster,
+    run_schedule_simulation,
+    run_staffing_optimizer,
+)
 from logic.staffing_config import (
     get_active_annual_hours_target,
     get_active_shift_length_hours,
@@ -37,34 +41,87 @@ class SimulatorPage(BasePage):
         SectionHeader(form_card.body, "Scenario inputs", "Rotation, headcount, and shift bands").pack(
             fill="x", padx=CARD_PAD, pady=(CARD_PAD, 12)
         )
-        form = ctk.CTkScrollableFrame(form_card.body, fg_color="transparent")
-        form.pack(fill="both", expand=True, padx=CARD_PAD)
+
+        tabs = ctk.CTkTabview(form_card.body, fg_color="transparent")
+        tabs.pack(fill="both", expand=True, padx=CARD_PAD)
+        tab_run = tabs.add("Single Run")
+        tab_opt = tabs.add("Optimizer")
+
+        # --- Single Run Tab ---
+        form_run = ctk.CTkScrollableFrame(tab_run, fg_color="transparent")
+        form_run.pack(fill="both", expand=True)
+
         self.sim_rotation = FormField(
-            form,
+            form_run,
             "Rotation",
             lambda p: ctk.CTkComboBox(p, height=34, values=list(SIMULATOR_ROTATION_TYPES), state="readonly"),
         ).widget
         self.sim_rotation.set(SIMULATOR_ROTATION_TYPES[0])
-        self.sim_officers = FormField(form, "Officers", lambda p: ctk.CTkEntry(p, height=34)).widget
+
+        self.sim_officers = FormField(form_run, "Officers", lambda p: ctk.CTkEntry(p, height=34)).widget
         self.sim_officers.insert(0, str(get_target_officer_count()))
-        self.sim_shift_length = FormField(form, "Shift length (hours)", lambda p: ctk.CTkEntry(p, height=34)).widget
+
+        self.sim_shift_length = FormField(form_run, "Shift length (hours)", lambda p: ctk.CTkEntry(p, height=34)).widget
         self.sim_shift_length.insert(0, str(get_active_shift_length_hours()))
-        self.sim_annual = FormField(form, "Annual hours target", lambda p: ctk.CTkEntry(p, height=34)).widget
+
+        self.sim_annual = FormField(form_run, "Annual hours target", lambda p: ctk.CTkEntry(p, height=34)).widget
         self.sim_annual.insert(0, str(int(get_active_annual_hours_target())))
-        self.sim_starts = FormField(form, "Shift starts (comma-separated)", lambda p: ctk.CTkEntry(p, height=34)).widget
+
+        self.sim_starts = FormField(
+            form_run, "Shift starts (comma-separated)", lambda p: ctk.CTkEntry(p, height=34)
+        ).widget
         self.sim_starts.insert(0, ", ".join(get_active_shift_starts()))
-        self.sim_min = FormField(form, "Min per shift", lambda p: ctk.CTkEntry(p, height=34)).widget
+
+        self.sim_min = FormField(form_run, "Min per shift", lambda p: ctk.CTkEntry(p, height=34)).widget
         self.sim_min.insert(0, "1")
-        self.sim_days = FormField(form, "Simulation days", lambda p: ctk.CTkEntry(p, height=34)).widget
+
+        self.sim_days = FormField(form_run, "Simulation days", lambda p: ctk.CTkEntry(p, height=34)).widget
         self.sim_days.insert(0, "28")
-        btns = ctk.CTkFrame(form_card.body, fg_color="transparent")
-        btns.pack(fill="x", padx=CARD_PAD, pady=CARD_PAD)
-        SecondaryButton(btns, text="Load roster defaults", command=self._load_defaults).pack(fill="x", pady=(0, 8))
-        PrimaryButton(btns, text="Generate schedule", command=self.run_sim).pack(fill="x", pady=(0, 8))
+
+        btns_run = ctk.CTkFrame(form_run, fg_color="transparent")
+        btns_run.pack(fill="x", pady=CARD_PAD)
+        SecondaryButton(btns_run, text="Load roster defaults", command=self._load_defaults).pack(fill="x", pady=(0, 8))
+        PrimaryButton(btns_run, text="Generate schedule", command=self.run_sim).pack(fill="x")
+
+        # --- Optimizer Tab ---
+        form_opt = ctk.CTkScrollableFrame(tab_opt, fg_color="transparent")
+        form_opt.pack(fill="both", expand=True)
+
+        self.opt_shift_length = FormField(
+            form_opt, "Shift length (optional)", lambda p: ctk.CTkEntry(p, height=34)
+        ).widget
+
+        self.opt_annual = FormField(
+            form_opt, "Annual hours target (optional)", lambda p: ctk.CTkEntry(p, height=34)
+        ).widget
+
+        self.opt_starts = FormField(
+            form_opt, "Shift starts (csv, optional)", lambda p: ctk.CTkEntry(p, height=34)
+        ).widget
+
+        self.opt_days = FormField(form_opt, "Simulation days", lambda p: ctk.CTkEntry(p, height=34)).widget
+        self.opt_days.insert(0, "14")
+
+        self.opt_night_min = FormField(form_opt, "Night minimum", lambda p: ctk.CTkEntry(p, height=34)).widget
+        self.opt_night_min.insert(0, "2")
+
+        self.opt_247 = FormField(form_opt, "Coverage 24/7 (min per hour)", lambda p: ctk.CTkEntry(p, height=34)).widget
+        self.opt_247.insert(0, "1")
+
+        self.opt_extra = ctk.CTkSwitch(form_opt, text="Use extra windows (Fri/Sat)")
+        self.opt_extra.pack(anchor="w", padx=4, pady=8)
+        self.opt_extra.select()
+
+        self.opt_offday = ctk.CTkSwitch(form_opt, text="Allow off-day coverage")
+        self.opt_offday.pack(anchor="w", padx=4, pady=8)
+
+        btns_opt = ctk.CTkFrame(form_opt, fg_color="transparent")
+        btns_opt.pack(fill="x", pady=CARD_PAD)
         PrimaryButton(
-            btns, text="Find best staffing combination", fg_color=DODGEVILLE_SUCCESS, command=self.run_optimize
+            btns_opt, text="Find best staffing combination", fg_color=DODGEVILLE_SUCCESS, command=self.run_optimize
         ).pack(fill="x")
 
+        # --- Results Pane ---
         out = Card(self)
         out.grid(row=0, column=1, sticky="nsew", padx=(8, 0))
         SectionHeader(out.body, "Results", "Metrics and ranked recommendations").pack(
@@ -134,34 +191,52 @@ class SimulatorPage(BasePage):
 
     def run_optimize(self):
         try:
-            length = float(self.sim_shift_length.get().strip() or "0") or None
-            annual = float(self.sim_annual.get().strip() or "0") or None
+            length = float(self.opt_shift_length.get().strip() or "0") or None
+            annual = float(self.opt_annual.get().strip() or "0") or None
+            days = int(self.opt_days.get().strip() or "14")
+            night_min = int(self.opt_night_min.get().strip() or "2")
+            cov_247 = int(self.opt_247.get().strip() or "0")
         except ValueError:
-            length = annual = None
-        starts = [s.strip() for s in self.sim_starts.get().replace(";", ",").split(",") if s.strip()]
+            messagebox.showerror("Validation", "Check numeric fields in Optimizer tab.")
+            return
+
+        starts = [s.strip() for s in self.opt_starts.get().replace(";", ",").split(",") if s.strip()]
+        use_extra = bool(self.opt_extra.get())
+        allow_offday = bool(self.opt_offday.get())
+
+        self.app.set_status("Running optimizer...", toast=False)
+        self.update()
+
         result = run_staffing_optimizer(
             shift_length_hours=length,
             annual_hours_target=annual,
             shift_starts=starts or None,
-            simulation_days=14,
+            simulation_days=days,
+            night_minimum=night_min,
+            coverage_247=cov_247,
+            use_extra_windows=use_extra,
+            allow_offday_coverage=allow_offday,
         )
         if not result.get("success") or not result.get("best"):
             messagebox.showerror("Optimizer", result.get("message", "No combination found"))
+            self.app.set_status("Optimizer failed", level="error")
             return
+
         best = result["best"]
         try:
-            self.sim_rotation.set(best["rotation_type"])
+            self.sim_rotation.set(best.get("rotation_type", SIMULATOR_ROTATION_TYPES[0]))
         except Exception:
             pass
         self.sim_officers.delete(0, "end")
-        self.sim_officers.insert(0, str(best["num_officers"]))
+        self.sim_officers.insert(0, str(best.get("num_officers", "")))
         self.sim_min.delete(0, "end")
-        self.sim_min.insert(0, str(best["min_per_shift"]))
+        self.sim_min.insert(0, str(best.get("min_per_shift", "")))
+
         lines = [result.get("message", "Best staffing found"), "", "Top combinations:"]
         for i, row in enumerate((result.get("ranked") or [])[:8], 1):
             lines.append(
-                f"{i}. {row['rotation_type']} · {row['num_officers']} officers · "
-                f"min {row['min_per_shift']}/shift · score {row['score']}"
+                f"{i}. {row.get('rotation_type', 'N/A')} · {row.get('num_officers', '?')} officers · "
+                f"min {row.get('min_per_shift', '?')}/shift · score {row.get('score', '?')}"
             )
         self._write("\n".join(lines))
         self.app.set_status(result.get("message", "Optimizer complete"), level="success")

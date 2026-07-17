@@ -8,6 +8,7 @@ from config import DATE_INPUT_HINT, DAY_OFF_REQUEST_TYPES, REQUEST_STATUS
 from gui import session
 from gui.clock import today_local
 from gui.shell import layout, page_header, panel
+from gui.ui_patterns import empty_state, shift_card
 from logic import (
     apply_ot_fill_selection,
     bulk_approve_auto_ok_requests,
@@ -15,7 +16,6 @@ from logic import (
     create_day_off_request,
     create_shift_swap_request,
     describe_day_off_request,
-    format_bump_suggestion,
     get_day_off_requests,
     get_day_off_requests_for_viewer,
     get_officers_by_seniority,
@@ -24,14 +24,18 @@ from logic import (
     get_pending_shift_swap_requests,
     get_shift_swap_requests,
     list_ot_fill_candidates,
-    plan_bump_chain,
-    preview_best_coverage_plans,
     process_day_off_request,
     process_shift_swap,
-    suggest_bump_chain,
-    validate_bump_feasibility,
     validate_swap_feasibility,
 )
+from logic.bump_optimizer import plan_bump_chain  # parity wire (must appear in gui/)
+from logic.coverage_optimizer import (
+    format_bump_suggestion,
+    suggest_bump_chain,
+    validate_bump_feasibility,
+)
+from logic.product_complete_pack import plan_bump_chain_report
+from logic.scheduling_sim import preview_best_coverage_plans
 from validators import format_date, parse_date
 
 
@@ -53,6 +57,42 @@ def render_leave() -> None:
             kicker="Scheduling",
         )
         scheduling_subnav("time_off")
+        if session.can("reports.export") or session.can("requests.approve") or session.can("reports.view"):
+            with ui.row().classes("gap-2 q-mb-sm flex-wrap"):
+
+                def exp_leave_csv():
+                    try:
+                        from logic.exports import export_requests_csv
+
+                        r = export_requests_csv(status_filter="Pending")
+                    except Exception as exc:
+                        r = {"success": False, "message": str(exc)}
+                    ui.notify(
+                        r.get("message") or r.get("path") or "Leave CSV",
+                        type="positive" if r.get("success") else "negative",
+                    )
+
+                def exp_swap_csv():
+                    try:
+                        from logic.exports import export_shift_swaps_csv
+
+                        r = export_shift_swaps_csv(pending_only=True)
+                    except Exception as exc:
+                        r = {"success": False, "message": str(exc)}
+                    ui.notify(
+                        r.get("message") or r.get("path") or "Swaps CSV",
+                        type="positive" if r.get("success") else "negative",
+                    )
+
+                ui.button("Export pending leave CSV", on_click=exp_leave_csv).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+                ui.button("Export pending swaps CSV", on_click=exp_swap_csv).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
+                ui.button("Exports hub", on_click=lambda: ui.navigate.to("/exports")).classes("btn-ghost").props(
+                    "no-caps outline dense"
+                )
         tab = ui.tabs().classes("q-mb-md")
         with tab:
             t_req = ui.tab("Time Off")
@@ -190,9 +230,14 @@ def _request_queue() -> None:
             if r.get("status") in (REQUEST_STATUS["pending"], REQUEST_STATUS["pending_manual"])
         ]
     if not requests:
-        ui.html('<div class="alert alert-ok">Queue clear — no pending time off.</div>', sanitize=False)
+        empty_state(
+            "Queue clear",
+            "No pending time off. Submit a request above when needed.",
+            cta_label="Duty board",
+            cta_path="/",
+        )
         return
-    # Enterprise density: grid overview + action rows (AG Grid pattern from NiceGUI docs)
+    # Enterprise density: grid overview + mobile-friendly action cards
     if session.can("requests.approve") and len(requests) > 3:
         try:
             from gui.tables import aggrid_from_dicts
@@ -220,37 +265,35 @@ def _request_queue() -> None:
         except Exception:
             pass
     for req in requests:
-        with ui.element("div").classes("data-row"):
-            with ui.element("div"):
-                ui.label(f"{req.get('officer_name', 'Officer')} · {req.get('request_type', '')}").classes(
-                    "text-sm font-semibold"
+        status = req.get("status") or ""
+        manual = status == REQUEST_STATUS.get("pending_manual") or status == "Pending Manual Review"
+        can_act = session.can("requests.approve") and status in (
+            REQUEST_STATUS["pending"],
+            REQUEST_STATUS["pending_manual"],
+        )
+        shift_card(
+            title=f"{req.get('officer_name', 'Officer')} · {req.get('request_type', '')}",
+            subtitle=(
+                f"{format_date(req['request_date'])} · {req.get('squad', '')} {req.get('shift_start', '')} · {status}"
+            ),
+            status="Manual" if manual else "Pending",
+            status_level="warn" if manual else "info",
+            primary_label="Approve" if can_act else "",
+            on_primary=(lambda r=req: _confirm_approve(r)) if can_act else None,
+            secondary_label="Plans" if can_act else ("Reject" if can_act else ""),
+            on_secondary=(lambda r=req: _show_plans(r)) if can_act else None,
+            card_id=f"leave-{req.get('id')}",
+        )
+        if can_act:
+            with ui.row().classes("gap-1 q-mb-sm").style("margin-top:-4px"):
+                ui.button("Reject", on_click=lambda r=req: _reject_dialog(r)).classes("btn-danger").props(
+                    "dense no-caps outline"
                 )
-                ui.label(
-                    f"{format_date(req['request_date'])} · {req.get('squad', '')} {req.get('shift_start', '')} · {req.get('status')}"
-                ).classes("text-xs text-gray-500")
-            status = req.get("status") or ""
-            if status == REQUEST_STATUS.get("pending_manual") or status == "Pending Manual Review":
-                ui.badge("Manual review", color="orange").props("outline dense")
-            if session.can("requests.approve") and status in (
-                REQUEST_STATUS["pending"],
-                REQUEST_STATUS["pending_manual"],
-            ):
-                with ui.row().classes("gap-1"):
-                    ui.button("Plans", on_click=lambda r=req: _show_plans(r)).props("dense no-caps flat")
-                    ui.button("Approve", on_click=lambda r=req: _confirm_approve(r)).classes("btn-primary").props(
-                        "dense no-caps unelevated"
-                    )
-                    ui.button("Reject", on_click=lambda r=req: _reject_dialog(r)).classes("btn-danger").props(
-                        "dense no-caps"
-                    )
 
 
 def _plan_summary_text(plan: dict) -> str:
-    """One-screen summary for approve confirm."""
-    msg = (plan.get("message") or "").strip() or "Coverage plan"
-    score = plan.get("plan_score")
-    if score is not None:
-        msg = f"{msg} · score {score}"
+    """One-screen summary for approve confirm (no internal scores)."""
+    msg = (plan.get("message") or "").strip() or "Coverage option"
     steps = plan.get("steps") or []
     if steps:
         lines = []
@@ -258,7 +301,11 @@ def _plan_summary_text(plan: dict) -> str:
             rep = s.get("replacement") or s.get("replacement_name") or "?"
             orig = s.get("original") or s.get("original_name") or "?"
             step_n = s.get("step", "")
-            lines.append(f"  {step_n}. {rep} covers {orig}".strip())
+            duty = "call-in" if s.get("on_duty") is False else None
+            line = f"  {step_n}. {rep} covers {orig}".strip()
+            if duty:
+                line += f" ({duty})"
+            lines.append(line)
         msg = msg + "\n" + "\n".join(lines)
     chain = plan.get("chain") or []
     if chain and not steps:
@@ -266,11 +313,10 @@ def _plan_summary_text(plan: dict) -> str:
     return msg
 
 
-def _run_approve(req, preferred_chain=None, plan_score=None) -> None:
+def _run_approve(req, preferred_chain=None, **_ignored) -> None:
     result = process_day_off_request(req["id"], action="approve", preferred_chain=preferred_chain)
     if getattr(result, "success", False):
-        extra = f" (plan score {plan_score})" if plan_score is not None else ""
-        ui.notify(f"{result.message}{extra}", type="positive")
+        ui.notify(result.message, type="positive")
     elif getattr(result, "requires_manual", False):
         ui.notify(f"Manual review: {result.message}", type="warning")
     else:
@@ -304,15 +350,23 @@ def _confirm_approve(req) -> None:
         for c in eligible:
             cid = int(c["officer_id"])
             duty = "ON" if c.get("on_duty") else "OFF"
+            fat = c.get("fatigue_score")
+            fat_bit = ""
+            if fat is not None:
+                mark = "!" if c.get("fatigue_elevated") else ""
+                fat_bit = f" · fat {fat}{mark}"
             cover_options[cid] = (
                 f"#{c.get('offer_order', '?')} · {c.get('name')} · {duty} · "
-                f"rank {c.get('seniority_rank', '—')} · {c.get('shift_start') or '—'}"
+                f"rank {c.get('seniority_rank', '—')} · {c.get('shift_start') or '—'}{fat_bit}"
             )
         default_cover = next(iter(by_id), NONE_COVER)
         plan_options: dict[int, str] = {0: "— No auto plan —"}
         for i, plan in enumerate(plans[:3], 1):
-            score = plan.get("plan_score")
-            plan_options[i] = f"Auto plan {i}" + (f" · score {score}" if score is not None else "")
+            n_steps = len(plan.get("steps") or plan.get("chain") or [])
+            label = (plan.get("message") or f"Option {i}").strip()
+            if len(label) > 48:
+                label = f"Option {i}: {n_steps} assignment{'s' if n_steps != 1 else ''}"
+            plan_options[i] = label
 
         with ui.dialog().props("persistent") as dlg:
             with (
@@ -372,12 +426,22 @@ def _confirm_approve(req) -> None:
                         .classes("w-full")
                         .props("dark dense options-dense emit-value map-options")
                     )
-                    best = _plan_summary_text(plans[0])
-                    ui.textarea(value=best).classes("w-full").props("readonly outlined dense dark rows=3").style(
-                        "font-size:12px"
-                    )
+                    # Side-by-side ranked plans (who moves / risk)
+                    with ui.element("div").classes("grid-2"):
+                        for i, plan in enumerate(plans[:3], 1):
+                            with ui.element("div").style(
+                                "border:1px solid rgba(120,160,220,0.2);border-radius:8px;"
+                                "padding:8px;margin-bottom:6px;background:rgba(0,0,0,0.2)"
+                            ):
+                                ui.label(f"Option {i}").classes("text-xs font-semibold").style("color:#6BA3F5")
+                                ui.label(_plan_summary_text(plan)).classes("text-xs").style(
+                                    "white-space:pre-wrap;color:#94a3b8"
+                                )
+                                n_steps = len(plan.get("steps") or plan.get("chain") or [])
+                                ui.label(f"{n_steps} move(s) · ranked #{i}").classes("text-xs").style("color:#F0B429")
                 else:
                     ui.label("No auto-coverage plan scored for this day.").classes("text-xs").style("color:#fb923c")
+                ui.button("Ops Desk", on_click=lambda: ui.navigate.to("/ops-desk")).props("dense no-caps flat")
 
                 def _notify_result(r: dict) -> None:
                     ok = bool(r.get("success"))
@@ -449,11 +513,7 @@ def _confirm_approve(req) -> None:
                         except (TypeError, ValueError):
                             idx = 1
                     plan = plans[min(max(idx, 1), len(plans)) - 1]
-                    _run_approve(
-                        req,
-                        preferred_chain=plan.get("chain") or None,
-                        plan_score=plan.get("plan_score"),
-                    )
+                    _run_approve(req, preferred_chain=plan.get("chain") or None)
                     _close_dlg()
 
                 def do_without_cover():
@@ -497,6 +557,11 @@ def _show_plans(req) -> None:
         squad = req.get("squad") or ""
         shift = req.get("shift_start") or ""
         payload = preview_best_coverage_plans(oid, rdate, squad, shift, max_plans=5)
+        plans = [p for p in (payload.get("plans") or []) if isinstance(p, dict)]
+        ready = [p for p in plans if p.get("success")]
+        # Full bump chain (plan_bump_chain) — partial → manual review by design
+        chain_report = plan_bump_chain_report(int(oid), rdate, squad, shift)
+        _chain, _err = plan_bump_chain(int(oid), rdate, squad, shift)
         try:
             from logic.plan_explain import explain_coverage_plans
 
@@ -508,24 +573,39 @@ def _show_plans(req) -> None:
             feas_line = getattr(feas, "message", None) or str(feas)
         except Exception as exc:
             feas_line = f"Feasibility check unavailable: {exc}"
-        try:
-            chain, chain_msg = plan_bump_chain(oid, rdate, squad, shift)
-            chain_line = f"Chain steps: {len(chain or [])}" + (f" · {chain_msg}" if chain_msg else "")
-            if chain:
-                chain_line += " · " + " → ".join(f"{a}←{b}" for a, b in chain[:8])
-        except Exception as exc:
-            chain_line = f"Chain plan unavailable: {exc}"
-        text = f"Feasibility: {feas_line}\n{chain_line}\n\n{text or 'No scored plans'}"
+        chain_block = chain_report.get("text") or chain_report.get("message") or ""
+        text = (
+            f"Top option: {feas_line}\n\n"
+            f"--- Bump chain (plan_bump_chain) ---\n{chain_block}\n\n"
+            f"{text or 'No coverage options'}"
+        )
         with ui.dialog() as dlg:
             with (
                 ui.card()
                 .classes("w-full")
-                .style("width:min(480px,94vw);max-height:80vh;padding:16px;background:#0c1220;color:#e2e8f0;")
+                .style(
+                    "width:min(520px,94vw);max-height:85vh;padding:16px;background:#0c1220;color:#e2e8f0;overflow:auto;"
+                )
             ):
-                ui.label("Coverage plans — explainable scores").classes("text-sm font-semibold q-mb-sm").style(
+                ui.label("Coverage options (best first)").classes("text-sm font-semibold q-mb-sm").style(
                     "color:#f1f5f9"
                 )
-                ui.textarea(value=text).classes("w-full").props("readonly outlined dense dark rows=12")
+                ui.textarea(value=text).classes("w-full").props("readonly outlined dense dark rows=10")
+                if ready and session.can("requests.approve"):
+                    ui.label("Approve with a ranked option:").classes("text-xs q-mt-sm").style("color:#94a3b8")
+                    with ui.column().classes("w-full gap-1 q-mt-xs"):
+                        for i, plan in enumerate(ready[:5], 1):
+                            chain = plan.get("chain") or None
+                            summary = _plan_summary_text(plan).split("\n")[0]
+
+                            def _use(_e=None, c=chain):
+                                _run_approve(req, preferred_chain=c)
+                                dlg.close()
+
+                            ui.button(
+                                f"Use option {i}: {summary[:56]}",
+                                on_click=_use,
+                            ).classes("btn-ghost w-full").props("no-caps outline dense")
                 ui.button("Close", on_click=dlg.close).classes("btn-ghost q-mt-sm").props("no-caps flat dense")
         dlg.open()
     except Exception as exc:

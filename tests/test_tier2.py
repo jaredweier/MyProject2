@@ -95,8 +95,9 @@ class Tier2FeatureTests(unittest.TestCase):
     def test_create_shift_bid_from_simulation(self):
         with test_database():
             import logic
+            from logic.scheduling_sim import run_schedule_simulation
 
-            sim = logic.run_schedule_simulation(
+            sim = run_schedule_simulation(
                 "4-on-4-off",
                 8,
                 10.0,
@@ -157,6 +158,7 @@ class Tier2FeatureTests(unittest.TestCase):
     def test_callback_rotation_and_record(self):
         with test_database():
             import logic
+            from logic.callbacks import record_callback_offer
 
             sync = logic.sync_callback_rotation_from_roster()
             self.assertTrue(sync.get("success"))
@@ -165,6 +167,20 @@ class Tier2FeatureTests(unittest.TestCase):
             self.assertIsNotNone(next_up.get("candidate"))
 
             cand = next_up["candidate"]
+            # Call-down offer uses 0h (equity log only) — must not reject
+            offer = record_callback_offer(
+                cand["officer_id"],
+                date.today().isoformat(),
+                notes="OT offer (call-down)",
+            )
+            self.assertTrue(offer.get("success"), offer.get("message"))
+            declined = record_callback_offer(
+                cand["officer_id"],
+                date.today().isoformat(),
+                notes="declined",
+                accepted=False,
+            )
+            self.assertTrue(declined.get("success"), declined.get("message"))
             rec = logic.record_callback_event(
                 cand["officer_id"],
                 date.today().isoformat(),
@@ -246,8 +262,9 @@ class Tier2FeatureTests(unittest.TestCase):
     def test_save_and_import_simulator_scenario(self):
         with test_database():
             import logic
+            from logic.scheduling_sim import run_schedule_simulation
 
-            sim = logic.run_schedule_simulation(
+            sim = run_schedule_simulation(
                 "4-on-4-off", 8, 10.0, 2080.0, ["06:00"], apply_department_rules=False, min_per_shift=1
             )
             saved = logic.save_simulator_scenario("Test scenario", config=sim.get("simulation_config", {}), result=sim)

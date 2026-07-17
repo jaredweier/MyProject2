@@ -56,18 +56,26 @@ def _case_squad_parity() -> MathCase:
 
 def _case_night_min_matrix() -> MathCase:
     from config import is_high_risk_night
+    from logic.staffing_config import get_active_night_shift_starts
     from validators import applies_night_minimum
 
     fri = date(2026, 7, 3)  # Friday
     sat = date(2026, 7, 4)
     mon = date(2026, 7, 6)
+    nights = sorted(get_active_night_shift_starts())
+    night = nights[0] if nights else "22:00"
+    day = "06:00"
     checks = [
-        applies_night_minimum(fri, "19:00", is_high_risk_night),
-        applies_night_minimum(sat, "19:00", is_high_risk_night),
-        not applies_night_minimum(mon, "19:00", is_high_risk_night),
-        not applies_night_minimum(fri, "06:00", is_high_risk_night),
+        applies_night_minimum(fri, night, is_high_risk_night),
+        applies_night_minimum(sat, night, is_high_risk_night),
+        not applies_night_minimum(mon, night, is_high_risk_night),
+        not applies_night_minimum(fri, day, is_high_risk_night),
     ]
-    return MathCase("M-03-night-min-matrix", all(checks), f"fri/sat night only: {checks}")
+    return MathCase(
+        "M-03-night-min-matrix",
+        all(checks),
+        f"fri/sat night only ({night}): {checks}",
+    )
 
 
 def _case_rest_gap() -> MathCase:
@@ -82,14 +90,14 @@ def _case_optimizer_plans() -> MathCase:
     from tests.helpers import get_any_officer, test_database, working_date_for_squad
 
     with test_database():
-        import logic
+        from logic.scheduling_sim import preview_best_coverage_plans
 
         off = get_any_officer("A", "15:00")
         work = working_date_for_squad("A")
         work_s = work.isoformat() if hasattr(work, "isoformat") else str(work)
         squad = off.get("squad") or "A"
         shift = off.get("shift_start") or "15:00"
-        result = logic.preview_best_coverage_plans(off["id"], work_s, squad, shift, max_plans=3)
+        result = preview_best_coverage_plans(off["id"], work_s, squad, shift, max_plans=3)
         plans = result.get("plans") if isinstance(result, dict) else result
         n = len(plans) if plans else 0
         ok = isinstance(result, dict) or isinstance(plans, list)
@@ -104,14 +112,14 @@ def _case_cascade_bounded() -> MathCase:
     from tests.helpers import get_any_officer, test_database, working_date_for_squad
 
     with test_database():
-        import logic
+        from logic.coverage_optimizer import suggest_bump_chain
 
         off = get_any_officer("A", "19:00") or get_any_officer("A")
         work = working_date_for_squad("A")
         work_s = work.isoformat() if hasattr(work, "isoformat") else str(work)
         squad = off.get("squad") or "A"
         shift = off.get("shift_start") or "19:00"
-        chain = logic.suggest_bump_chain(off["id"], work_s, squad, shift)
+        chain = suggest_bump_chain(off["id"], work_s, squad, shift)
         steps = getattr(chain, "steps", None) or getattr(chain, "assignments", None) or []
         if isinstance(chain, dict):
             steps = chain.get("steps") or chain.get("assignments") or []

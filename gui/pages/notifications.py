@@ -6,6 +6,7 @@ from nicegui import ui
 
 from gui import session
 from gui.shell import layout, page_header, panel
+from gui.ui_patterns import empty_state, shift_card
 from logic import (
     create_notification,
     get_notifications,
@@ -119,9 +120,11 @@ def render_notifications() -> None:
                     ui.label(str(exc)).classes("text-sm text-red-400")
                     return
                 if not rows:
-                    ui.html(
-                        '<div class="alert alert-ok">Inbox clear — no notifications.</div>',
-                        sanitize=False,
+                    empty_state(
+                        "Inbox clear",
+                        "No notifications match this filter.",
+                        cta_label="Duty board",
+                        cta_path="/",
                     )
                     return
                 with panel(f"{len(rows)} message(s)", glow=True):
@@ -129,28 +132,45 @@ def render_notifications() -> None:
                         if not isinstance(n, dict):
                             continue
                         unread = not n.get("is_read") and not n.get("read_at")
-                        with ui.element("div").classes("data-row"):
-                            with ui.element("div").classes("grow"):
-                                title = n.get("title") or n.get("notification_type") or "Alert"
-                                ui.label(("● " if unread else "") + str(title)).classes(
-                                    "text-sm font-semibold" if unread else "text-sm"
+                        title = n.get("title") or n.get("notification_type") or "Alert"
+                        body = (n.get("message") or "")[:200]
+                        when = _format_when(n.get("created_at"))
+                        card_id = f"notif-{n.get('id')}"
+
+                        def mark(nid=n.get("id"), cid=card_id):
+                            if nid is None:
+                                return
+                            # Optimistic — fade immediately
+                            try:
+                                ui.run_javascript(
+                                    f'document.getElementById({cid!r})?.classList.add("claimed-optimistic");'
                                 )
-                                ui.label((n.get("message") or "")[:500]).classes("text-xs text-gray-400")
-                                ui.label(_format_when(n.get("created_at"))).classes("text-xs text-gray-600")
-                            with ui.row().classes("gap-1"):
-                                ui.button(
-                                    "Open",
-                                    on_click=lambda row=n: _open_related(row),
-                                ).props("dense no-caps flat")
-                                if unread:
+                            except Exception:
+                                pass
+                            try:
+                                mark_notification_read(int(nid))
+                            except Exception:
+                                try:
+                                    ui.run_javascript(
+                                        f'document.getElementById({cid!r})?.classList.remove("claimed-optimistic");'
+                                    )
+                                except Exception:
+                                    pass
+                                return
+                            refresh()
 
-                                    def mark(nid=n.get("id")):
-                                        if nid is None:
-                                            return
-                                        mark_notification_read(int(nid))
-                                        refresh()
-
-                                    ui.button("Read", on_click=mark).props("dense no-caps flat")
+                        shift_card(
+                            title=("● " if unread else "") + str(title),
+                            subtitle=body,
+                            meta=when,
+                            status="Unread" if unread else "Read",
+                            status_level="warn" if unread else "ok",
+                            primary_label="Open",
+                            on_primary=lambda row=n: _open_related(row),
+                            secondary_label="Read" if unread else "",
+                            on_secondary=mark if unread else None,
+                            card_id=card_id,
+                        )
 
         with ui.row().classes("gap-2 q-mb-md flex-wrap"):
             ui.button("Refresh", on_click=refresh).classes("btn-ghost").props("no-caps outline dense")

@@ -348,22 +348,85 @@ def demo_week_instance(
     )
 
 
+def instance_from_department(
+    *,
+    n_officers: Optional[int] = None,
+    n_days: int = 7,
+    bands: Optional[Sequence[str]] = None,
+    min_per_band: Optional[Dict[str, int]] = None,
+) -> StaffingInstance:
+    """
+    Build a what-if StaffingInstance from live staffing settings when possible.
+    Falls back to demo_week_instance on any load failure.
+    """
+    try:
+        from logic.coverage_optimizer import load_coverage_policy
+        from logic.staffing_config import get_active_shift_starts, get_target_officer_count
+
+        starts = list(bands or get_active_shift_starts() or [])
+        if not starts:
+            starts = ["06:00", "10:00", "15:00", "19:00"]
+        policy = load_coverage_policy()
+        mins = dict(min_per_band or {})
+        if not mins:
+            for b in starts:
+                mins[b] = policy.min_for_band(b)
+            if policy.night_minimum:
+                nightish = [b for b in starts if str(b).startswith(("18", "19", "20", "21", "22", "23"))]
+                for b in nightish or starts[-1:]:
+                    mins[b] = max(mins.get(b, 1), int(policy.night_minimum))
+        count = int(n_officers) if n_officers and n_officers > 0 else int(get_target_officer_count() or 8)
+        count = max(1, min(60, count))
+        days = [f"d{i + 1}" for i in range(max(1, min(14, n_days)))]
+        max_days = max(1, min(len(days), 5 if len(days) >= 5 else len(days)))
+        return StaffingInstance(
+            officer_ids=list(range(1, count + 1)),
+            days=days,
+            bands=list(starts),
+            min_per_band=mins,
+            max_days_worked=max_days,
+            w_assignment=1,
+            w_excess_cover=2,
+            w_unfairness=4,
+        )
+    except Exception:
+        return demo_week_instance(
+            n_officers=n_officers or 8,
+            n_days=n_days,
+            bands=bands,
+            min_per_band=min_per_band,
+        )
+
+
 def format_solution_report(sol: StaffingSolution) -> str:
-    """OR-Tools-style human report of feasibility + named soft penalties."""
+    """Human what-if report (feasibility + load balance). Solver internals secondary."""
+    status = "FEASIBLE" if sol.feasible else ("UNAVAILABLE" if not sol.available else "INFEASIBLE")
     lines = [
-        f"CP-SAT: available={sol.available} feasible={sol.feasible} solver={sol.solver}",
+        f"CP-SAT what-if: {status} ({sol.solver})",
         f"  {sol.message}",
-        f"  wall={sol.wall_time_sec:.3f}s",
+        f"  Runtime: {sol.wall_time_sec:.2f}s",
     ]
-    if sol.objective is not None:
-        lines.append(f"  objective={sol.objective:.1f}")
-    if sol.penalties:
-        lines.append("  Soft penalties (name · value · weight · contrib):")
-        for p in sol.penalties:
-            lines.append(f"    • {p.get('name')}: {p.get('value')} × {p.get('weight')} = {p.get('contribution')}")
-    elif sol.feasible:
-        lines.append("  No soft penalties active (balanced lean cover).")
     if sol.days_worked:
         vals = list(sol.days_worked.values())
-        lines.append(f"  Days worked range: min={min(vals)} max={max(vals)} (unfairness={max(vals) - min(vals)})")
+        lines.append(
+            f"  Days worked: min={min(vals)} max={max(vals)} (spread {max(vals) - min(vals)} — lower is fairer)"
+        )
+        lines.append(f"  Officers scheduled: {len(vals)}")
+    if sol.assignment and sol.feasible:
+        # Compact sample: first 3 officers
+        sample_ids = sorted(sol.assignment.keys())[:3]
+        lines.append("  Sample assignments:")
+        for oid in sample_ids:
+            day_map = sol.assignment.get(oid) or {}
+            bands = [f"{d}={b}" for d, b in list(day_map.items())[:5] if b]
+            if bands:
+                lines.append(f"    Officer {oid}: " + ", ".join(bands))
+    if sol.penalties:
+        lines.append("  Soft tradeoffs (diagnostic):")
+        for p in sol.penalties[:8]:
+            lines.append(f"    · {p.get('name')}: {p.get('value')} (weight {p.get('weight')})")
+    elif sol.feasible:
+        lines.append("  Cover met with balanced load.")
+    if not sol.available:
+        lines.append("  Install ortools for CP-SAT; production bumps still use beam/Rust.")
     return "\n".join(lines)

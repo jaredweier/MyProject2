@@ -14,21 +14,19 @@ def main() -> int:
     os.environ.setdefault("SCHEDULER_UI_TEST", "1")
     errors: list[str] = []
 
-    # --- Assets (branding still used where available) ---
+    # --- Brand APIs (optional uploads — must not require shipped logo/team) ---
     try:
-        from paths import resource_path
+        from photos import chronos_logo_path, department_logo_path, department_photo_path
 
-        for name in ("logo.png", "team_photo.jpg"):
-            if not os.path.isfile(resource_path(name)):
-                errors.append(f"missing asset: {name}")
-        from ui.assets import load_logo, load_team_photo
+        # Paths may be None when no agency has uploaded branding (expected)
+        _ = chronos_logo_path()
+        _ = department_logo_path()
+        _ = department_photo_path()
+        from gui.brand_assets import sync_brand_files
 
-        if load_logo((64, 64)) is None:
-            errors.append("load_logo returned None")
-        if load_team_photo((320, 200), cover=True, rounded=False, border=False) is None:
-            errors.append("load_team_photo returned None")
+        sync_brand_files()
     except Exception as exc:
-        errors.append(f"assets: {exc}")
+        errors.append(f"brand_apis: {exc}")
 
     # --- NiceGUI stack import ---
     try:

@@ -39,9 +39,9 @@ def _exists(*rels: str) -> bool:
 
 def _logic_has(name: str) -> bool:
     try:
-        import logic
+        from scripts.logic_resolve import logic_has
 
-        return hasattr(logic, name)
+        return logic_has(name)
     except Exception:
         return False
 
@@ -131,8 +131,10 @@ def build_rows() -> List[FeatureRow]:
     add(
         "Leave",
         "Court / training request types",
-        "partial",
-        "DAY_OFF_REQUEST_TYPES / schedule status colors",
+        "have"
+        if _exists("logic/court_calendar.py") and _gui_mentions("court")
+        else ("partial" if _exists("logic/court_calendar.py") else "missing"),
+        "logic/court_calendar.py + gui/pages/court.py",
         "LE-specific leave types",
     )
 
@@ -147,15 +149,19 @@ def build_rows() -> List[FeatureRow]:
     add(
         "Self-service",
         "Shift bidding (events + awards)",
-        "partial" if _logic_has("create_shift_bid_event") else "missing",
-        "logic/bidding.py — Chronos UI thin",
+        "have"
+        if _logic_has("create_shift_bid_event") and _gui_mentions("bidding")
+        else ("partial" if _logic_has("create_shift_bid_event") else "missing"),
+        "logic/bidding.py + gui/pages/bidding.py",
         "Seniority bid cycles (common LE)",
     )
     add(
         "Self-service",
         "Callback / extra-duty rotation",
-        "partial" if _exists("logic/callbacks.py") else "missing",
-        "logic/callbacks.py",
+        "have"
+        if _exists("logic/callbacks.py") and _gui_mentions("callback")
+        else ("partial" if _exists("logic/callbacks.py") else "missing"),
+        "logic/callbacks.py + ops callout",
         "OT fairness lists",
     )
 
@@ -177,8 +183,10 @@ def build_rows() -> List[FeatureRow]:
     add(
         "Payroll",
         "FLSA / hours watch",
-        "partial" if _logic_has("get_hours_watch") or _exists("logic/labor_compliance.py") else "missing",
-        "logic/labor_compliance.py + analytics",
+        "have"
+        if _exists("logic/labor_compliance.py") and _exists("logic/dual_workforce.py")
+        else ("partial" if _exists("logic/labor_compliance.py") else "missing"),
+        "logic/labor_compliance.py + dual_workforce + payroll UI",
         "FLSA 7(k) period tracking",
     )
 
@@ -186,15 +194,15 @@ def build_rows() -> List[FeatureRow]:
     add(
         "UI",
         "Multi-user web console",
-        "partial" if _exists("gui/app.py") else "missing",
-        "gui/ NiceGUI",
+        "have" if _exists("gui/app.py") else "missing",
+        "gui/ NiceGUI Chronos Command",
         "SaaS LE products are web-first",
     )
     add(
         "UI",
         "Mobile-first officer app",
-        "missing",
-        "—",
+        "partial" if _exists("gui/pages/mobile_home.py") else "missing",
+        "gui/pages/mobile_home.py + PWA offline shell (not native store app)",
         "Aladtec/First Due mobile apps",
     )
     add(
@@ -230,30 +238,46 @@ def build_rows() -> List[FeatureRow]:
     add(
         "Integrations",
         "CAD / RMS bidirectional",
-        "missing",
-        "—",
+        "partial" if _exists("logic/cad_rms_bridge.py") else "missing",
+        "logic/cad_rms_bridge.py + /api/cad/inbound (bridge, not full vendor CAD)",
         "Vendor lock-in territory",
     )
     add(
         "Ops",
         "Certifications / training gates",
-        "partial" if _exists("logic/certifications.py") else "missing",
-        "logic/certifications.py",
+        "have"
+        if _exists("logic/certifications.py") and _gui_mentions("cert")
+        else ("partial" if _exists("logic/certifications.py") else "missing"),
+        "logic/certifications.py + publish soft gates",
         "Qualification-based assignment",
     )
     add(
         "Ops",
         "Equitable OT ledger",
-        "partial" if _logic_has("get_equitable_ot_ledger") else "missing",
-        "analytics / logic",
+        "have" if _exists("logic/ot_equity_ledger.py") or _logic_has("get_ot_equity_summary") else "missing",
+        "logic/ot_equity_ledger.py + fill modes",
         "OT fairness reporting",
     )
     add(
         "Ops",
         "SMS / push notifications",
-        "missing",
-        "in-app notifications only",
+        "partial" if _exists("logic/notify_channels.py") else "missing",
+        "logic/notify_channels.py outbox + Twilio/SMTP when creds (file sink local)",
         "Callback paging",
+    )
+    add(
+        "Ops",
+        "Station / post min-staff board",
+        "have" if _exists("logic/stations.py") else "missing",
+        "logic/stations.py station_staffing_board + Ops Desk",
+        "ESO multi-site post matrix",
+    )
+    add(
+        "Ops",
+        "Fatigue / rest hard stop + watchlist",
+        "have" if _exists("logic/fatigue_gates.py") else "missing",
+        "logic/fatigue_gates.py (open shift + manual cover + ops strip)",
+        "Officer wellness / rest between shifts",
     )
     add(
         "Ops",

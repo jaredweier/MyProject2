@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#060D18" />
+  <link rel="manifest" href="/static/manifest.webmanifest" />
+  <title>Chronos · Offline</title>
+  <style>
+    :root { color-scheme: dark; }
+    body {
+      margin: 0; min-height: 100vh; font-family: "Segoe UI", system-ui, sans-serif;
+      background:
+        radial-gradient(ellipse 70% 40% at 0% 0%, rgba(30,90,168,.18), transparent 55%),
+        linear-gradient(180deg, #0A1A2E, #060D18 50%, #04080f);
+      color: #E8EDF4; padding: 24px;
+    }
+    .card {
+      max-width: 40rem; margin: 0 auto;
+      background: linear-gradient(165deg, rgba(19,42,69,.95), rgba(8,16,28,.98));
+      border: 1px solid rgba(197,206,217,.2);
+      border-radius: 14px; padding: 28px 24px;
+      box-shadow: 0 20px 48px rgba(0,0,0,.5);
+    }
+    h1 { margin: 0 0 8px; font-size: 1.5rem; letter-spacing: -.02em; }
+    .kicker { color: #6BA3F5; font-size: .75rem; font-weight: 800; letter-spacing: .14em; text-transform: uppercase; }
+    p { color: #9AABC4; line-height: 1.5; }
+    a, button.linkish {
+      display: inline-block; margin: 6px 8px 0 0; padding: 10px 14px;
+      border-radius: 10px; text-decoration: none; font-weight: 700; font-size: .9rem;
+      border: none; cursor: pointer; font-family: inherit;
+    }
+    .pri { background: linear-gradient(180deg,#6BA3F5,#1E5AA8); color: #F0F7FF; }
+    .sec { border: 1px solid rgba(91,141,239,.55); color: #E8F0FF; background: rgba(30,90,168,.2); }
+    .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin: 12px 0; }
+    .tabs button {
+      background: rgba(30,90,168,.25); border: 1px solid rgba(91,141,239,.4);
+      color: #E8F0FF; border-radius: 8px; padding: 8px 12px; cursor: pointer; font-weight: 600;
+    }
+    .tabs button.on { background: rgba(107,163,245,.35); border-color: #6BA3F5; }
+    #snap {
+      margin-top: 12px; font-family: ui-monospace, Consolas, monospace; font-size: .78rem;
+      color: #C5CED9; white-space: pre-wrap; background: rgba(0,0,0,.25); padding: 12px;
+      border-radius: 8px; max-height: 50vh; overflow: auto;
+    }
+    .note { font-size: .8rem; color: #7A8BA3; margin-top: 10px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="kicker">Chronos Command</div>
+    <h1>You're offline</h1>
+    <p>Multi-page shell + last API snapshot. Claim / punch / mark-read / submit leave queue offline and flush to <code>/api/offline/mutations</code> when back online. Leave <strong>approve</strong> still requires a live supervisor session.</p>
+    <div>
+      <a class="pri" href="/">Retry Home</a>
+      <a class="sec" href="/my-week">My Week</a>
+      <a class="sec" href="/my-schedule">My Schedule</a>
+      <a class="sec" href="/open-shifts">Open Shifts</a>
+      <a class="sec" href="/ops-desk">Ops Desk</a>
+    </div>
+    <div class="tabs" id="tabs"></div>
+    <div id="snap">Loading cached multi-page snapshot…</div>
+    <p class="note">Weierworks Technologies, LLC · Chronos Command offline residual</p>
+  </div>
+  <script>
+    (function () {
+      var el = document.getElementById("snap");
+      var tabs = document.getElementById("tabs");
+      var multi = null;
+      try {
+        multi = JSON.parse(localStorage.getItem("chronos_offline_pages_v2") || "null");
+      } catch (e) {}
+      var pages = (multi && multi.data && multi.data.pages) || null;
+      var keys = pages ? Object.keys(pages).filter(function (k) { return k !== "mutation_policy"; }) : [];
+
+      function show(key) {
+        Array.prototype.forEach.call(tabs.querySelectorAll("button"), function (b) {
+          b.classList.toggle("on", b.dataset.key === key);
+        });
+        if (!pages) {
+          try {
+            var raw = localStorage.getItem("chronos_offline_snapshot_v1");
+            if (!raw) {
+              el.textContent = "No offline snapshot yet.\nOpen Chronos online once — /api/offline/snapshot will cache.";
+              return;
+            }
+            var data = JSON.parse(raw);
+            el.textContent = "Saved: " + (data.saved_at || "?") + "\n" + (data.text || "").slice(0, 6000);
+          } catch (e) {
+            el.textContent = "Could not read offline snapshot.";
+          }
+          return;
+        }
+        if (key === "_text") {
+          el.textContent =
+            "Saved: " + ((multi && multi.saved_at) || "?") + "\n" +
+            ((multi.data && multi.data.text) || JSON.stringify(multi.data, null, 2)).slice(0, 8000);
+          return;
+        }
+        var block = pages[key];
+        el.textContent =
+          "Page: " + key + "\n" +
+          "Saved: " + ((multi && multi.saved_at) || "?") + "\n" +
+          JSON.stringify(block, null, 2).slice(0, 8000);
+      }
+
+      if (keys.length) {
+        var all = document.createElement("button");
+        all.textContent = "Summary";
+        all.dataset.key = "_text";
+        all.className = "on";
+        all.onclick = function () { show("_text"); };
+        tabs.appendChild(all);
+        keys.forEach(function (k) {
+          var b = document.createElement("button");
+          b.textContent = k.replace(/_/g, " ");
+          b.dataset.key = k;
+          b.onclick = function () { show(k); };
+          tabs.appendChild(b);
+        });
+        show("_text");
+      } else {
+        show(null);
+      }
+    })();
+  </script>
+</body>
+</html>

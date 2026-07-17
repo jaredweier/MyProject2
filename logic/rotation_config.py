@@ -7,13 +7,27 @@ import re
 from datetime import date
 from typing import Dict, FrozenSet, Optional, Set
 
-from config import ROTATION_BASE_DATE, ROTATION_CYCLE_LENGTH, ROTATION_PRESETS
+from config import (
+    DEFAULT_ROTATION_PRESET,
+    ROTATION_BASE_DATE,
+    ROTATION_CYCLE_LENGTH,
+    ROTATION_LEGACY_ALIASES,
+    ROTATION_PRESETS,
+)
 from validators import format_date, parse_date
 
-DEFAULT_PRESET_NAME = "2-2-3 (Dodgeville 14-day)"
+DEFAULT_PRESET_NAME = DEFAULT_ROTATION_PRESET
 DEFAULT_SQUAD_A_DAYS: FrozenSet[int] = frozenset({1, 2, 5, 6, 7, 10, 11})
 MIN_CYCLE_LENGTH = 7
 MAX_CYCLE_LENGTH = 28
+
+
+def normalize_rotation_preset_name(name: Optional[str]) -> str:
+    """Map legacy UI/DB names (e.g. Dodgeville-labeled) to canonical keys."""
+    n = (name or "").strip()
+    if not n:
+        return DEFAULT_PRESET_NAME
+    return ROTATION_LEGACY_ALIASES.get(n, n)
 
 
 def _get_setting(key: str, default: str = "") -> str:
@@ -44,14 +58,23 @@ def get_active_rotation_base_date() -> date:
 
 
 def get_active_rotation_preset_name() -> str:
-    return _get_setting("rotation_preset", DEFAULT_PRESET_NAME) or DEFAULT_PRESET_NAME
+    raw = _get_setting("rotation_preset", DEFAULT_PRESET_NAME) or DEFAULT_PRESET_NAME
+    return normalize_rotation_preset_name(raw)
 
 
 def _resolve_preset() -> Dict:
     name = get_active_rotation_preset_name()
     preset = ROTATION_PRESETS.get(name)
     if not preset:
-        preset = ROTATION_PRESETS[DEFAULT_PRESET_NAME]
+        # Try legacy key before falling back to default
+        legacy = next(
+            (k for k, v in ROTATION_LEGACY_ALIASES.items() if v == name),
+            None,
+        )
+        if legacy:
+            preset = ROTATION_PRESETS.get(legacy)
+    if not preset:
+        preset = ROTATION_PRESETS.get(DEFAULT_PRESET_NAME) or next(iter(ROTATION_PRESETS.values()))
     merged = dict(preset)
     merged["cycle_length"] = get_active_rotation_cycle_length()
     return merged

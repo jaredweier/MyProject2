@@ -96,6 +96,44 @@ def get_officer_certifications(officer_id: int) -> List[Dict]:
     return rows
 
 
+def list_expiring_certifications(*, within_days: int = 60, as_of: Optional[date] = None) -> List[Dict]:
+    """Certs expiring within N days (or already expired) for dock / publish soft warnings."""
+    from datetime import timedelta
+
+    as_of = as_of or date.today()
+    horizon = as_of + timedelta(days=max(0, int(within_days)))
+    conn = get_connection()
+    cursor = conn.cursor()
+    try:
+        cursor.execute(
+            """
+            SELECT c.*, t.code, t.name AS cert_name, t.description,
+                   o.name AS officer_name, o.id AS officer_id
+            FROM officer_certifications c
+            JOIN certification_types t ON c.cert_type_id = t.id
+            JOIN officers o ON o.id = c.officer_id
+            WHERE c.expires_date IS NOT NULL AND c.expires_date != ''
+              AND o.active = 1
+            ORDER BY c.expires_date ASC
+            """
+        )
+        rows = [dict(r) for r in cursor.fetchall()]
+    except Exception:
+        rows = []
+    finally:
+        conn.close()
+    out: List[Dict] = []
+    for row in rows:
+        try:
+            exp = parse_date(row.get("expires_date"))
+        except Exception:
+            continue
+        if exp <= horizon:
+            row["expires_date"] = exp.isoformat() if hasattr(exp, "isoformat") else row.get("expires_date")
+            out.append(row)
+    return out
+
+
 def get_shift_cert_requirements() -> List[Dict]:
     conn = get_connection()
     cursor = conn.cursor()
@@ -134,6 +172,111 @@ def officer_meets_shift_cert_requirements(
     if check.ok:
         return True, ""
     return False, check.message or "Missing required certification"
+
+
+def officer_has_cert_codes(
+    officer_id: int,
+    required_codes: List[str],
+    *,
+    as_of: Optional[date] = None,
+) -> Tuple[bool, str]:
+    """True if officer holds all active/valid cert codes (by type code)."""
+    codes = [str(c).strip().upper() for c in (required_codes or []) if str(c).strip()]
+    if not codes:
+        return True, ""
+    as_of = as_of or date.today()
+    held = get_officer_certifications(officer_id)
+    valid_codes = set()
+    for row in held:
+        code = str(row.get("code") or "").strip().upper()
+        if code and _cert_is_valid(row, as_of):
+            valid_codes.add(code)
+    missing = [c for c in codes if c not in valid_codes]
+    if missing:
+        return False, f"Missing cert(s): {', '.join(missing)}"
+    return True, ""
+
+
+def filter_officers_meeting_certs(
+    officer_ids: List[int],
+    required_codes: List[str],
+    *,
+    as_of: Optional[date] = None,
+    shift_start: Optional[str] = None,
+) -> Dict:
+    """Filter roster for sim / open-shift fill by cert codes and optional band rules."""
+    codes = [str(c).strip() for c in (required_codes or []) if str(c).strip()]
+    ok_ids: List[int] = []
+    blocked: List[Dict] = []
+    for oid in officer_ids or []:
+        try:
+            oid_i = int(oid)
+        except (TypeError, ValueError):
+            continue
+        if codes:
+            ok, msg = officer_has_cert_codes(oid_i, codes, as_of=as_of)
+            if not ok:
+                blocked.append({"officer_id": oid_i, "reason": msg})
+                continue
+        if shift_start:
+            ok, msg = officer_meets_shift_cert_requirements(oid_i, shift_start, as_of=as_of)
+            if not ok:
+                blocked.append({"officer_id": oid_i, "reason": msg})
+                continue
+        ok_ids.append(oid_i)
+    return {
+        "success": True,
+        "required_codes": codes,
+        "eligible_ids": ok_ids,
+        "blocked": blocked,
+        "eligible_count": len(ok_ids),
+        "blocked_count": len(blocked),
+        "message": (
+            f"{len(ok_ids)} eligible · {len(blocked)} blocked by certs"
+            if codes or shift_start
+            else f"{len(ok_ids)} officers (no cert filter)"
+        ),
+    }
+
+
+def roster_cert_coverage_for_sim(
+    *,
+    required_codes: Optional[List[str]] = None,
+    shift_starts: Optional[List[str]] = None,
+    num_officers: Optional[int] = None,
+) -> Dict:
+    """Precheck: how many active officers can fill required certs / band starts."""
+    from logic.officers import get_officers_by_seniority
+
+    active = [o for o in get_officers_by_seniority() if o.get("active") == 1]
+    ids = [int(o["id"]) for o in active if o.get("id") is not None]
+    codes = list(required_codes or [])
+    starts = list(shift_starts or [])
+    # Eligible if meets codes AND at least one start band (or any if no starts)
+    if not starts:
+        filt = filter_officers_meeting_certs(ids, codes)
+        eligible = filt["eligible_count"]
+        blocked = filt["blocked_count"]
+    else:
+        eligible_set = set()
+        blocked_n = 0
+        for st in starts:
+            filt = filter_officers_meeting_certs(ids, codes, shift_start=str(st))
+            eligible_set.update(filt["eligible_ids"])
+            blocked_n = max(blocked_n, filt["blocked_count"])
+        eligible = len(eligible_set)
+        blocked = max(0, len(ids) - eligible)
+    need = int(num_officers) if num_officers is not None else 0
+    thin = bool(need and eligible < need)
+    return {
+        "success": True,
+        "active_roster": len(ids),
+        "eligible": eligible,
+        "blocked": blocked,
+        "required_codes": codes,
+        "thin_for_headcount": thin,
+        "message": (f"Cert-eligible roster: {eligible}/{len(ids)}" + (f" — thin vs N={need}" if thin else "")),
+    }
 
 
 def assign_officer_certification(

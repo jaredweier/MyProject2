@@ -4,8 +4,6 @@ echo === Dodgeville PD Scheduler - Quick Build (skip tests) ===
 pip install -r requirements.txt pyinstaller -q
 python scripts\generate_assets.py
 pyinstaller --noconfirm --onedir --windowed --clean ^
-  --add-data "logo.png;." ^
-  --add-data "team_photo.jpg;." ^
   --add-data "roster_seed.json;." ^
   --hidden-import customtkinter ^
   --hidden-import PIL ^
@@ -17,8 +15,6 @@ if errorlevel 1 (
     echo PyInstaller failed.
     exit /b 1
 )
-copy /Y logo.png dist\Dodgeville_PD_Scheduler\logo.png
-copy /Y team_photo.jpg dist\Dodgeville_PD_Scheduler\team_photo.jpg
 copy /Y EVALUATE.txt dist\Dodgeville_PD_Scheduler\EVALUATE.txt
 copy /Y "docs\deploy\Start Dodgeville Scheduler (Local).bat" "dist\Dodgeville_PD_Scheduler\Start Dodgeville Scheduler.bat"
 echo Build complete: dist\Dodgeville_PD_Scheduler\Dodgeville_PD_Scheduler.exe

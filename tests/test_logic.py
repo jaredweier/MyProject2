@@ -70,24 +70,25 @@ class TestRotationLogic(unittest.TestCase):
         self.assertEqual(rules.get("19:00"), ("15:00",))
 
     def test_validate_bump_finds_replacement(self):
+        from logic.coverage_optimizer import validate_bump_feasibility
         from tests.helpers import working_date_for_squad
 
         officers = self.logic.get_officers_by_seniority()
         original = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "06:00")
         request_date = working_date_for_squad("A").strftime("%Y-%m-%d")
 
-        result = self.logic.validate_bump_feasibility(
-            original["id"], request_date, original["squad"], original["shift_start"]
-        )
+        result = validate_bump_feasibility(original["id"], request_date, original["squad"], original["shift_start"])
         self.assertTrue(result.success)
         self.assertIsNotNone(result.replacement_name)
 
     def test_night_minimum_auto_approves_when_replacement_found(self):
+        from logic.coverage_optimizer import validate_bump_feasibility
+
         officers = self.logic.get_officers_by_seniority()
         night_shift = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "19:00")
         friday = "2026-07-03"
         if self.logic.is_officer_working_on_day(night_shift["id"], date(2026, 7, 3)):
-            result = self.logic.validate_bump_feasibility(
+            result = validate_bump_feasibility(
                 night_shift["id"], friday, night_shift["squad"], night_shift["shift_start"]
             )
             self.assertTrue(result.success, result.message)
@@ -95,39 +96,39 @@ class TestRotationLogic(unittest.TestCase):
     def test_suggest_bump_chain_explains_manual_block(self):
         from unittest.mock import patch
 
+        from logic.coverage_optimizer import format_bump_suggestion, suggest_bump_chain
+
         officers = self.logic.get_officers_by_seniority()
         original = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "06:00")
         work_day = "2026-06-28"
         with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 18.0):
-            suggestion = self.logic.suggest_bump_chain(
-                original["id"], work_day, original["squad"], original["shift_start"]
-            )
+            suggestion = suggest_bump_chain(original["id"], work_day, original["squad"], original["shift_start"])
         self.assertFalse(suggestion.success)
         self.assertTrue(suggestion.requires_manual)
         self.assertEqual(suggestion.failure_reason, "minimum_rest")
         self.assertIn("Minimum rest", suggestion.message)
-        self.assertIn("Supervisor required", self.logic.format_bump_suggestion(suggestion))
+        self.assertIn("Supervisor required", format_bump_suggestion(suggestion))
 
     def test_off_rotation_bump_routes_manual(self):
+        from logic.coverage_optimizer import suggest_bump_chain
         from tests.helpers import off_date_for_squad
 
         officers = self.logic.get_officers_by_seniority()
         original = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "06:00")
         off_day = off_date_for_squad("A").strftime("%Y-%m-%d")
-        suggestion = self.logic.suggest_bump_chain(original["id"], off_day, original["squad"], original["shift_start"])
+        suggestion = suggest_bump_chain(original["id"], off_day, original["squad"], original["shift_start"])
         self.assertFalse(suggestion.success)
         self.assertTrue(suggestion.requires_manual)
         self.assertEqual(suggestion.failure_reason, "no_replacement")
 
     def test_cascade_completes_without_manual_review(self):
+        from logic.coverage_optimizer import plan_bump_chain
         from tests.helpers import working_date_for_squad
 
         officers = self.logic.get_officers_by_seniority()
         original = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "15:00")
         request_date = working_date_for_squad("A").strftime("%Y-%m-%d")
-        chain, err = self.logic.plan_bump_chain(
-            original["id"], request_date, original["squad"], original["shift_start"]
-        )
+        chain, err = plan_bump_chain(original["id"], request_date, original["squad"], original["shift_start"])
         self.assertIsNone(err)
         self.assertGreaterEqual(len(chain), 1)
 
@@ -147,13 +148,13 @@ class TestRotationLogic(unittest.TestCase):
     def test_incomplete_cascade_routes_to_manual_review(self):
         from unittest.mock import patch
 
+        from logic.coverage_optimizer import plan_bump_chain
+
         officers = self.logic.get_officers_by_seniority()
         original = next(o for o in officers if o["squad"] == "A" and o["shift_start"] == "06:00")
         request_date = "2026-07-02"
         with patch("config.MIN_REST_HOURS_BETWEEN_SHIFTS", 18.0):
-            chain, err = self.logic.plan_bump_chain(
-                original["id"], request_date, original["squad"], original["shift_start"]
-            )
+            chain, err = plan_bump_chain(original["id"], request_date, original["squad"], original["shift_start"])
             self.assertIsNotNone(err)
             self.assertEqual(len(chain), 0)
 
