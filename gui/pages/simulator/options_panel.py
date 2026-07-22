@@ -93,9 +93,11 @@ def render_options_panel(
                     .classes("w-full")
                     .props("outlined dense dark")
                 )
-                hint_rotation = ui.label("If unchecked, we'll try every schedule type to find the best fit.").classes(
-                    "sim-free-hint"
-                )
+                hint_rotation = ui.label(
+                    "Preset library only. Has no effect once you enter custom Patterns in "
+                    "Rotation Style / Multi-Block below — those override this. If unchecked "
+                    "(and no custom Patterns are given), we'll try every preset to find the best fit."
+                ).classes("sim-free-hint")
         use_rotation.on_value_change(lambda e: _set_enabled([rotation], bool(e.value)))
         _set_enabled([rotation], False)
 
@@ -124,9 +126,11 @@ def render_options_panel(
         with _row():
             use_style = given_solve_toggle(ui, "Rotation Style / Multi-Block")
             with ui.element("div"):
-                hint_style = ui.label("If unchecked, we'll try fixed and rotating multi-block styles.").classes(
-                    "sim-free-hint"
-                )
+                hint_style = ui.label(
+                    "Use this for custom on/off block patterns (e.g. 6-2,5-3) — filling in "
+                    "Patterns below overrides the Rotation Pattern preset above entirely. "
+                    "If unchecked, we'll try fixed and rotating multi-block styles."
+                ).classes("sim-free-hint")
                 rot_style = (
                     ui.select(_STYLE_OPTIONS, value="Rotating", label="Style")
                     .classes("w-full")

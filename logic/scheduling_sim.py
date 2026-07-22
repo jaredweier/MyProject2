@@ -35,6 +35,7 @@ def run_schedule_simulation(
     extra_windows: Optional[List[Dict]] = None,
     phase_overrides: Optional[List[int]] = None,
     pattern_slot_map: Optional[List[int]] = None,
+    officer_home_starts: Optional[List[str]] = None,
     flexible_daily_starts: bool = False,
     nearby_start_hops: int = 1,
     allow_offday_coverage: bool = False,
@@ -67,6 +68,7 @@ def run_schedule_simulation(
         extra_windows=list(extra_windows or []),
         phase_overrides=list(phase_overrides) if phase_overrides is not None else None,
         pattern_slot_map=list(pattern_slot_map) if pattern_slot_map is not None else None,
+        officer_home_starts=list(officer_home_starts) if officer_home_starts is not None else None,
         flexible_daily_starts=bool(flexible_daily_starts),
         nearby_start_hops=int(nearby_start_hops),
         allow_offday_coverage=bool(allow_offday_coverage),
@@ -144,6 +146,7 @@ def run_staffing_optimizer(
     max_consecutive_work_days: int = 0,
     progress_callback=None,
     cancel_check=None,
+    time_budget_seconds=None,
     **_compat,
 ) -> Dict:
     """Find best staffing plan via exhaustive constraint-space search (not bump logic)."""
@@ -184,6 +187,7 @@ def run_staffing_optimizer(
         max_consecutive_work_days=int(max_consecutive_work_days or 0),
         progress_callback=progress_callback,
         cancel_check=cancel_check,
+        time_budget_seconds=time_budget_seconds,
     )
 
 

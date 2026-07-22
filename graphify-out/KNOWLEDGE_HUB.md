@@ -2,7 +2,7 @@
 
 Prefer this map **before** bulk-reading the repo.
 
-- Graph nodes (last extract): **4706**
+- Graph nodes (last extract): **4722**
 
 ## Query first
 

@@ -688,8 +688,13 @@ class SimulatorConstraintsTests(unittest.TestCase):
         n = {"i": 0}
 
         def cancel():
+            # Trips after the first check, not tied to a specific iteration
+            # count: CP-SAT (logic.staffing_cpsat) now short-circuits most
+            # hard-OK combos in 1-2 cancel_check() calls instead of the many
+            # the old exhaustive phase x pattern x starts sweep needed, so a
+            # high threshold here would race the search finishing outright.
             n["i"] += 1
-            return n["i"] > 8
+            return n["i"] > 1
 
         cancelled = run_staffing_optimizer(
             rotation_types=["2-2-3 (14-day)"],

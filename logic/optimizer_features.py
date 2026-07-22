@@ -1598,7 +1598,6 @@ def suggest_relaxations(
         cur_n = int((best_miss or {}).get("num_officers") or c.get("officers") or 0)
         suggestions.append(
             {
-                "rank": 1,
                 "category": "headcount",
                 "action": f"Raise officer count from {cur_n} to {cur_n + 1}",
                 "delta": "+1 officer",
@@ -1617,7 +1616,6 @@ def suggest_relaxations(
             if mn >= 2:
                 suggestions.append(
                     {
-                        "rank": 2,
                         "category": "window",
                         "action": f"Lower '{w.get('label', 'window')}' min from {mn} to {mn - 1}",
                         "delta": f"min_officers {mn} → {mn - 1}",
@@ -1633,7 +1631,6 @@ def suggest_relaxations(
         cov247 = int(c.get("cov247") or 1)
         suggestions.append(
             {
-                "rank": 1 if not suggestions else max(s["rank"] for s in suggestions) + 1,
                 "category": "headcount",
                 "action": f"Raise officer count from {cur_n} to {cur_n + cov247}",
                 "delta": f"+{cov247} officer(s)",
@@ -1644,7 +1641,6 @@ def suggest_relaxations(
         if cov247 > 1:
             suggestions.append(
                 {
-                    "rank": max(s["rank"] for s in suggestions) + 1,
                     "category": "coverage_247",
                     "action": f"Lower 24/7 minimum from {cov247} to {cov247 - 1}",
                     "delta": f"cov247 {cov247} → {cov247 - 1}",
@@ -1663,7 +1659,6 @@ def suggest_relaxations(
         min_var_needed = round(dist + 5, 0)
         suggestions.append(
             {
-                "rank": max((s["rank"] for s in suggestions), default=0) + 1,
                 "category": "annual_hours",
                 "action": f"Widen annual variance from ±{annual_var:.0f}h to ±{min_var_needed:.0f}h",
                 "delta": f"annual_var {annual_var:.0f} → {min_var_needed:.0f}",
@@ -1680,7 +1675,6 @@ def suggest_relaxations(
     if gap_fails > 0:
         suggestions.append(
             {
-                "rank": max((s["rank"] for s in suggestions), default=0) + 1,
                 "category": "gaps",
                 "action": "Add evening start band (e.g. 19:00) to cover thin periods",
                 "delta": "add start band",
@@ -1695,7 +1689,6 @@ def suggest_relaxations(
     if not suggestions:
         suggestions.append(
             {
-                "rank": 1,
                 "category": "general",
                 "action": "Free officer count and shift starts, then run Find Best again",
                 "delta": "free dimensions",
@@ -1704,12 +1697,19 @@ def suggest_relaxations(
             }
         )
 
-    # De-dupe by action text and sort by rank, likely-unlock first
+    # De-dupe by action text (insertion order = category priority above),
+    # likely-unlock first, then assign rank sequentially so it always
+    # reflects the true output order — no duplicate/colliding ranks.
     seen_actions: set = set()
     out = []
-    for s in sorted(suggestions, key=lambda x: (x["rank"], 0 if x.get("estimated_unlock") else 1)):
+    for s in sorted(
+        suggestions,
+        key=lambda x: 0 if x.get("estimated_unlock") else 1,
+    ):
         if s["action"] not in seen_actions:
             seen_actions.add(s["action"])
             out.append(s)
+    for i, s in enumerate(out, start=1):
+        s["rank"] = i
 
     return out

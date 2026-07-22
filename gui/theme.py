@@ -611,14 +611,12 @@ body {
   background: rgba(197, 206, 217, 0.05);
   color: var(--text) !important;
   border-color: rgba(197, 206, 217, 0.15);
-  transform: translateX(3px);
 }
 .nav-link.active {
   background: rgba(197, 206, 217, 0.09);
   color: var(--text) !important;
   border-color: rgba(197, 206, 217, 0.22);
-  box-shadow: inset 3.5px 0 0 var(--silver-primary);
-  transform: translateX(5px);
+  box-shadow: inset 4px 0 0 var(--silver-primary);
 }
 .nav-ico {
   width: 28px;
@@ -833,15 +831,18 @@ body {
   letter-spacing: 0.06em;
 }
 .kpi-v {
-  font-family: var(--mono);
-  font-size: 32px;
-  font-weight: 700;
+  font-family: var(--font-display);
+  font-size: clamp(40px, 5.5vw, 72px);
+  font-weight: 800;
   letter-spacing: -0.04em;
   margin-top: 8px;
   color: var(--text);
   font-variant-numeric: tabular-nums;
   line-height: 1;
 }
+.kpi-v.kpi-crit { color: var(--danger); }
+.kpi-v.kpi-warn { color: var(--warning); }
+.kpi-v.kpi-ok   { color: var(--success); }
 .kpi-hint {
   font-size: 11px;
   color: var(--dim);
@@ -907,7 +908,7 @@ body {
 .shift-dot.warn { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
 
 /* ===== Action tiles ===== */
-.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+.grid-2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
 .grid-actions {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));

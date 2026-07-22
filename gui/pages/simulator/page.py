@@ -12,6 +12,7 @@ _OPT_EXECUTOR = ThreadPoolExecutor(max_workers=2, thread_name_prefix="staffing-o
 
 from config import SIMULATOR_ROTATION_TYPES
 from gui import session
+from gui.pages.simulator.actions import build_action_handlers
 from gui.pages.simulator.decision_table import build_decision_table
 from gui.pages.simulator.helpers import (
     _HINT,
@@ -31,17 +32,12 @@ from gui.pages.simulator.styles import apply_simulator_css
 from gui.shell import layout, page_header, panel
 from gui.ui_patterns import skeleton_block, throttled
 from logic import (
-    create_shift_bid_from_simulation,
-    export_simulation_csv,
     format_optimized_plan_view,
     get_last_optimized_plan,
     get_simulator_scenario,
     implement_optimized_plan,
     list_simulator_scenarios,
-    preview_implement_plan,
-    recommend_implement_dates,
     save_last_optimized_plan,
-    save_simulator_scenario,
 )
 from logic.constraint_suggest import (
     suggest_constraint,
@@ -57,22 +53,11 @@ from logic.manual_schedule_build import (
 from logic.optimizer_features import (
     append_search_history,
     default_weight_map,
-    diff_options,
     export_form_config_json,
-    export_ranked_options_csv,
-    export_search_audit_json,
-    export_share_eml,
-    fairness_report,
-    fairness_report_with_roster,
     format_checklist_line,
-    format_share_message,
-    load_form_snapshot,
     load_last_simulator_constraints,
     near_miss_deltas,
-    option_seed_from_row,
-    pin_option,
     save_form_snapshot,
-    save_scenario_slot,
     weights_from_sliders,
     why_best_lines,
 )
@@ -86,15 +71,6 @@ from logic.scheduling_sim import (
     run_schedule_simulation,
     run_staffing_optimizer,
     what_if_staffing_delta,
-)
-from logic.sim_product_pack import (
-    apply_sim_winner_to_draft_month,
-    fairness_report_full,
-    import_live_department_constraints,
-    plain_english_staffing_explain,
-    sensitivity_headcount,
-    sensitivity_relax_night_min,
-    try_cpsat_when_small,
 )
 from logic.staffing_insights import (
     detect_constraint_conflicts,
@@ -312,6 +288,9 @@ def render_simulator() -> None:
                     "Load last saved", on_click=lambda: (_restore_form(), ui.notify("Restored last saved", type="info"))
                 ).classes("btn-ghost").props("no-caps outline")
                 ui.button("Load roster defaults", on_click=load_defaults).classes("btn-ghost").props("no-caps outline")
+                ui.button("Suggest values", on_click=lambda: _suggest_next_unlocked()).classes("btn-ghost").props(
+                    "no-caps outline"
+                )
 
                 def open_load_scenarios():
                     rows = list_simulator_scenarios(limit=20)
@@ -1307,17 +1286,13 @@ def render_simulator() -> None:
         btn_bid = step4_elements["btn_bid"]
 
         def _on_lock_with_suggest(field: str, enable_fn, widget_lock_flag):
-            """enable_fn enables inputs; suggest when user turns lock ON."""
+            """enable_fn enables inputs on lock toggle. No auto-popups here:
+            suggestions open only from the explicit Suggest button (P0.1 —
+            auto-suggest on lock/focus caused stacked, self-reopening dialogs)."""
 
             def _handler(e=None):
                 on = bool(widget_lock_flag.value)
                 enable_fn(on)
-                if on and not state.get("restoring_form") and not state.get("suppress_suggest"):
-                    # Defer slightly so lock flag is in context
-                    try:
-                        _show_constraint_suggestions(field)
-                    except Exception:
-                        pass
                 try:
                     _refresh_space_estimate()
                 except Exception:
@@ -1378,11 +1353,6 @@ def render_simulator() -> None:
 
         def _on_windows_lock(e=None):
             _set_enabled(win_inputs, bool(use_windows.value))
-            if use_windows.value and not state.get("restoring_form") and not state.get("suppress_suggest"):
-                try:
-                    _show_constraint_suggestions("windows")
-                except Exception:
-                    pass
             try:
                 _persist_form()
             except Exception:
@@ -1391,56 +1361,17 @@ def render_simulator() -> None:
         use_windows.on_value_change(_on_windows_lock)
 
         def _on_offday_lock(e=None):
-            if allow_offday.value and not state.get("restoring_form") and not state.get("suppress_suggest"):
-                try:
-                    _show_constraint_suggestions("offday")
-                except Exception:
-                    pass
             try:
                 _persist_form()
             except Exception:
                 pass
 
         allow_offday.on_value_change(_on_offday_lock)
-        use_fatigue.on_value_change(
-            lambda e: (
-                _set_enabled([min_rest, max_consec], bool(use_fatigue.value)),
-                (
-                    _show_constraint_suggestions("nearby")
-                    if use_fatigue.value and not state.get("restoring_form") and not state.get("suppress_suggest")
-                    else None
-                ),
-            )
-        )
+        use_fatigue.on_value_change(lambda e: _set_enabled([min_rest, max_consec], bool(use_fatigue.value)))
 
-        # Suggest when focusing an empty locked field (sim UX residual)
-        def _focus_suggest(field: str, widget):
-            def _h(e=None):
-                try:
-                    val = (getattr(widget, "value", None) or "").strip()
-                except Exception:
-                    val = ""
-                if val:
-                    return
-                if state.get("restoring_form") or state.get("suppress_suggest"):
-                    return
-                try:
-                    _show_constraint_suggestions(field)
-                except Exception:
-                    pass
-
-            return _h
-
-        try:
-            officers.on("focus", _focus_suggest("officers", officers))
-            length.on("focus", _focus_suggest("length", length))
-            annual.on("focus", _focus_suggest("annual", annual))
-            starts.on("focus", _focus_suggest("starts", starts))
-            cov247.on("focus", _focus_suggest("coverage_247", cov247))
-            variations.on("focus", _focus_suggest("variations", variations))
-            nearby_hops.on("focus", _focus_suggest("nearby", nearby_hops))
-        except Exception:
-            pass
+        # P0.1: focus-triggered suggestion popups removed — closing a dialog
+        # returned focus to the field, which immediately re-opened the dialog
+        # (the "popup trap"). Suggestions are explicit-only now.
 
         def _suggest_next_unlocked():
             """Popup for the first unlocked common field given current locks."""
@@ -1460,9 +1391,8 @@ def render_simulator() -> None:
                     return
             _show_constraint_suggestions("officers", force=True)
 
-        # ("Suggest Next Constraint" button removed in the declutter pass —
-        # per-field suggestions still fire on lock/focus via
-        # _show_constraint_suggestions.)
+        # Suggestions are reachable only via the explicit "Suggest values"
+        # button in the Requirements footer (wired to _suggest_next_unlocked).
 
         def _nums():
             """Parse locked fields only. Empty locked field → error. Unlocked → None."""
@@ -1665,6 +1595,10 @@ def render_simulator() -> None:
                 ),
                 "constraint_priority": list(state.get("constraint_priority") or []),
                 "constraint_weights": dict(state.get("constraint_weights") or default_weight_map()),
+                # P0.3: every UI-launched search is time-boxed; best-so-far is
+                # returned at the budget with budget_exhausted=True. Deep gets
+                # a longer leash. Multi-hour runs must be an explicit opt-in.
+                "time_budget_seconds": 300.0 if state.get("search_depth") == "deep" else 120.0,
             }
 
         def _refresh_space_estimate():
@@ -1686,12 +1620,9 @@ def render_simulator() -> None:
                         "coverage_247",
                         "avoid_flsa_overtime",
                         "flsa_work_period_days",
-                        "use_extra_windows",
-                        "extra_windows",
                         "simulation_days",
                         "constraint_priority",
                         "constraint_weights",
-                        "stagger_phases",
                         "min_rest_hours",
                         "max_consecutive_work_days",
                         "allow_offday_coverage",
@@ -1843,6 +1774,7 @@ def render_simulator() -> None:
                 return
             ph = row.get("phase_overrides")
             pm = row.get("pattern_slot_map")
+            home_starts = row.get("officer_home_starts")
             full = run_schedule_simulation(
                 rotation_type=row.get("rotation_type") or base["rotation_type"],
                 num_officers=int(row.get("num_officers") or base["num_officers"] or 0),
@@ -1866,7 +1798,11 @@ def render_simulator() -> None:
                 stagger_phases=bool(ph is None and pm is None),
                 phase_overrides=list(ph) if isinstance(ph, (list, tuple)) else None,
                 pattern_slot_map=list(pm) if isinstance(pm, (list, tuple)) else None,
-                nearby_start_hops=int(base.get("nearby_start_hops") or 0),
+                officer_home_starts=list(home_starts) if isinstance(home_starts, (list, tuple)) else None,
+                # A full CP-SAT solve proved this exact per-officer start pins the
+                # windows/24-7 result — day-pool rebalancing (hops>0) would silently
+                # depart from the proven assignment, so force it off when replaying one.
+                nearby_start_hops=(0 if home_starts else int(base.get("nearby_start_hops") or 0)),
                 allow_offday_coverage=bool(base.get("allow_offday_coverage")),
             )
             if full.get("success"):
@@ -2187,6 +2123,14 @@ def render_simulator() -> None:
         def _show_constraint_suggestions(field: str, *, force: bool = False) -> None:
             if state.get("restoring_form") or state.get("suppress_suggest"):
                 return
+            # Only one suggestion dialog at a time (P0.1: stacked dialogs trap)
+            prev = state.get("suggest_dialog")
+            if prev is not None:
+                try:
+                    prev.close()
+                except Exception:
+                    pass
+                state["suggest_dialog"] = None
             ctx = _constraint_context()
             # Only guide when other constraints already locked (or forced Help)
             field_flags = {
@@ -2275,6 +2219,8 @@ def render_simulator() -> None:
                             multi_line=True,
                         ),
                     ).classes("btn-ghost").props("no-caps outline")
+            state["suggest_dialog"] = dlg
+            dlg.on("hide", lambda: state.update(suggest_dialog=None) if state.get("suggest_dialog") is dlg else None)
             dlg.open()
 
         def _precheck_conflicts(*, force_dialog: bool = True) -> bool:
@@ -2443,6 +2389,22 @@ def render_simulator() -> None:
         def _apply_opt_result(result: dict, *, require_hard_ok: bool) -> None:
             state["config"] = _current_config()
             near = result.get("near_misses") or []
+            # P0.3: budget ran out with nothing qualifying — honest partial
+            # verdict, NOT the impossible/no-match dialog (nothing was proven).
+            if result.get("budget_exhausted") and not result.get("best"):
+                state["opt_result"] = result
+                set_summary(
+                    "\n".join(
+                        [
+                            result.get("message") or "Time budget reached — no qualifying option yet.",
+                            "This is NOT proof the constraints are impossible — the search ran out of time.",
+                            "Lock more requirements to shrink the space, or switch Depth to Deep for a longer budget.",
+                        ]
+                    )
+                )
+                _render_ranked(near[:10] if near else [])
+                ui.notify("Time budget reached — partial results only", type="warning")
+                return
             if result.get("impossible") or (require_hard_ok and (not result.get("success") or not result.get("best"))):
                 state["opt_result"] = result
                 note = result.get("space_note") or ""
@@ -2511,12 +2473,16 @@ def render_simulator() -> None:
                     f"Full Simulations: {result.get('full_sims_run', '—')} · "
                     f"Pruned Impossible: {result.get('pruned_cheap', '—')}",
                     f"Options Kept: {result.get('scenarios_kept', len(ranked))}",
-                    "Search: Exhaustive"
+                    ("Search: Exhaustive" if result.get("search_exhaustive") else "Search: Partial (time budget)")
                     + (f" · {result.get('wall_time_ms')} ms" if result.get("wall_time_ms") else ""),
                 ]
             )
             if result.get("space_note"):
                 lines.append(result["space_note"])
+            if result.get("budget_exhausted"):
+                lines.append(
+                    "Time budget reached — best-so-far shown; a longer Deep search may still find better options."
+                )
             lines.extend(["", "Select An Option Below To Load It."])
             set_summary("\n".join(lines))
             try:
@@ -2748,7 +2714,10 @@ def render_simulator() -> None:
                         "border:1px solid rgba(234,179,8,0.45)"
                     ),
                 ):
-                    ui.label("Large Search Space").style("font-size:1.1rem;font-weight:700;color:#FDE68A")
+                    smart = bool(est.get("cpsat_eligible"))
+                    title = "Search Plan" if smart else "Large Search Space"
+                    title_color = "#93C5FD" if smart else "#FDE68A"
+                    ui.label(title).style(f"font-size:1.1rem;font-weight:700;color:{title_color}")
                     ui.label(est.get("warning") or "").style(
                         "color:#9AABC4;margin:12px 0;line-height:1.45;white-space:pre-wrap"
                     )
@@ -2768,10 +2737,9 @@ def render_simulator() -> None:
                             type="info",
                         )
 
+                    run_label = "Run Smart Search (Recommended)" if smart else "Run Full Search Anyway"
                     with ui.row().classes("gap-2 flex-wrap"):
-                        ui.button("Run Full Search Anyway", on_click=_go).classes("btn-primary").props(
-                            "no-caps unelevated"
-                        )
+                        ui.button(run_label, on_click=_go).classes("btn-primary").props("no-caps unelevated")
                         ui.button("Cancel", on_click=_stop).classes("btn-ghost").props("no-caps outline")
                 cdlg.open()
                 return
@@ -2991,196 +2959,39 @@ def render_simulator() -> None:
             else:
                 set_action_log(f"Publish Failed\n{msg}", ok=False)
 
-        def save_scenario():
-            if not state.get("result"):
-                ui.notify("Run Coverage First", type="warning")
-                return
-            uid = (session.current_user() or {}).get("id")
-            name = f"Scenario {rotation.value} · {officers.value} Officers"
-            tags = ["chronos"]
-            if "8" in str(length.value or ""):
-                tags.append("8h")
-            if use_windows.value:
-                tags.append("windows")
-            r = save_simulator_scenario(
-                name,
-                config=state.get("config") or _current_config(),
-                result=state.get("result"),
-                user_id=uid,
-                notes="Saved From Chronos Simulator",
-                tags=tags,
-            )
-            if r.get("success"):
-                set_action_log(f"Save OK\nScenario Id: {r.get('scenario_id')}", ok=True)
-                ui.notify(f"Saved #{r.get('scenario_id')}", type="positive")
-            else:
-                set_action_log(f"Save Failed\n{r.get('message')}", ok=False)
-
-        def preview_publish():
-            res = state.get("result")
-            cfg = state.get("config")
-            if not res or not res.get("success"):
-                stored = get_last_optimized_plan()
-                if stored:
-                    res, cfg = stored.get("result"), stored.get("config")
-            if not res:
-                ui.notify("No plan to preview", type="warning")
-                return
-            r = preview_implement_plan(
-                start_date=(impl_date.value or "").strip(),
-                result=res,
-                config=cfg or _current_config(),
-                apply_officer_assignments=bool(apply_officers.value),
-            )
-            set_action_log(r.get("text") or r.get("message") or "Preview", ok=True)
-            ui.notify("Publish preview (dry run)", type="info")
-
-        def export_csv():
-            if not state.get("result"):
-                ui.notify("Run Coverage First", type="warning")
-                return
-            r = export_simulation_csv(state["result"])
-            if r.get("success"):
-                set_action_log(f"Export OK\nPath: {r.get('path')}", ok=True)
-                ui.notify(f"Exported: {r.get('path')}", type="positive")
-            else:
-                set_action_log(f"Export Failed\n{r.get('message')}", ok=False)
-
-        def bid_from_sim():
-            if not state.get("result"):
-                ui.notify("Run Coverage First", type="warning")
-                return
-            uid = (session.current_user() or {}).get("id")
-            r = create_shift_bid_from_simulation(state["result"], publish=False, user_id=uid)
-            if r.get("success"):
-                set_action_log(f"Bid Draft OK\nEvent Id: {r.get('event_id')}", ok=True)
-                ui.notify(f"Bid Draft #{r.get('event_id')}", type="positive")
-            else:
-                set_action_log(f"Bid Failed\n{r.get('message')}", ok=False)
-
-        def export_options():
-            ranked = state.get("ranked") or []
-            if not ranked:
-                ui.notify("No options to export", type="warning")
-                return
-            r = export_ranked_options_csv(ranked)
-            if r.get("success"):
-                ui.notify(f"Exported {r.get('path')}", type="positive")
-                set_summary(f"Options CSV:\n{r.get('path')}")
-            else:
-                ui.notify("Export failed", type="negative")
-
-        def export_audit():
-            res = state.get("opt_result")
-            if not res:
-                ui.notify("Run Find Best first", type="warning")
-                return
-            r = export_search_audit_json(res)
-            if r.get("success"):
-                ui.notify(f"Audit: {r.get('path')}", type="positive")
-                set_summary(f"Search audit JSON:\n{r.get('path')}")
-            else:
-                ui.notify("Audit export failed", type="negative")
-
-        def run_diff_ab():
-            a, b = state.get("compare_a"), state.get("compare_b")
-            if not a or not b:
-                ui.notify("Mark Option A and Option B first", type="warning")
-                return
-            lines = diff_options(a, b)
-            set_summary("\n".join(lines))
-            set_why("Side-by-side option comparison")
-
-        def run_fairness():
-            res = state.get("result") or state.get("opt_result") or {}
-            full = fairness_report_full(res)
-            lines = full.get("lines") or fairness_report_with_roster(res)
-            if len(lines) < 3:
-                lines = fairness_report(res)
-            set_plan("\n".join(lines))
-            set_summary("Fairness report in Plan Detail (roster names mapped)")
-            ui.notify("Fairness report ready", type="info")
-
-        def run_plain_explain():
-            res = state.get("opt_result") or state.get("result") or {}
-            exp = plain_english_staffing_explain(res)
-            set_why(exp.get("text") or exp.get("message") or "")
-            ui.notify("Plain-English explain ready", type="info")
-
-        def run_sensitivity():
-            cfg = state.get("last_config") or state.get("form") or load_form_snapshot() or {}
-            if not isinstance(cfg, dict):
-                cfg = {}
-            # Attach last result for delta 0
-            if state.get("opt_result"):
-                cfg = dict(cfg)
-                cfg["_cached_result"] = state.get("opt_result")
-            # Cheap by default (residual: full search was too slow)
-            sens = sensitivity_headcount(cfg, deep=False)
-            night = sensitivity_relax_night_min(cfg, deep=False)
-            text = (sens.get("text") or "") + "\n\n" + (night.get("text") or "")
-            set_summary(text)
-            ui.notify("Sensitivity complete (cheap mode)", type="info")
-
-        def run_import_live():
-            r = import_live_department_constraints()
-            if r.get("success"):
-                form = r.get("form") or {}
-                # Best-effort hydrate state without inventing
-                state["form"] = form
-                set_summary(
-                    "Loaded live department constraints (no invented defaults):\n"
-                    + "\n".join(f"  {k}: {v}" for k, v in list(form.items())[:20])
-                )
-                ui.notify(r.get("message") or "Loaded", type="positive")
-            else:
-                ui.notify(r.get("message") or "Import failed", type="negative")
-
-        def run_apply_winner_month():
-            res = state.get("opt_result") or state.get("result")
-            cfg = state.get("last_config") or state.get("form") or {}
-            rec = recommend_implement_dates()
-            start = rec.get("recommended_date") or ""
-            uid = (session.current_user() or {}).get("id")
-            r = apply_sim_winner_to_draft_month(
-                start_date=start,
-                result=res,
-                config=cfg if isinstance(cfg, dict) else {},
-                user_id=uid,
-            )
-            ui.notify(
-                r.get("message") or ("Applied" if r.get("success") else "Apply failed"),
-                type="positive" if r.get("success") else "warning",
-            )
-            if r.get("success"):
-                set_summary((r.get("preview") or {}).get("text") or r.get("message") or "Draft month applied")
-
-        def run_cpsat_small():
-            cfg = state.get("last_config") or state.get("form") or load_form_snapshot() or {}
-            if not isinstance(cfg, dict):
-                cfg = {}
-            r = try_cpsat_when_small(cfg)
-            if r.get("skipped"):
-                ui.notify(r.get("message") or "CP-SAT skipped", type="info")
-                return
-            if r.get("success"):
-                state["opt_result"] = r
-                exp = plain_english_staffing_explain(r)
-                set_why(exp.get("text") or "")
-                ui.notify("CP-SAT solved", type="positive")
-            else:
-                ui.notify(r.get("message") or "CP-SAT failed — use beam search", type="warning")
-
-        def do_pin():
-            row = state.get("selected_row")
-            if not row:
-                ranked = state.get("ranked") or []
-                row = ranked[0] if ranked else None
-            if not row:
-                ui.notify("Select an option first", type="warning")
-                return
-            r = pin_option(row)
-            ui.notify(f"Pinned: {r.get('label')}", type="positive")
+        handlers = build_action_handlers(
+            state,
+            {**ui_elements, **step4_elements},
+            {
+                "set_action_log": set_action_log,
+                "_current_config": lambda: _current_config(),
+                "set_summary": lambda t: set_summary(t),
+                "set_why": lambda t="": set_why(t),
+                "set_plan": lambda t: set_plan(t),
+                "_refresh_space_estimate": lambda: _refresh_space_estimate(),
+                "go_step": go_step,
+                "_apply_ranked_option": lambda row: _apply_ranked_option(row),
+            },
+        )
+        save_scenario = handlers["save_scenario"]
+        preview_publish = handlers["preview_publish"]
+        export_csv = handlers["export_csv"]
+        bid_from_sim = handlers["bid_from_sim"]
+        export_options = handlers["export_options"]
+        export_audit = handlers["export_audit"]
+        run_diff_ab = handlers["run_diff_ab"]
+        run_fairness = handlers["run_fairness"]
+        run_plain_explain = handlers["run_plain_explain"]
+        run_sensitivity = handlers["run_sensitivity"]
+        run_import_live = handlers["run_import_live"]
+        run_apply_winner_month = handlers["run_apply_winner_month"]
+        run_cpsat_small = handlers["run_cpsat_small"]
+        do_pin = handlers["do_pin"]
+        do_share = handlers["do_share"]
+        save_slot = handlers["save_slot"]
+        lock_selected_seed = handlers["lock_selected_seed"]
+        apply_stay = handlers["apply_stay"]
+        apply_and_publish_step = handlers["apply_and_publish_step"]
 
         tools = render_results_panel_tools(
             state, _apply_ranked_option, lambda data: _apply_form_payload(data), set_plan, plan_box, _ui_safe, set_why
@@ -3191,78 +3002,6 @@ def render_simulator() -> None:
         do_heat = tools["do_heat"]
         show_weekend_heat = tools["show_weekend_heat"]
         do_window_drill = tools["do_window_drill"]
-
-        def do_share():
-            res = state.get("opt_result") or {}
-            if not res.get("best") and state.get("result"):
-                res = {
-                    "best": state.get("selected_row") or (state.get("ranked") or [None])[0],
-                    "message": "Selected option",
-                    "scenarios_evaluated": (state.get("opt_result") or {}).get("scenarios_evaluated"),
-                    "wall_time_ms": (state.get("opt_result") or {}).get("wall_time_ms"),
-                }
-            body = format_share_message(res if res.get("best") else state.get("opt_result"))
-            r = export_share_eml(state.get("opt_result") or res)
-            try:
-                ui.clipboard.write(body)
-                ui.notify(f"Share text copied · .eml {r.get('path')}", type="positive")
-            except Exception:
-                set_why(body + f"\n\n.eml: {r.get('path')}")
-                ui.notify("Share text in Why panel", type="info")
-
-        def save_slot(letter: str):
-            r = save_scenario_slot(
-                letter,
-                config=state.get("config") or _current_config(),
-                result=state.get("result") or state.get("opt_result"),
-                ranked_row=state.get("selected_row"),
-            )
-            ui.notify(f"Saved scenario slot {r.get('slot')}", type="positive")
-
-        def lock_selected_seed():
-            row = state.get("selected_row")
-            if not row:
-                ranked = state.get("ranked") or []
-                row = ranked[0] if ranked else None
-            if not row:
-                ui.notify("Select an option first", type="warning")
-                return
-            seed = option_seed_from_row(row)
-            if seed.get("num_officers") is not None:
-                officers.value = str(seed["num_officers"])
-                use_officers.value = True
-            if seed.get("shift_length_hours") is not None:
-                length.value = str(seed["shift_length_hours"])
-                use_length.value = True
-            if seed.get("shift_starts"):
-                starts.value = ", ".join(seed["shift_starts"])
-                use_starts.value = True
-            if seed.get("min_per_shift") is not None:
-                min_ps.value = str(seed["min_per_shift"])
-                use_min_ps.value = True
-            if seed.get("rotation_variations"):
-                variations.value = " | ".join(seed["rotation_variations"])
-                use_style.value = True
-            try:
-                _refresh_space_estimate()
-            except Exception:
-                pass
-            ui.notify("Locked form from selected option (seed for re-search)", type="positive")
-
-        def apply_stay():
-            row = state.get("selected_row")
-            if not row:
-                ui.notify("Select an option on Coverage step", type="warning")
-                return
-            _apply_ranked_option(row)
-            ui.notify("Option applied — still on Publish", type="positive")
-
-        def apply_and_publish_step():
-            row = state.get("selected_row")
-            if row:
-                _apply_ranked_option(row)
-            go_step(4)
-            ui.notify("Option loaded — review Publish", type="info")
 
         def _form_payload() -> dict:
             return {

@@ -5,6 +5,7 @@
 - **Minimize:** fewest tool calls/tokens to finish fully. No parallel/background spam without checking in. One thing at a time unless told otherwise.
 - **Trust:** never claim fixed/done without user-scenario proof. Unit tests ≠ Chronos working.
 - Broken all session on 2026-07-17 — do not repeat.
+- **Simulator/optimizer work:** `docs/SIMULATOR_OVERHAUL_PLAN.md` is the authoritative eval + roadmap (2026-07-22). Read it before touching `gui/pages/simulator/*`, `simulator.py`, or `logic/staffing_*` / `logic/optimizer_features.py` / `logic/scheduling_sim.py`. Work its checkboxes top-down; keep it updated.
 
 ## Graphify = central knowledge base (always first)
 

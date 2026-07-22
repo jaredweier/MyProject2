@@ -1043,11 +1043,21 @@ def estimate_search_space(
     free_lengths: bool = False,
     free_variations: bool = False,
     stagger_phases: bool = True,
+    use_extra_windows: bool = False,
+    extra_windows: Optional[List[Dict]] = None,
     **_ignored,
 ) -> Dict:
     """
     Count layouts in the constraint-defined search space and estimate wall time.
     Used by the UI to warn before Find Best.
+
+    When the CP-SAT fast path applies (custom multi-block patterns, weekday-only
+    windows, OR-Tools installed), the raw enumeration count is NOT the expected
+    cost: the real search tries a cheap heuristic + one solver probe per
+    (officer count x shift length) combo and only falls back to enumeration for
+    combos the solver can't decide. The estimate must reflect that plan, or it
+    scares users away from searches that finish in seconds (proven 2026-07-22:
+    dialog said "31-78 hours" for a scenario CP-SAT solved in 21s).
     """
     from config import ROTATION_PRESETS
     from logic.rotation_patterns import build_pattern
@@ -1142,16 +1152,41 @@ def estimate_search_space(
     est_sec = est_cheap_sec + est_full_sec
     est_sec_hi = est_sec * 2.5
 
-    # Risk bands for operator confirm (time model is pessimistic; real path is faster
-    # after cheap prune, but free starts/length/N still warrants confirm).
-    if total >= 500_000 or est_sec_hi >= 3600:
-        risk = "extreme"
-    elif total >= 80_000 or est_sec_hi >= 600:
-        risk = "high"
-    elif total >= 15_000 or est_sec_hi >= 120:
-        risk = "medium"
+    # CP-SAT fast-path eligibility — mirror the conditions in
+    # optimize_staffing_scenarios (_cpsat_usable + solve_full_assignment's
+    # weekday-only window support). Keep these in sync.
+    has_variations = any(v for v in axes["variation_sets"] if v)
+    windows_periodic = not use_extra_windows or all(not (w or {}).get("specific_date") for w in (extra_windows or []))
+    cpsat_eligible = False
+    if has_variations and stagger_phases and windows_periodic:
+        try:
+            from logic.staffing_cpsat import ortools_available
+
+            cpsat_eligible = ortools_available()
+        except Exception:
+            cpsat_eligible = False
+
+    # One heuristic sim + at most one solver probe per (rotation/variation combo
+    # x officer count x shift length). Measured 2026-07-22: ~0.2s heuristic,
+    # 1.5–21s per CP-SAT probe on the reference scenario.
+    smart_units = max(1, n_rot_valid) * max(1, len(axes["officer_counts"])) * max(1, len(axes["length_opts"]))
+    smart_sec_lo = smart_units * 1.5
+    smart_sec_hi = smart_units * 25.0
+
+    def _risk_for(sec_hi: float, layouts: int) -> str:
+        if layouts >= 500_000 or sec_hi >= 3600:
+            return "extreme"
+        if layouts >= 80_000 or sec_hi >= 600:
+            return "high"
+        if layouts >= 15_000 or sec_hi >= 120:
+            return "medium"
+        return "low"
+
+    if cpsat_eligible:
+        # Risk follows the smart plan's time, not the enumeration count.
+        risk = _risk_for(smart_sec_hi, 0)
     else:
-        risk = "low"
+        risk = _risk_for(est_sec_hi, total)
 
     def _fmt_time(sec: float) -> str:
         if sec < 60:
@@ -1160,13 +1195,41 @@ def estimate_search_space(
             return f"~{sec / 60:.0f}–{sec * 2.5 / 60:.0f} minutes"
         return f"~{sec / 3600:.1f}–{sec * 2.5 / 3600:.1f} hours"
 
+    def _fmt_range(lo: float, hi: float) -> str:
+        if hi < 90:
+            return f"~{max(1, int(lo))}–{max(1, int(hi))} seconds"
+        if hi < 5400:
+            return f"~{max(1, int(lo / 60))}–{max(1, int(hi / 60))} minutes"
+        return f"~{lo / 3600:.1f}–{hi / 3600:.1f} hours"
+
+    # Only suggest locking dimensions that are actually free.
+    _lock_hints = {
+        "shift_length": "shift length",
+        "shift_starts": "shift starts",
+        "min_per_shift": "min per shift",
+        "rotation": "rotation",
+        "rotation_variations": "rotation patterns",
+    }
+    lockable = [_lock_hints[d] for d in axes["free_dims"] if d in _lock_hints]
+    if len(axes["officer_counts"]) > 1:
+        lockable.insert(0, "officer count")
+    lock_hint = f"Lock {', '.join(lockable)} to shrink the space." if lockable else ""
+
     warning = ""
-    if risk in ("high", "extreme"):
+    if cpsat_eligible:
+        warning = (
+            f"Solver fast path applies (multi-block patterns): about {smart_units:,} solver probe(s), "
+            f"expected {_fmt_range(smart_sec_lo, smart_sec_hi)}. "
+            f"(Exhaustive fallback space behind it: {total:,} layouts — only combos the solver "
+            "can't decide fall back to it.)"
+        )
+        if risk in ("high", "extreme") and lock_hint:
+            warning += " " + lock_hint
+    elif risk in ("high", "extreme"):
         warning = (
             f"With current free dimensions ({', '.join(axes['free_dims']) or 'none'}), "
             f"about {total:,} layouts must be checked. "
-            f"Expected time {_fmt_time(est_sec)}. "
-            "Select more constraints (lock officer count, shift starts, or length) to shrink the space."
+            f"Expected time {_fmt_time(est_sec)}. " + (lock_hint or "")
         )
     elif risk == "medium":
         warning = (
@@ -1185,7 +1248,14 @@ def estimate_search_space(
         "est_seconds_low": round(est_sec, 1),
         "est_seconds_high": round(est_sec_hi, 1),
         "time_label": _fmt_time(est_sec),
-        "requires_confirm": risk in ("high", "extreme") or total >= 50_000,
+        "cpsat_eligible": cpsat_eligible,
+        "smart_units": smart_units,
+        "smart_seconds_low": round(smart_sec_lo, 1),
+        "smart_seconds_high": round(smart_sec_hi, 1),
+        "smart_time_label": _fmt_range(smart_sec_lo, smart_sec_hi),
+        "requires_confirm": (risk in ("high", "extreme") or total >= 50_000)
+        if not cpsat_eligible
+        else risk in ("high", "extreme"),
         "officer_counts": axes["officer_counts"],
         "length_options": axes["length_opts"],
         "min_per_shift_options": axes["min_per_shift_options"],
@@ -1235,6 +1305,7 @@ def optimize_staffing_scenarios(
     max_consecutive_work_days: int = 0,
     progress_callback=None,
     cancel_check=None,
+    time_budget_seconds: Optional[float] = None,
 ) -> Dict:
     """
     Exhaustive sweep of the constraint-defined space (outer × phase × pattern).
@@ -1247,6 +1318,9 @@ def optimize_staffing_scenarios(
 
     progress_callback(dict) — optional; receives done/total/full_sims/best_summary.
     cancel_check() — optional; when True, stop and return partial results.
+    time_budget_seconds — optional hard wall-clock cap (P0.3): when exceeded the
+    search stops gracefully and returns ranked best-so-far with
+    budget_exhausted=True. None = uncapped (explicit opt-in only).
     """
     from config import ROTATION_PRESETS
     from logic.rotation_patterns import build_pattern
@@ -1260,9 +1334,17 @@ def optimize_staffing_scenarios(
     t0 = time.perf_counter()
     weights = _weights_from_priority(constraint_priority, constraint_weights)
     cancelled = False
+    budget_exhausted = False
+    _budget = float(time_budget_seconds) if time_budget_seconds else None
 
     def _cancelled() -> bool:
-        nonlocal cancelled
+        nonlocal cancelled, budget_exhausted
+        if cancelled:
+            return True
+        if _budget is not None and (time.perf_counter() - t0) > _budget:
+            budget_exhausted = True
+            cancelled = True
+            return True
         if cancel_check is None:
             return cancelled
         try:
@@ -1297,6 +1379,8 @@ def optimize_staffing_scenarios(
         free_lengths=free_lengths,
         free_variations=free_variations,
         stagger_phases=stagger_phases,
+        use_extra_windows=use_extra_windows,
+        extra_windows=extra_windows,
     )
 
     axes = _resolve_axes(
@@ -1341,6 +1425,7 @@ def optimize_staffing_scenarios(
 
     # C5 — early impossible when every officer count fails pattern/body floors
     from logic.optimizer_features import diversify_ranked, early_impossible_proof
+    from logic.staffing_cpsat import ortools_available, solve_full_assignment, solve_phase_variant
 
     early_skip_all = True
     early_reasons: List[str] = []
@@ -1535,6 +1620,7 @@ def optimize_staffing_scenarios(
         ph,
         pm,
         hard_ok,
+        home_starts=None,
     ) -> Dict:
         m = sim.metrics or {}
         score = _score_metrics(
@@ -1565,6 +1651,7 @@ def optimize_staffing_scenarios(
             "failed_constraints": failed,
             "phase_overrides": list(ph) if ph is not None else None,
             "pattern_slot_map": list(pm) if pm is not None else None,
+            "officer_home_starts": list(home_starts) if home_starts else None,
             "suggestions": [
                 {
                     "severity": s.severity,
@@ -1600,13 +1687,210 @@ def optimize_staffing_scenarios(
                 except ValueError:
                     continue
 
+            _cpsat_cache: Dict[Tuple[int, float], Dict] = {}
+            _cpsat_usable = bool(parsed_patterns) and stagger_phases and ortools_available()
+            _full_tried: set = set()
+            _full_solved: set = set()
+
             for n_off in ordered_n:
                 for min_ps in axes["min_per_shift_options"]:
                     for length in axes["length_opts"]:
+                        cpsat_pv: Optional[Dict] = None
+                        if _cpsat_usable:
+                            ckey = (int(n_off), float(length))
+                            if ckey not in _cpsat_cache:
+                                _cpsat_cache[ckey] = solve_phase_variant(
+                                    parsed_patterns,
+                                    n_officers=int(n_off),
+                                    shift_length_hours=float(length),
+                                    coverage_247=cov247,
+                                    annual_hours_target=float(annual),
+                                    annual_hours_variance=float(annual_hours_variance),
+                                    annual_hours_hard=bool(annual_hours_hard),
+                                    max_consecutive_work_days=int(max_consecutive_work_days),
+                                    min_rest_hours=float(min_rest_hours),
+                                )
+                            cpsat_pv = _cpsat_cache[ckey]
+
                         if axes["locked_starts_opts"] is not None:
                             starts_opts = axes["locked_starts_opts"]
                         else:
                             starts_opts = generate_start_packs(float(length), num_officers=n_off)
+
+                        # Full CP-SAT (variant + phase + per-officer start together) —
+                        # tried once per (n_off, length), independent of which starts
+                        # pack the loop below is on. Owns minute-level 24/7 + window
+                        # coverage itself, so a feasible hit here skips the entire
+                        # phase x pattern x starts-pack search for this combo. NOT a
+                        # relaxation (fixes one start per officer all cycle, unlike the
+                        # real day-pool balancer) — infeasible/unsupported here does
+                        # NOT prove the real problem is infeasible, so only the
+                        # feasible branch short-circuits anything; everything else
+                        # falls through to the unchanged pipeline below.
+                        if _cpsat_usable and (n_off, float(length)) not in _full_tried and not _cancelled():
+                            _full_tried.add((n_off, float(length)))
+                            cand_starts = sorted({s for pack in starts_opts for s in pack})
+
+                            # Cheap heuristic pre-check first — simulator's own
+                            # built-in stagger already solves the easy/common case
+                            # instantly. Only pay for the (slower, exact) full
+                            # CP-SAT solve when that quick attempt actually fails.
+                            heuristic_hard_ok = False
+                            if starts_opts:
+                                try:
+                                    quick_cfg = SimulatorConfig(
+                                        rotation_type=rot_key,
+                                        num_officers=int(n_off),
+                                        shift_length_hours=float(length),
+                                        annual_hours_target=float(annual),
+                                        shift_starts=list(starts_opts[0]),
+                                        apply_department_rules=False,
+                                        min_per_shift=int(min_ps),
+                                        simulation_days=int(simulation_days),
+                                        night_minimum=night_min,
+                                        annual_hours_variance=float(annual_hours_variance),
+                                        annual_hours_hard=bool(annual_hours_hard),
+                                        coverage_247=cov247,
+                                        avoid_flsa_overtime=bool(avoid_flsa_overtime),
+                                        flsa_work_period_days=int(flsa_work_period_days or 28),
+                                        use_extra_windows=bool(use_extra_windows and windows),
+                                        extra_windows=windows,
+                                        auto_min_officers=False,
+                                        rotation_style=use_style,
+                                        rotation_variations=list(variations),
+                                        stagger_phases=True,
+                                        phase_overrides=None,
+                                        pattern_slot_map=None,
+                                        nearby_start_hops=nearby_hops,
+                                        allow_offday_coverage=offday_ok,
+                                        min_rest_hours=float(min_rest_hours),
+                                        max_consecutive_work_days=int(max_consecutive_work_days),
+                                        sim_start_date=sim_start,
+                                    )
+                                    quick_sim = simulate_schedule(quick_cfg)
+                                    full_sims += 1
+                                    if quick_sim.success:
+                                        qm = quick_sim.metrics or {}
+                                        if not _constraint_fail(
+                                            qm,
+                                            require_hard_ok=require_hard_ok,
+                                            avoid_flsa_overtime=avoid_flsa_overtime,
+                                            cov247=cov247,
+                                            use_extra_windows=bool(use_extra_windows and windows),
+                                            windows=windows,
+                                            annual_hours_hard=annual_hours_hard,
+                                            min_ps=int(min_ps),
+                                            min_rest_hours=float(min_rest_hours),
+                                            max_consecutive_work_days=int(max_consecutive_work_days),
+                                        ):
+                                            heuristic_hard_ok = True
+                                            results.append(
+                                                _row_from_sim(
+                                                    sim=quick_sim,
+                                                    rot_key=rot_key,
+                                                    n_off=n_off,
+                                                    min_ps=min_ps,
+                                                    length=length,
+                                                    starts=list(starts_opts[0]),
+                                                    use_style=use_style,
+                                                    variations=variations,
+                                                    ph=None,
+                                                    pm=None,
+                                                    hard_ok=True,
+                                                )
+                                            )
+                                            _full_solved.add((n_off, float(length)))
+                                except Exception:
+                                    heuristic_hard_ok = False
+
+                            full = (
+                                {"status": "skipped"}
+                                if heuristic_hard_ok
+                                else solve_full_assignment(
+                                    parsed_patterns,
+                                    n_officers=int(n_off),
+                                    shift_length_hours=float(length),
+                                    candidate_starts=cand_starts,
+                                    sim_start_date=sim_start,
+                                    coverage_247=cov247,
+                                    extra_windows=windows if use_extra_windows else None,
+                                    annual_hours_target=float(annual),
+                                    annual_hours_variance=float(annual_hours_variance),
+                                    annual_hours_hard=bool(annual_hours_hard),
+                                    max_consecutive_work_days=int(max_consecutive_work_days),
+                                    min_rest_hours=float(min_rest_hours),
+                                )
+                            )
+                            if full.get("status") == "feasible":
+                                full_cfg = SimulatorConfig(
+                                    rotation_type=rot_key,
+                                    num_officers=int(n_off),
+                                    shift_length_hours=float(length),
+                                    annual_hours_target=float(annual),
+                                    shift_starts=cand_starts,
+                                    apply_department_rules=False,
+                                    min_per_shift=int(min_ps),
+                                    simulation_days=int(simulation_days),
+                                    night_minimum=night_min,
+                                    annual_hours_variance=float(annual_hours_variance),
+                                    annual_hours_hard=bool(annual_hours_hard),
+                                    coverage_247=cov247,
+                                    avoid_flsa_overtime=bool(avoid_flsa_overtime),
+                                    flsa_work_period_days=int(flsa_work_period_days or 28),
+                                    use_extra_windows=bool(use_extra_windows and windows),
+                                    extra_windows=windows,
+                                    auto_min_officers=False,
+                                    rotation_style=use_style,
+                                    rotation_variations=list(variations),
+                                    stagger_phases=False,
+                                    phase_overrides=full["phase"],
+                                    pattern_slot_map=full["pattern_map"],
+                                    officer_home_starts=full["shift_starts_per_officer"],
+                                    nearby_start_hops=0,
+                                    allow_offday_coverage=offday_ok,
+                                    min_rest_hours=float(min_rest_hours),
+                                    max_consecutive_work_days=int(max_consecutive_work_days),
+                                    sim_start_date=sim_start,
+                                )
+                                full_sim = simulate_schedule(full_cfg)
+                                full_sims += 1
+                                if full_sim.success:
+                                    fm = full_sim.metrics or {}
+                                    full_hard_ok = bool(fm.get("hard_constraints_ok", True))
+                                    row = _row_from_sim(
+                                        sim=full_sim,
+                                        rot_key=rot_key,
+                                        n_off=n_off,
+                                        min_ps=min_ps,
+                                        length=length,
+                                        starts=full["shift_starts_per_officer"],
+                                        use_style=use_style,
+                                        variations=variations,
+                                        ph=full["phase"],
+                                        pm=full["pattern_map"],
+                                        hard_ok=full_hard_ok,
+                                        home_starts=full["shift_starts_per_officer"],
+                                    )
+                                    if not _constraint_fail(
+                                        fm,
+                                        require_hard_ok=require_hard_ok,
+                                        avoid_flsa_overtime=avoid_flsa_overtime,
+                                        cov247=cov247,
+                                        use_extra_windows=bool(use_extra_windows and windows),
+                                        windows=windows,
+                                        annual_hours_hard=annual_hours_hard,
+                                        min_ps=int(min_ps),
+                                        min_rest_hours=float(min_rest_hours),
+                                        max_consecutive_work_days=int(max_consecutive_work_days),
+                                    ):
+                                        results.append(row)
+                                        _full_solved.add((n_off, float(length)))
+
+                        if (n_off, float(length)) in _full_solved and require_hard_ok:
+                            # Already have a proven-exact hard-OK result for this
+                            # combo from the full CP-SAT solve — no need to also
+                            # run the phase x pattern x starts-pack search below.
+                            continue
 
                         # _starts_priority defined here (not inside loop) to avoid
                         # unnecessary per-iteration closure allocation.
@@ -1674,7 +1958,14 @@ def optimize_staffing_scenarios(
                             outer_configs += 1
                             n_bands = max(1, len(starts))
 
-                            if parsed_patterns and stagger_phases:
+                            if cpsat_pv is not None and cpsat_pv.get("status") == "infeasible":
+                                # CP-SAT proved no (variant, phase) assignment can meet
+                                # 24/7 coverage + annual-hours band for this N/length —
+                                # a real proof, not a heuristic. Skip the exhaustive
+                                # phase x pattern enumeration entirely for this combo.
+                                phase_layouts = []
+                                pat_maps = []
+                            elif parsed_patterns and stagger_phases:
                                 # Priority phases first (fast); expand to full if no hard-OK.
                                 phase_layouts = generate_phase_layouts(int(n_off), cycle_len, mode="priority")
                                 pat_maps = generate_pattern_maps(int(n_off), len(parsed_patterns))
@@ -1689,6 +1980,12 @@ def optimize_staffing_scenarios(
                             # exhaustive phase×pattern cheap scan — finds 14/19 evening packs
                             # and good multi-block offsets without waiting on 2k+ cheap nodes.
                             _fast_layouts: List[Tuple[Optional[List[int]], Optional[List[int]]]] = []
+                            if cpsat_pv is not None and cpsat_pv.get("status") == "feasible":
+                                # CP-SAT-found (phase, variant) candidate — satisfies day-level
+                                # 24/7 + annual-hours band exactly; windows/rest-pool balance
+                                # still verified below by the real simulator. Tried before the
+                                # heuristic and before exhaustive fallback.
+                                _fast_layouts.append((cpsat_pv["phase"], cpsat_pv["pattern_map"]))
                             if parsed_patterns and stagger_phases:
                                 _fast_layouts.append((None, None))
                             for _fph, _fpm in _fast_layouts:
@@ -2389,7 +2686,16 @@ def optimize_staffing_scenarios(
     total_eval = cheap_evals
     best = results[0] if results else None
 
-    if cancelled:
+    if budget_exhausted:
+        msg = f"Time Budget Reached ({int(_budget or 0)}s) · {total_eval:,} Cheap Checks · {full_sims:,} Full Sims"
+        if best:
+            msg += (
+                f" — Best So Far: {best['rotation_type']} · "
+                f"{best['num_officers']} Officers · Min {best['min_per_shift']} Per Shift"
+            )
+        else:
+            msg += " — No Qualifying Option Found Yet (lock more constraints or raise the budget)"
+    elif cancelled:
         msg = f"Search Cancelled After {total_eval:,} Cheap Checks · {full_sims:,} Full Sims"
         if best:
             msg += (
@@ -2457,7 +2763,7 @@ def optimize_staffing_scenarios(
         "full_sims_run": full_sims,
         "pruned_cheap": pruned_cheap,
         "search_exhaustive": not cancelled,
-        "budget_exhausted": False,
+        "budget_exhausted": budget_exhausted,
         "wall_time_ms": wall_ms,
         "failure_histogram": fail_hist,
         "space_estimate": space,
@@ -2468,7 +2774,9 @@ def optimize_staffing_scenarios(
         "best": best_out,
         "ranked": ranked,
         "message": msg,
-        "impossible": require_hard_ok and not results,
+        # A cancelled/budget-stopped search proves nothing about infeasibility —
+        # only a completed sweep may claim impossible (soundness rule).
+        "impossible": require_hard_ok and not results and not cancelled,
         "constraints_applied": {
             "coverage_247": cov247,
             "avoid_flsa_overtime": bool(avoid_flsa_overtime),

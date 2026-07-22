@@ -67,6 +67,12 @@ class SimulatorConfig:
     # Staffing-optimizer inner search (optional). When set, skip heuristic stagger.
     phase_overrides: Optional[List[int]] = None  # per-slot cycle phase
     pattern_slot_map: Optional[List[int]] = None  # per-slot index into rotation_variations
+    # Explicit per-slot home shift-start (e.g. from a CP-SAT full-assignment
+    # solve that already proved exact minute-level coverage for THIS specific
+    # start per officer). Overrides the default round-robin-over-shift_starts
+    # home assignment. Caller should also set nearby_start_hops=0 so the
+    # daily rebalancer doesn't move officers off the proven assignment.
+    officer_home_starts: Optional[List[str]] = None
 
 
 @dataclass
@@ -181,13 +187,20 @@ def _assign_officers(
     shift_templates: List[Tuple[str, str]],
     preset: Dict,
     roster_officers: Optional[List[Dict]] = None,
+    *,
+    home_starts: Optional[List[str]] = None,
+    shift_length_hours: Optional[float] = None,
 ) -> List[SimulatorOfficerSlot]:
     squads = ["A", "B"] if preset.get("squads", 2) >= 2 else ["A"]
     slots = []
     roster = (roster_officers or [])[:num_officers]
     count = len(roster) if roster else num_officers
     for i in range(count):
-        shift_start, shift_end = shift_templates[i % len(shift_templates)]
+        if home_starts and i < len(home_starts) and home_starts[i]:
+            shift_start = home_starts[i]
+            shift_end = _end_for_start(shift_start, float(shift_length_hours or 8))
+        else:
+            shift_start, shift_end = shift_templates[i % len(shift_templates)]
         if roster:
             officer = roster[i]
             slots.append(
@@ -881,7 +894,14 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
         from logic import get_officers_by_seniority
 
         roster_officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
-    slots = _assign_officers(config.num_officers, shift_templates, preset, roster_officers)
+    slots = _assign_officers(
+        config.num_officers,
+        shift_templates,
+        preset,
+        roster_officers,
+        home_starts=config.officer_home_starts,
+        shift_length_hours=config.shift_length_hours,
+    )
 
     # Attach rotation variation + phase when multi-block patterns provided.
     # Stagger by spreading phases evenly across the cycle (not 0,0,1,1…).
