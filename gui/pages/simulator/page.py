@@ -69,7 +69,7 @@ from logic.scheduling_sim import (
     find_min_officers_hard,
     get_simulator_defaults_from_roster,
     run_schedule_simulation,
-    run_staffing_optimizer,
+    run_staffing_optimizer_isolated,
     what_if_staffing_delta,
 )
 from logic.staffing_insights import (
@@ -2578,15 +2578,20 @@ def render_simulator() -> None:
                 if info.get("full_sims") is not None:
                     progress["full_sims"] = int(info["full_sims"])
 
+            # P0.4: the search runs in a child process (GIL starvation froze
+            # the whole app when it ran on a thread — 84s page loads, measured).
+            # The executor thread below only relays progress/cancel over IPC.
             job_kw = dict(kw)
-            job_kw["progress_callback"] = _on_progress
-            job_kw["cancel_check"] = cancel_ev.is_set
 
             loop = asyncio.get_event_loop()
             try:
                 fut = loop.run_in_executor(
                     _OPT_EXECUTOR,
-                    lambda: run_staffing_optimizer(**job_kw),
+                    lambda: run_staffing_optimizer_isolated(
+                        job_kw,
+                        progress_callback=_on_progress,
+                        cancel_check=cancel_ev.is_set,
+                    ),
                 )
                 while not fut.done():
                     done = int(progress.get("done") or 0)

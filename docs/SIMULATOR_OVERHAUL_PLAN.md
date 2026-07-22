@@ -150,15 +150,22 @@ the cure for F1/F2/F3/F5.
     the no-match/impossible dialog (UI shows honest "not proof of impossibility" summary).
   - Not done: a true "Keep searching" resume button (engine has no resume state) — re-run
     with Deep for a longer budget. Revisit in Phase 1 (solver owns anytime search there).
-- [ ] **P0.4 App stays alive during a search** (PARTIALLY verified 2026-07-22 — root cause
-  of the 07-22 freeze still unattributed)
-  - Observed after P0.3: full 120s budgeted run with live progress %, ticking clock, no
-    freeze, results rendered. The search runs via `loop.run_in_executor` (thread pool) —
-    GIL starvation from the pure-Python loop is the prime suspect for the original hang,
-    which happened on an UNBOUNDED run with two queued suggestion dialogs.
-  - Still to prove: Cancel mid-run drops server CPU; navigation to another page and back
-    during a run; behavior on an explicit long/unbounded run. If freeze reproduces, move
-    the search to a process pool (progress via queue, cancel via Manager event).
+- [x] **P0.4 App stays alive during a search** (done 2026-07-22 — root cause ATTRIBUTED,
+  fixed, and re-proven live)
+  - **Root cause (measured):** the search is pure-Python CPU work; on a thread it holds
+    the GIL and starves NiceGUI's event loop — a plain page load took **84 seconds**
+    during a thread-run search vs **7ms** right after cancel. That was the F5 freeze.
+  - **Fix:** `run_staffing_optimizer_isolated` in `logic/scheduling_sim.py` — persistent
+    single-worker spawn ProcessPoolExecutor + Manager queue/event; progress puts throttled
+    to 0.4s and cancel polls to 0.25s in the child (unthrottled proxy roundtrips would
+    dominate runtime); automatic in-process fallback if the pool breaks. `_execute_opt`
+    now uses it; nothing else in `gui/` may call `run_staffing_optimizer` directly.
+  - **Proof:** live — page loads 6–23ms WHILE the child process burned CPU on a 26.7M-layout
+    search; progress % relayed to the UI over IPC; 120s budget stop returned through the
+    pool with the honest "No Qualifying Option Found Yet" (not "impossible") summary.
+    Cancel mid-run: server CPU 5.0s/5s → 0.00s/5s. Headless: cancel honored across the
+    process boundary (latency bounded by one solver probe, ~10s worst case).
+  - Note: process spawn adds ~5–8s to the FIRST search after server start (pool reused after).
 
 ### Phase 1 — solver-first core (the real fix; F1/F2/F3 die here)
 

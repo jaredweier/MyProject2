@@ -198,6 +198,128 @@ def estimate_staffing_search_space(**kwargs) -> Dict:
     return estimate_search_space(**kwargs)
 
 
+# --- Process isolation for the coverage search (P0.4) -----------------------
+# The enumeration in optimize_staffing_scenarios is pure-Python CPU work. Run
+# on a thread it holds the GIL and starves NiceGUI's event loop — measured
+# live 2026-07-22: a plain page load took 84s during a search vs 7ms after.
+# So UI-launched searches run in a child process; the parent thread only
+# blocks on IPC waits (which release the GIL).
+
+_OPT_POOL = None
+_OPT_MANAGER = None
+
+
+def _optimizer_process_entry(kw: Dict, progress_q, cancel_ev) -> Dict:
+    """Child-process entry. Throttles IPC: cancel polls are a proxy roundtrip,
+    and the engine checks per layout — unthrottled that would dominate runtime."""
+    import time as _t
+
+    _st = {"prog_t": 0.0, "cancel_t": 0.0, "cancel_v": False}
+
+    def _progress(info: Dict) -> None:
+        now = _t.monotonic()
+        if (info or {}).get("phase") == "done" or now - _st["prog_t"] >= 0.4:
+            _st["prog_t"] = now
+            try:
+                progress_q.put_nowait(dict(info))
+            except Exception:
+                pass
+
+    def _cancel() -> bool:
+        now = _t.monotonic()
+        if not _st["cancel_v"] and now - _st["cancel_t"] >= 0.25:
+            _st["cancel_t"] = now
+            try:
+                _st["cancel_v"] = bool(cancel_ev.is_set())
+            except Exception:
+                pass
+        return _st["cancel_v"]
+
+    return run_staffing_optimizer(progress_callback=_progress, cancel_check=_cancel, **kw)
+
+
+def run_staffing_optimizer_isolated(
+    kw: Dict,
+    *,
+    progress_callback=None,
+    cancel_check=None,
+) -> Dict:
+    """Blocking wrapper: run the search in a child process, relaying progress
+    and cancellation. Call from a worker thread, never the event loop.
+
+    Falls back to the in-process path if the pool can't start or breaks —
+    slower UI but never a lost search.
+    """
+    import multiprocessing
+    import queue as _queue
+    from concurrent.futures import ProcessPoolExecutor
+    from concurrent.futures import TimeoutError as _FutTimeout
+
+    global _OPT_POOL, _OPT_MANAGER
+    try:
+        if _OPT_POOL is None:
+            ctx = multiprocessing.get_context("spawn")
+            _OPT_POOL = ProcessPoolExecutor(max_workers=1, mp_context=ctx)
+            _OPT_MANAGER = ctx.Manager()
+        prog_q = _OPT_MANAGER.Queue()
+        cancel_ev = _OPT_MANAGER.Event()
+        fut = _OPT_POOL.submit(_optimizer_process_entry, dict(kw), prog_q, cancel_ev)
+    except Exception:
+        _shutdown_opt_pool()
+        return run_staffing_optimizer(progress_callback=progress_callback, cancel_check=cancel_check, **kw)
+
+    def _drain() -> None:
+        while True:
+            try:
+                info = prog_q.get_nowait()
+            except _queue.Empty:
+                return
+            except Exception:
+                return
+            if progress_callback is not None:
+                try:
+                    progress_callback(info)
+                except Exception:
+                    pass
+
+    try:
+        while True:
+            if cancel_check is not None and not cancel_ev.is_set():
+                try:
+                    if cancel_check():
+                        cancel_ev.set()
+                except Exception:
+                    pass
+            _drain()
+            try:
+                result = fut.result(timeout=0.3)
+                _drain()
+                return result
+            except _FutTimeout:
+                continue
+    except Exception:
+        # BrokenProcessPool or pickling issue — rebuild lazily next time and
+        # fall back in-process so the user still gets an answer.
+        _shutdown_opt_pool()
+        return run_staffing_optimizer(progress_callback=progress_callback, cancel_check=cancel_check, **kw)
+
+
+def _shutdown_opt_pool() -> None:
+    global _OPT_POOL, _OPT_MANAGER
+    try:
+        if _OPT_POOL is not None:
+            _OPT_POOL.shutdown(wait=False, cancel_futures=True)
+    except Exception:
+        pass
+    try:
+        if _OPT_MANAGER is not None:
+            _OPT_MANAGER.shutdown()
+    except Exception:
+        pass
+    _OPT_POOL = None
+    _OPT_MANAGER = None
+
+
 def find_min_officers_hard(**kwargs) -> Dict:
     """Binary-search minimum headcount for hard constraints."""
     from logic.optimizer_features import find_min_officers_hard as _fn
