@@ -14,22 +14,19 @@ from config import SIMULATOR_ROTATION_TYPES
 from gui import session
 from gui.pages.simulator.decision_table import build_decision_table
 from gui.pages.simulator.helpers import (
-    _DOW_NAME_TO_WEEKDAY,
-    _DOW_NAMES,
     _HINT,
-    _MULTI_BLOCK_LABELS,
-    _MULTI_BY_LABEL,
-    _ROTATION_OPTIONS,
     _STEP_DONE,
     _STEP_OFF,
     _STEP_ON,
-    _STYLE_OPTIONS,
-    _WEEKDAY_TO_NAME,
     _chip_html,
     _kpi_html,
     _set_enabled,
-    given_solve_toggle,
 )
+from gui.pages.simulator.options_panel import render_options_panel
+from gui.pages.simulator.publish_panel import render_publish_panel
+from gui.pages.simulator.results_panel import render_results_panel_tools
+from gui.pages.simulator.state import SimulatorState
+from gui.pages.simulator.stepper_rail import render_stepper_rail
 from gui.pages.simulator.styles import apply_simulator_css
 from gui.shell import layout, page_header, panel
 from gui.ui_patterns import skeleton_block, throttled
@@ -61,7 +58,6 @@ from logic.optimizer_features import (
     append_search_history,
     default_weight_map,
     diff_options,
-    explain_window_failures,
     export_form_config_json,
     export_ranked_options_csv,
     export_search_audit_json,
@@ -70,20 +66,13 @@ from logic.optimizer_features import (
     fairness_report_with_roster,
     format_checklist_line,
     format_share_message,
-    get_window_template,
-    list_pinned_options,
-    list_search_history,
-    list_window_templates,
     load_form_snapshot,
     load_last_simulator_constraints,
-    load_scenario_slots,
     near_miss_deltas,
     option_seed_from_row,
     pin_option,
     save_form_snapshot,
     save_scenario_slot,
-    unpin_option,
-    weekend_night_heat_lines,
     weights_from_sliders,
     why_best_lines,
 )
@@ -108,14 +97,9 @@ from logic.sim_product_pack import (
     try_cpsat_when_small,
 )
 from logic.staffing_insights import (
-    court_board_to_demand_windows,
     detect_constraint_conflicts,
     export_staffing_memo,
-    get_demand_template,
-    list_demand_templates,
-    recommend_pay_period_preview,
 )
-from validators import format_date, parse_date, storage_date_str
 
 
 def render_simulator() -> None:
@@ -135,42 +119,9 @@ def render_simulator() -> None:
             kicker="Command",
         )
 
-        state: dict = {
-            "result": None,
-            "config": None,
-            "ranked": [],
-            "selected_rank": 0,
-            "compare_a": None,
-            "compare_b": None,
-            "opt_result": None,
-            "windows": [],
-            "hard_mode": True,
-            "step": 1,
-            "opt_running": False,
-            "opt_cancel": None,
-            "opt_t0": None,
-            # Higher index = lower priority; first items weigh more for near-miss ranking
-            "constraint_priority": [
-                "coverage_247",
-                "windows",
-                "gaps",
-                "flsa",
-                "annual",
-                "headcount",
-            ],
-            "space_estimate": None,
-            "pending_opt_kw": None,
-            "form_undo": [],
-            "constraint_weights": default_weight_map(),
-            "auto_find_after_preset": False,
-            "manual_grid": None,
-            "manual_days": 14,
-            "restoring_form": False,
-            "suppress_suggest": False,
-            # standard = interactive UAT band; deep = exhaustive free-N 4–20 + 28-day
-            "search_depth": "standard",
-            "max_step_reached": 1,
-        }
+        state_obj = SimulatorState()
+        state = state_obj.to_dict()  # Temporary shim to keep dict access working
+
         step_labels: dict = {}
         step_panels: dict = {}
         sim_page = ui.element("div").classes("sim-page w-full")
@@ -212,7 +163,8 @@ def render_simulator() -> None:
                     pass
             if n == 3:
                 try:
-                    _manual_refresh_view()
+                    if _manual_refresh_view:
+                        _manual_refresh_view()
                 except Exception:
                     pass
             try:
@@ -221,35 +173,7 @@ def render_simulator() -> None:
                 pass
 
         with sim_page:
-            # NiceGUI stepper-style rail (icons + done/active states)
-            _STEP_META = (
-                (1, "Requirements", "tune"),
-                (2, "Find best", "travel_explore"),
-                (3, "Manual build", "grid_on"),
-                (4, "Publish", "publish"),
-            )
-            with ui.element("div").classes("sim-step-rail").props('role="navigation" aria-label="Simulator steps"'):
-                for idx, (i, title, icon) in enumerate(_STEP_META):
-                    if idx:
-                        ui.element("div").classes("sim-step-connector")
-                    lab = ui.element("div").classes(_STEP_ON if i == 1 else _STEP_OFF)
-                    lab.props(f'tabindex="0" role="button" aria-label="Step {i}: {title}"')
-                    with lab:
-                        with ui.row().classes("items-center gap-2 no-wrap"):
-                            ui.icon(icon).classes("text-sm")
-                            ui.html(
-                                f'<span class="sim-step-num">{i}</span>',
-                                sanitize=False,
-                            )
-                            ui.label(title).classes("text-sm")
-
-                    def _nav(step=i):
-                        if step in (1, 2, 3) or state.get("result"):
-                            go_step(step)
-
-                    lab.on("click", _nav)
-                    lab.on("keydown.enter", _nav)
-                    step_labels[i] = lab
+            render_stepper_rail(state, step_labels, go_step)
 
             # Widget placeholders only — real values come from last saved constraints.
             # Do not treat these as product defaults when a snapshot exists.
@@ -292,514 +216,54 @@ def render_simulator() -> None:
                     pass
 
             with ui.element("div").classes("grid-2"):
-                with panel("Coverage Requirements"):
-                    # Fixed grid rows — never remove from layout
-
-                    with (
-                        ui.element("div")
-                        .classes("w-full grid sim-option-card")
-                        .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                    ):
-                        use_start_date = ui.checkbox("Target Start Date", value=False)
-                        with ui.element("div"):
-                            sim_start_date = ui.input(
-                                label="YYYY-MM-DD",
-                                value="",
-                                placeholder="e.g. 2026-07-17",
-                            ).classes("w-full")
-                    use_start_date.on_value_change(lambda e: _set_enabled([sim_start_date], bool(e.value)))
-                    _set_enabled([sim_start_date], False)
-
-                    # All locks start OFF / empty — restored from last saved constraints.
-                    with (
-                        ui.element("div")
-                        .classes("w-full grid sim-option-card")
-                        .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                    ):
-                        use_rotation = given_solve_toggle(ui, "Rotation Pattern")
-                        with ui.element("div"):
-                            rotation = (
-                                ui.select(
-                                    _ROTATION_OPTIONS,
-                                    value=_placeholder_rot,
-                                    label="Pattern",
-                                )
-                                .classes("w-full")
-                                .props("outlined dense dark")
-                            )
-                            hint_rotation = ui.label("Solve for: every rotation pattern is searched").classes(
-                                "sim-free-hint"
-                            )
-                    use_rotation.on_value_change(lambda e: _set_enabled([rotation], bool(e.value)))
-                    _set_enabled([rotation], False)
-
-                    with (
-                        ui.element("div")
-                        .classes("w-full grid sim-option-card")
-                        .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                    ):
-                        use_officers = given_solve_toggle(ui, "Officer Count")
-                        with ui.element("div"):
-                            officers = ui.input(
-                                label="Number Of Officers",
-                                value="",
-                                placeholder="e.g. 8",
-                            ).classes("w-full")
-                            hint_officers = ui.label("Solve for: 4–20 officers searched (all depths)").classes(
-                                "sim-free-hint"
-                            )
-
-                    def _on_lock_officers(e=None):
-                        _set_enabled([officers], bool(use_officers.value))
-                        try:
-                            _refresh_space_estimate()
-                        except Exception:
-                            pass
-
-                    use_officers.on_value_change(_on_lock_officers)
-                    _set_enabled([officers], False)
-
-                    with (
-                        ui.element("div")
-                        .classes("w-full grid sim-option-card")
-                        .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                    ):
-                        use_length = given_solve_toggle(ui, "Shift Length")
-                        with ui.element("div"):
-                            length = ui.input(
-                                label="Hours (0.5 Steps)",
-                                value="",
-                                placeholder="e.g. 8",
-                            ).classes("w-full")
-                            hint_length = ui.label(
-                                "Solve for: 8/10/12h (Standard) · 8–12h in half-hour steps (Deep)"
-                            ).classes("sim-free-hint")
-
-                    def _on_lock_length(e=None):
-                        _set_enabled([length], bool(use_length.value))
-                        try:
-                            _refresh_space_estimate()
-                        except Exception:
-                            pass
-
-                    use_length.on_value_change(_on_lock_length)
-                    _set_enabled([length], False)
-
-                    with (
-                        ui.element("div")
-                        .classes("w-full grid sim-option-card")
-                        .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                    ):
-                        use_annual = ui.checkbox("Require: Annual Hours Target", value=False)
-                        with ui.element("div"):
-                            annual = ui.input(
-                                label="Annual Hours Target",
-                                value="",
-                                placeholder="e.g. 2008",
-                            ).classes("w-full")
-                            annual_var = ui.input(
-                                label="Allowed Variance (± Hours)",
-                                value="",
-                                placeholder="e.g. 20",
-                            ).classes("w-full")
-                    use_annual.on_value_change(lambda e: _set_enabled([annual, annual_var], bool(e.value)))
-                    _set_enabled([annual, annual_var], False)
-
-                    with (
-                        ui.element("div")
-                        .classes("w-full grid sim-option-card")
-                        .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                    ):
-                        use_starts = given_solve_toggle(ui, "Shift Start Times")
-                        with ui.element("div"):
-                            starts = ui.input(
-                                label="Starts (Comma-Separated)",
-                                value="",
-                                placeholder="e.g. 06:00, 14:00, 19:00, 22:00",
-                            ).classes("w-full")
-                            hint_starts = ui.label("Solve for: realistic start packs searched per length").classes(
-                                "sim-free-hint"
-                            )
-                            ui.html(
-                                '<div style="font-size: 0.8rem; color: var(--sim-muted); margin-top: 4px;">Real-world 8h pack (e.g. 06:00, 14:00, 22:00) provides 3 equal 8-hour shift bands.</div>'
-                            )
-
-                    def _on_lock_starts(e=None):
-                        _set_enabled([starts], bool(use_starts.value))
-                        try:
-                            _refresh_space_estimate()
-                        except Exception:
-                            pass
-
-                    use_starts.on_value_change(_on_lock_starts)
-                    _set_enabled([starts], False)
-
-                    with (
-                        ui.element("div")
-                        .classes("w-full grid sim-option-card")
-                        .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                    ):
-                        use_min_ps = ui.checkbox("Require: Minimum Officers Per Shift", value=False)
-                        with ui.element("div"):
-                            min_ps = ui.input(
-                                label="Minimum Officers Per Shift",
-                                value="",
-                                placeholder="e.g. 1",
-                            ).classes("w-full")
-
-                    def _on_lock_min_ps(e=None):
-                        _set_enabled([min_ps], bool(use_min_ps.value))
-                        try:
-                            _refresh_space_estimate()
-                        except Exception:
-                            pass
-
-                    use_min_ps.on_value_change(_on_lock_min_ps)
-                    _set_enabled([min_ps], False)
-
-                    with (
-                        ui.element("div")
-                        .classes("w-full grid sim-option-card")
-                        .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                    ):
-                        use_247 = ui.checkbox("Require: 24/7 Continuous Minimum", value=False)
-                        with ui.element("div"):
-                            cov247 = ui.input(
-                                label="Minimum On Duty At All Times",
-                                value="",
-                                placeholder="e.g. 1",
-                            ).classes("w-full")
-                    use_247.on_value_change(lambda e: _set_enabled([cov247], bool(e.value)))
-                    _set_enabled([cov247], False)
-
-                    with (
-                        ui.element("div")
-                        .classes("w-full grid sim-option-card")
-                        .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                    ):
-                        use_style = given_solve_toggle(ui, "Rotation Style / Multi-Block")
-                        with ui.element("div"):
-                            hint_style = ui.label("Solve for: fixed and rotating multi-block styles searched").classes(
-                                "sim-free-hint"
-                            )
-                            rot_style = (
-                                ui.select(_STYLE_OPTIONS, value="Rotating", label="Style")
-                                .classes("w-full")
-                                .props("outlined dense dark")
-                            )
-                            multi_catalog = (
-                                ui.select(
-                                    _MULTI_BLOCK_LABELS,
-                                    value=_MULTI_BLOCK_LABELS[0],
-                                    label="Common Police Pattern",
-                                )
-                                .classes("w-full")
-                                .props("outlined dense dark")
-                            )
-                            variations = ui.input(
-                                label="Patterns (| Separates Variations)",
-                                value="",
-                                placeholder="e.g. 6-2,5-3 | 6-3,5-2",
-                            ).classes("w-full")
-
-                            def _apply_multi_catalog(e=None):
-                                cat = _MULTI_BY_LABEL.get(multi_catalog.value or "")
-                                if not cat:
-                                    return
-                                if cat.get("variations"):
-                                    variations.value = cat["variations"]
-                                st = (cat.get("style") or "rotating").lower()
-                                rot_style.value = "Rotating" if st == "rotating" else "Fixed"
-                                use_style.value = True
-                                _set_enabled([rot_style, multi_catalog, variations], True)
-                                _persist_form()
-
-                            multi_catalog.on_value_change(_apply_multi_catalog)
-                    use_style.on_value_change(
-                        lambda e: _set_enabled([rot_style, multi_catalog, variations], bool(e.value))
-                    )
-                    _set_enabled([rot_style, multi_catalog, variations], False)
-
-                    with ui.expansion(
-                        "Advanced requirements (bumps, off-day OT, certs, fatigue, FLSA)",
-                        icon="tune",
-                        value=False,
-                    ).classes("sim-adv w-full q-mt-sm"):
-                        with (
-                            ui.element("div")
-                            .classes("w-full grid sim-option-card")
-                            .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                        ):
-                            use_nearby = ui.checkbox("Allow: Nearby Start Bumps (Work Days)", value=False)
-                            with ui.element("div"):
-                                nearby_hops = ui.input(
-                                    label="Bumps Allowed (± Pack Bands From Home)",
-                                    value="",
-                                    placeholder="e.g. 1",
-                                ).classes("w-full")
-                                ui.label("Example: home 19:00 with 1 bump → 14:00 or 22:00 on ON days only.").style(
-                                    _HINT
-                                )
-                        use_nearby.on_value_change(lambda e: _set_enabled([nearby_hops], bool(e.value)))
-                        _set_enabled([nearby_hops], False)
-                        with (
-                            ui.element("div")
-                            .classes("w-full grid sim-option-card")
-                            .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                        ):
-                            allow_offday = ui.checkbox(
-                                "Allow Off-Day Coverage (OT Call-In)",
-                                value=False,
-                            )
-                            with ui.element("div"):
-                                ui.label("Only when checked: multi-block OFF days may fill windows.").style(_HINT)
-
-                        with (
-                            ui.element("div")
-                            .classes("w-full grid sim-option-card")
-                            .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                        ):
-                            use_certs = ui.checkbox("Require: Cert Codes (Fill Gate)", value=False)
-                            with ui.element("div"):
-                                cert_codes = ui.input(
-                                    label="Cert Codes (Comma-Separated)",
-                                    value="",
-                                    placeholder="e.g. FTO, K9, EMT",
-                                ).classes("w-full")
-                                ui.label(
-                                    "Only officers holding these codes are eligible when "
-                                    "applying home starts / open-shift style fills."
-                                ).style(_HINT)
-                        use_certs.on_value_change(lambda e: _set_enabled([cert_codes], bool(e.value)))
-                        _set_enabled([cert_codes], False)
-
-                        with (
-                            ui.element("div")
-                            .classes("w-full grid sim-option-card")
-                            .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                        ):
-                            use_fatigue = ui.checkbox("Require: Fatigue / Rest Rules", value=False)
-                            with ui.element("div"):
-                                min_rest = ui.input(
-                                    label="Min Rest Hours Between Work Days",
-                                    value="",
-                                    placeholder="e.g. 8",
-                                ).classes("w-full")
-                                max_consec = ui.input(
-                                    label="Max Consecutive Work Days (0=off)",
-                                    value="",
-                                    placeholder="e.g. 6",
-                                ).classes("w-full")
-                                ui.label(
-                                    "Optional hard fatigue: rest between consecutive duty days; cap multi-block ON streaks."
-                                ).style(_HINT)
-                        use_fatigue.on_value_change(lambda e: _set_enabled([min_rest, max_consec], bool(e.value)))
-                        _set_enabled([min_rest, max_consec], False)
-
-                        with (
-                            ui.element("div")
-                            .classes("w-full grid sim-option-card")
-                            .style("grid-template-columns: minmax(200px, 1fr) 2fr; align-items: center; gap: 1.5rem;")
-                        ):
-                            use_flsa = ui.checkbox("Require: Avoid FLSA Overtime", value=False)
-                            with ui.element("div"):
-                                flsa_days = ui.input(
-                                    label="FLSA Work Period Days (7–28)",
-                                    value="",
-                                    placeholder="e.g. 28",
-                                ).classes("w-full")
-                        use_flsa.on_value_change(lambda e: _set_enabled([flsa_days], bool(e.value)))
-                        _set_enabled([flsa_days], False)
-
-                with panel("Extra Minimum Staffing Windows"):
-                    ui.label(
-                        "When checked, every window below is a hard minimum. "
-                        "Windows are empty until you add them or restore a saved form. "
-                        "Demand templates convert peak-risk hours into windows."
-                    ).style(_HINT)
-                    use_windows = ui.checkbox("Require: Extra Minimum Staffing Windows", value=False)
-                    with ui.row().classes("gap-2 flex-wrap q-mb-sm"):
-                        for tmpl in list_demand_templates():
-
-                            def _apply_demand(tid=tmpl["id"], lab=tmpl["label"]):
-                                if tid == "from_court_board":
-                                    r = court_board_to_demand_windows()
-                                    wins = list(r.get("windows") or [])
-                                    if not wins:
-                                        ui.notify(
-                                            r.get("message") or "No court events",
-                                            type="warning",
-                                        )
-                                        return
-                                    msg = r.get("message") or lab
-                                else:
-                                    wins = get_demand_template(tid)
-                                    msg = lab
-                                if not wins:
-                                    ui.notify("Unknown template", type="warning")
-                                    return
-                                state["windows"] = list(wins)
-                                use_windows.value = True
-                                try:
-                                    _refresh_win_list()
-                                except Exception:
-                                    pass
-                                _persist_form()
-                                ui.notify(f"Demand windows: {msg}", type="positive")
-                                try:
-                                    _show_constraint_suggestions("windows")
-                                except Exception:
-                                    pass
-
-                            ui.button(
-                                tmpl["label"][:32],
-                                on_click=_apply_demand,
-                            ).classes("btn-ghost").props("dense no-caps outline")
-                    win_body = ui.column().classes("w-full")
-                    # Keep visible always; disable controls when unchecked
-                    win_list_col = ui.column().classes("w-full gap-1 q-mb-sm")
-
-                    def _refresh_win_list():
-                        win_list_col.clear()
-                        with win_list_col:
-                            if not state["windows"]:
-                                ui.label("No Windows Added Yet.").style("color:#7A8FA8;font-size:0.9rem")
-                                return
-                            for i, w in enumerate(state["windows"]):
-                                if w.get("specific_date"):
-                                    when = f"Date {w.get('specific_date')}"
-                                elif w.get("weekday") is not None:
-                                    when = _WEEKDAY_TO_NAME.get(w.get("weekday"), f"Weekday {w.get('weekday')}")
-                                else:
-                                    when = "Any Day"
-                                line = (
-                                    f"#{i + 1} · Min {w.get('min_officers')} · "
-                                    f"{w.get('start_time')}–{w.get('end_time')} · "
-                                    f"{when} · {w.get('label') or 'Window'}"
-                                )
-                                with ui.row().classes("w-full items-center gap-2 flex-wrap"):
-                                    ui.label(line).classes("text-sm").style("color:#E8EDF4;flex:1")
-
-                                    def _del(idx=i):
-                                        if 0 <= idx < len(state["windows"]):
-                                            state["windows"].pop(idx)
-                                            _refresh_win_list()
-
-                                    ui.button("Remove", on_click=_del).classes("btn-ghost").props(
-                                        "dense no-caps outline"
-                                    )
-
-                    with win_body:
-                        _refresh_win_list()
-                        w_min = ui.input(label="Min Officers", value="2").classes("w-full")
-                        w_start = ui.input(label="Start Time (HH:MM)", value="19:00").classes("w-full")
-                        w_end = ui.input(label="End Time (HH:MM)", value="03:00").classes("w-full")
-                        w_dow = (
-                            ui.select(_DOW_NAMES, value="Friday", label="Day Of Week")
-                            .classes("w-full")
-                            .props("outlined dense dark")
-                        )
-                        w_date = ui.input(label="Or Specific Date (M/D/YY, Optional)", value="").classes("w-full")
-                        w_label = ui.input(label="Label", value="Friday Night").classes("w-full")
-                        win_inputs = [w_min, w_start, w_end, w_dow, w_date, w_label]
-
-                        def add_window():
-                            if not use_windows.value:
-                                ui.notify("Enable Extra Windows First", type="warning")
-                                return
-                            try:
-                                mn = int((w_min.value or "1").strip())
-                            except ValueError:
-                                ui.notify("Min Officers Must Be A Number", type="negative")
-                                return
-                            start = (w_start.value or "").strip()
-                            end = (w_end.value or "").strip()
-                            if not start or not end:
-                                ui.notify("Start And End Times Required", type="negative")
-                                return
-                            day_name = (w_dow.value or "Any Day").strip()
-                            weekday = _DOW_NAME_TO_WEEKDAY.get(day_name)
-                            specific_iso = None
-                            raw_d = (w_date.value or "").strip()
-                            if raw_d:
-                                try:
-                                    specific_iso = storage_date_str(parse_date(raw_d))
-                                except Exception:
-                                    ui.notify("Date Must Be M/D/YY", type="negative")
-                                    return
-                            state["windows"].append(
-                                {
-                                    "min_officers": mn,
-                                    "start_time": start,
-                                    "end_time": end,
-                                    "weekday": weekday if not specific_iso else None,
-                                    "specific_date": specific_iso,
-                                    "label": (w_label.value or "").strip() or "Window",
-                                    "enabled": True,
-                                }
-                            )
-                            _refresh_win_list()
-                            ui.notify(f"Window Added ({day_name})", type="positive")
-
-                        def load_dept_windows():
-                            try:
-                                from logic import list_coverage_windows
-
-                                n = 0
-                                for row in list_coverage_windows() or []:
-                                    if row.get("enabled") is False:
-                                        continue
-                                    state["windows"].append(
-                                        {
-                                            "min_officers": row.get("min_officers") or 1,
-                                            "start_time": row.get("start_time"),
-                                            "end_time": row.get("end_time"),
-                                            "weekday": row.get("weekday"),
-                                            "specific_date": row.get("specific_date"),
-                                            "label": row.get("label") or "Window",
-                                            "enabled": True,
-                                        }
-                                    )
-                                    n += 1
-                                _refresh_win_list()
-                                ui.notify(f"Loaded {n} Department Window(s)", type="info")
-                            except Exception as exc:
-                                ui.notify(f"Could Not Load: {exc}", type="negative")
-
-                        def apply_window_template(tid: str):
-                            wins = get_window_template(tid)
-                            if not wins:
-                                ui.notify("Unknown template", type="warning")
-                                return
-                            use_windows.value = True
-                            state["windows"] = list(wins)
-                            _refresh_win_list()
-                            ui.notify(f"Loaded window template ({len(wins)})", type="positive")
-
-                        with ui.row().classes("gap-2 flex-wrap q-mt-sm"):
-                            btn_add_win = (
-                                ui.button("Add Window", on_click=add_window)
-                                .classes("btn-primary")
-                                .props("no-caps unelevated dense")
-                            )
-                            btn_load_win = (
-                                ui.button("Load From Operations", on_click=load_dept_windows)
-                                .classes("btn-ghost")
-                                .props("no-caps outline dense")
-                            )
-                            for tmpl in list_window_templates():
-                                tid = tmpl["id"]
-                                ui.button(
-                                    tmpl["label"][:28],
-                                    on_click=lambda t=tid: apply_window_template(t),
-                                ).classes("btn-ghost").props("no-caps outline dense")
-                            win_inputs.extend([btn_add_win, btn_load_win])
-
-                    def _sync_win_enabled(e=None):
-                        _set_enabled(win_inputs, bool(use_windows.value))
-
-                    use_windows.on_value_change(_sync_win_enabled)
-                    # No auto-seeded windows — only user-added or last-saved form.
+                ui_elements = render_options_panel(
+                    state,
+                    _placeholder_rot,
+                    lambda: _persist_form(),
+                    lambda: _refresh_space_estimate(),
+                    lambda *args, **kwargs: _show_constraint_suggestions(*args, **kwargs),
+                )
+                use_start_date = ui_elements["use_start_date"]
+                sim_start_date = ui_elements["sim_start_date"]
+                use_rotation = ui_elements["use_rotation"]
+                rotation = ui_elements["rotation"]
+                use_officers = ui_elements["use_officers"]
+                officers = ui_elements["officers"]
+                officers_range_lo = ui_elements["officers_range_lo"]
+                officers_range_hi = ui_elements["officers_range_hi"]
+                use_length = ui_elements["use_length"]
+                length = ui_elements["length"]
+                use_annual = ui_elements["use_annual"]
+                annual = ui_elements["annual"]
+                annual_var = ui_elements["annual_var"]
+                use_starts = ui_elements["use_starts"]
+                starts = ui_elements["starts"]
+                use_min_ps = ui_elements["use_min_ps"]
+                min_ps = ui_elements["min_ps"]
+                use_247 = ui_elements["use_247"]
+                cov247 = ui_elements["cov247"]
+                use_style = ui_elements["use_style"]
+                rot_style = ui_elements["rot_style"]
+                multi_catalog = ui_elements["multi_catalog"]
+                variations = ui_elements["variations"]
+                use_nearby = ui_elements["use_nearby"]
+                nearby_hops = ui_elements["nearby_hops"]
+                allow_offday = ui_elements["allow_offday"]
+                use_certs = ui_elements["use_certs"]
+                cert_codes = ui_elements["cert_codes"]
+                use_fatigue = ui_elements["use_fatigue"]
+                min_rest = ui_elements["min_rest"]
+                max_consec = ui_elements["max_consec"]
+                use_flsa = ui_elements["use_flsa"]
+                flsa_days = ui_elements["flsa_days"]
+                use_windows = ui_elements["use_windows"]
+                _refresh_win_list = ui_elements["_refresh_win_list"]
+                hint_rotation = ui_elements["hint_rotation"]
+                hint_officers = ui_elements["hint_officers"]
+                hint_length = ui_elements["hint_length"]
+                hint_starts = ui_elements["hint_starts"]
+                hint_style = ui_elements["hint_style"]
+                win_inputs = ui_elements["win_inputs"]
 
             def load_defaults():
                 """Optional: pull current roster/dept numbers into form (user action only)."""
@@ -1825,331 +1289,22 @@ def render_simulator() -> None:
                     )
 
         # ── Step 4 · Publish ───────────────────────────────────────────────
-        step4 = ui.element("div").classes("w-full").style("display:none")
+        step4, step4_elements = render_publish_panel(state, go_step)
         step_panels[4] = step4
-        with step4:
-            with ui.element("div").classes("sim-publish-hero"):
-                ui.html(
-                    '<div class="sim-section-title">Publish plan</div>',
-                    sanitize=False,
-                )
-                ui.label(
-                    "Apply the selected coverage option as a monthly schedule. Preview first if you want a dry run."
-                ).style(_HINT)
-            with panel("Publish as monthly schedule"):
-                rec = recommend_implement_dates()
-                rec_raw = rec.get("recommended_date") or ""
-                try:
-                    rec_date = format_date(rec_raw) if rec_raw else ""
-                except Exception:
-                    rec_date = rec_raw
-                ui.label(f"Recommended start: {rec.get('recommended_label') or ''} ({rec.get('reason', '')})").style(
-                    "color:#D6E6FF;font-size:0.9rem"
-                )
-                impl_date = ui.input(label="Implement start date (M/D/YY)", value=rec_date).classes("w-full")
-                with ui.row().classes("gap-2 flex-wrap q-mt-sm"):
-                    for opt in rec.get("options") or []:
-                        d = opt.get("date") or ""
-                        try:
-                            d_disp = format_date(d) if d else d
-                        except Exception:
-                            d_disp = d
-                        lab = (
-                            "★ " + (opt.get("label") or d_disp)
-                            if opt.get("recommended")
-                            else (opt.get("label") or d_disp)
-                        )
 
-                        def _pick(date_val=d_disp):
-                            impl_date.value = date_val
-
-                        ui.button(lab, on_click=_pick).classes("btn-ghost").props("no-caps outline dense")
-                apply_officers = ui.checkbox("Update officer home shifts from plan", value=False)
-                force_regen = ui.checkbox("Regenerate monthly if already published", value=True)
-                save_defaults = ui.checkbox("Save as schedule builder defaults", value=True)
-
-            ui.html(
-                '<div class="sim-section-title" style="margin-top:12px">Action log</div>',
-                sanitize=False,
-            )
-            action_log = ui.element("div").classes("sim-result-panel").style("min-height:5rem;max-height:12rem;")
-
-            def set_action_log(text: str, *, ok: bool | None = None):
-                action_log.clear()
-                color = "#E8EDF4"
-                if ok is True:
-                    color = "#86efac"
-                elif ok is False:
-                    color = "#fca5a5"
-                with action_log:
-                    ui.label(text or "—").style(f"color:{color};white-space:pre-wrap;line-height:1.45")
-
-            set_action_log("No actions yet.")
-
-            with ui.row().classes("gap-2 q-mt-md flex-wrap"):
-                btn_impl = ui.button("Publish as monthly").classes("btn-primary").props("no-caps unelevated")
-                btn_preview = ui.button("Preview publish (dry run)").classes("btn-ghost").props("no-caps outline dense")
-                btn_apply_stay = ui.button("Apply option & stay").classes("btn-ghost").props("no-caps outline dense")
-                btn_apply_pub = (
-                    ui.button("Apply option & go publish").classes("btn-ghost").props("no-caps outline dense")
-                )
-                btn_save = ui.button("Save scenario").classes("btn-ghost").props("no-caps outline dense")
-                btn_csv = ui.button("Export CSV").classes("btn-ghost").props("no-caps outline dense")
-                btn_bid = None
-                if session.can("shift_bids.manage"):
-                    btn_bid = ui.button("Create Bid Draft").classes("btn-ghost").props("no-caps outline dense")
-                ui.button("Back To Coverage", on_click=lambda: go_step(2)).classes("btn-ghost").props("no-caps outline")
-                ui.button("Back To Manual", on_click=lambda: go_step(3)).classes("btn-ghost").props("no-caps outline")
-
-                # Pay-period preview strip
-                try:
-                    pp = recommend_pay_period_preview((impl_date.value or "").strip())
-                    ui.label(pp.get("message") or "Pay period preview").style(
-                        "color:#9AABC4;font-size:0.85rem;margin-top:8px"
-                    )
-                except Exception:
-                    pass
-
-        # ── Logic helpers ──────────────────────────────────────────────────
-
-        def _parse_starts(raw: str | None = None):
-            text = raw if raw is not None else (starts.value or "")
-            return [s.strip() for s in text.replace(";", ",").split(",") if s.strip()]
-
-        def _style_value() -> str:
-            if not use_style.value:
-                return ""
-            return "rotating" if (rot_style.value or "").lower().startswith("rotat") else "fixed"
-
-        def _var_list() -> list:
-            if not use_style.value:
-                return []
-            return [p.strip() for p in (variations.value or "").split("|") if p.strip()]
-
-        def _constraint_context() -> dict:
-            """Currently locked form values for suggestion engine."""
-            return {
-                "use_rotation": bool(use_rotation.value),
-                "rotation": getattr(rotation, "value", None),
-                "use_officers": bool(use_officers.value),
-                "officers": officers.value,
-                "use_length": bool(use_length.value),
-                "length": length.value,
-                "use_annual": bool(use_annual.value),
-                "annual": annual.value,
-                "annual_var": annual_var.value,
-                "use_starts": bool(use_starts.value),
-                "starts": starts.value,
-                "use_min_ps": bool(use_min_ps.value),
-                "min_ps": min_ps.value,
-                "use_247": bool(use_247.value),
-                "cov247": cov247.value,
-                "use_style": bool(use_style.value),
-                "variations": variations.value,
-                "rot_style": getattr(rot_style, "value", None),
-                "use_windows": bool(use_windows.value),
-                "windows": list(state.get("windows") or []),
-                "use_nearby": bool(use_nearby.value),
-                "nearby_hops": nearby_hops.value,
-                "allow_offday": bool(allow_offday.value),
-                "use_flsa": bool(use_flsa.value),
-                "flsa_days": flsa_days.value,
-                "use_fatigue": bool(use_fatigue.value),
-                "min_rest": min_rest.value,
-                "max_consec": max_consec.value,
-                "use_certs": bool(use_certs.value),
-                "required_certs": (cert_codes.value if use_certs.value else ""),
-            }
-
-        def _apply_suggest_values(values: dict) -> None:
-            if not values:
-                return
-
-            def _has_value(*keys: str) -> bool:
-                # A lock may only be restored as locked if every value it needs
-                # actually came back with it — otherwise the form reloads into a
-                # stuck "locked but empty" state that blocks Find Best with a
-                # silent "Fix numbers" error until the user notices and manually
-                # unlocks it.
-                for k in keys:
-                    v = values.get(k)
-                    if v is None or (isinstance(v, str) and not v.strip()):
-                        return False
-                return True
-
-            state["suppress_suggest"] = True
-            try:
-                if values.get("rotation"):
-                    try:
-                        rotation.value = values["rotation"]
-                    except Exception:
-                        pass
-                if "use_rotation" in values:
-                    use_rotation.value = bool(values["use_rotation"]) and _has_value("rotation")
-                    _set_enabled([rotation], bool(use_rotation.value))
-                if values.get("officers") is not None:
-                    officers.value = str(values["officers"])
-                if "use_officers" in values:
-                    use_officers.value = bool(values["use_officers"]) and _has_value("officers")
-                    _set_enabled([officers], bool(use_officers.value))
-                if values.get("length") is not None:
-                    length.value = str(values["length"])
-                if "use_length" in values:
-                    use_length.value = bool(values["use_length"]) and _has_value("length")
-                    _set_enabled([length], bool(use_length.value))
-                if values.get("annual") is not None:
-                    annual.value = str(values["annual"])
-                if values.get("annual_var") is not None:
-                    annual_var.value = str(values["annual_var"])
-                if "use_annual" in values:
-                    use_annual.value = bool(values["use_annual"]) and _has_value("annual")
-                    _set_enabled([annual, annual_var], bool(use_annual.value))
-                if values.get("starts") is not None:
-                    starts.value = str(values["starts"])
-                if "use_starts" in values:
-                    use_starts.value = bool(values["use_starts"]) and _has_value("starts")
-                    _set_enabled([starts], bool(use_starts.value))
-                if values.get("min_ps") is not None:
-                    min_ps.value = str(values["min_ps"])
-                if "use_min_ps" in values:
-                    use_min_ps.value = bool(values["use_min_ps"]) and _has_value("min_ps")
-                    _set_enabled([min_ps], bool(use_min_ps.value))
-                if values.get("cov247") is not None:
-                    cov247.value = str(values["cov247"])
-                if "use_247" in values:
-                    use_247.value = bool(values["use_247"]) and _has_value("cov247")
-                    _set_enabled([cov247], bool(use_247.value))
-                if values.get("variations") is not None:
-                    variations.value = str(values["variations"])
-                if values.get("rot_style"):
-                    try:
-                        rot_style.value = values["rot_style"]
-                    except Exception:
-                        pass
-                if "use_style" in values:
-                    use_style.value = bool(values["use_style"]) and _has_value("variations")
-                    _set_enabled([rot_style, multi_catalog, variations], bool(use_style.value))
-                if "use_windows" in values:
-                    use_windows.value = bool(values["use_windows"])
-                if "windows" in values:
-                    state["windows"] = list(values.get("windows") or [])
-                    try:
-                        _refresh_win_list()
-                    except Exception:
-                        pass
-                if values.get("nearby_hops") is not None:
-                    nearby_hops.value = str(values["nearby_hops"])
-                if "use_nearby" in values:
-                    use_nearby.value = bool(values["use_nearby"]) and _has_value("nearby_hops")
-                    _set_enabled([nearby_hops], bool(use_nearby.value))
-                if "allow_offday" in values:
-                    allow_offday.value = bool(values["allow_offday"])
-                if values.get("flsa_days") is not None:
-                    flsa_days.value = str(values["flsa_days"])
-                if "use_flsa" in values:
-                    use_flsa.value = bool(values["use_flsa"])
-                    _set_enabled([flsa_days], bool(use_flsa.value))
-
-                try:
-                    _refresh_space_estimate()
-                except Exception:
-                    pass
-                _persist_form()
-            finally:
-                state["suppress_suggest"] = False
-
-        def _show_constraint_suggestions(field: str, *, force: bool = False) -> None:
-            if state.get("restoring_form") or state.get("suppress_suggest"):
-                return
-            ctx = _constraint_context()
-            # Only guide when other constraints already locked (or forced Help)
-            field_flags = {
-                "rotation": "use_rotation",
-                "officers": "use_officers",
-                "length": "use_length",
-                "annual": "use_annual",
-                "starts": "use_starts",
-                "min_ps": "use_min_ps",
-                "coverage_247": "use_247",
-                "variations": "use_style",
-                "style": "use_style",
-                "windows": "use_windows",
-                "nearby": "use_nearby",
-                "flsa": "use_flsa",
-                "offday": "allow_offday",
-            }
-            self_flag = field_flags.get((field or "").lower())
-            other_flags = (
-                "use_rotation",
-                "use_officers",
-                "use_length",
-                "use_annual",
-                "use_starts",
-                "use_min_ps",
-                "use_247",
-                "use_style",
-                "use_windows",
-                "use_nearby",
-                "use_flsa",
-                "allow_offday",
-            )
-            other_locked = any(bool(ctx.get(k)) for k in other_flags if k != self_flag)
-            if not force and not other_locked:
-                return
-            # Suggest from other locks; temporarily clear self so engine ignores empty new field
-            ctx_for = dict(ctx)
-            if self_flag:
-                ctx_for[self_flag] = False
-            sugg = suggest_constraint(field, ctx_for)
-            opts = list(sugg.get("options") or [])
-            if not opts and not force:
-                return
-
-            with (
-                ui.dialog() as dlg,
-                ui.card()
-                .classes("q-pa-md")
-                .style(
-                    "min-width:22rem;max-width:34rem;background:#0C1A2E;color:#E8EDF4;"
-                    "border:1px solid rgba(91,141,239,0.45)"
-                ),
-            ):
-                ui.label(sugg.get("title") or "Suggestions").style("font-weight:700;font-size:1.1rem;color:#F8FAFC")
-                ui.label(sugg.get("explanation") or "").style(
-                    "color:#9AABC4;font-size:0.88rem;margin:6px 0 10px;white-space:pre-wrap"
-                )
-                ui.label(sugg.get("custom_hint") or "").style("color:#86efac;font-size:0.82rem;margin-bottom:10px")
-                for opt in opts:
-                    lab = opt.get("label") or "Option"
-                    if opt.get("recommended"):
-                        lab = "★ " + lab
-                    why = opt.get("why") or ""
-                    with ui.row().classes("w-full items-start gap-2 q-mb-sm flex-wrap"):
-                        with ui.column().classes("flex-1"):
-                            ui.label(lab).style("color:#E8EDF4;font-weight:600;font-size:0.92rem")
-                            if why:
-                                ui.label(why).style("color:#9AABC4;font-size:0.8rem;white-space:pre-wrap")
-
-                        def _pick(vals=opt.get("values") or {}):
-                            _apply_suggest_values(vals)
-                            dlg.close()
-                            ui.notify("Suggestion applied — edit freely anytime", type="positive")
-
-                        ui.button("Use", on_click=_pick).classes("btn-primary").props("dense no-caps unelevated")
-                with ui.row().classes("gap-2 q-mt-sm flex-wrap"):
-                    ui.button(
-                        "Enter My Own Value",
-                        on_click=dlg.close,
-                    ).classes("btn-ghost").props("no-caps outline")
-                    ui.button(
-                        "Why These?",
-                        on_click=lambda: ui.notify(
-                            sugg.get("explanation") or "Based on locked constraints",
-                            type="info",
-                            multi_line=True,
-                        ),
-                    ).classes("btn-ghost").props("no-caps outline")
-            dlg.open()
+        # Extract elements needed below
+        impl_date = step4_elements["impl_date"]
+        apply_officers = step4_elements["apply_officers"]
+        force_regen = step4_elements["force_regen"]
+        save_defaults = step4_elements["save_defaults"]
+        set_action_log = step4_elements["set_action_log"]
+        btn_impl = step4_elements["btn_impl"]
+        btn_preview = step4_elements["btn_preview"]
+        btn_apply_stay = step4_elements["btn_apply_stay"]
+        btn_apply_pub = step4_elements["btn_apply_pub"]
+        btn_save = step4_elements["btn_save"]
+        btn_csv = step4_elements["btn_csv"]
+        btn_bid = step4_elements["btn_bid"]
 
         def _on_lock_with_suggest(field: str, enable_fn, widget_lock_flag):
             """enable_fn enables inputs; suggest when user turns lock ON."""
@@ -2353,6 +1508,10 @@ def render_simulator() -> None:
             except ValueError as exc:
                 return None, None, None, None, None, None, None, str(exc)
 
+        def _parse_starts() -> list:
+            text = starts.value or ""
+            return [s.strip() for s in text.replace(";", ",").split(",") if s.strip()]
+
         def _parse_nearby_hops() -> int:
             if not bool(use_nearby.value):
                 return 0
@@ -2363,6 +1522,29 @@ def render_simulator() -> None:
                 return max(0, min(6, int(raw)))
             except (TypeError, ValueError):
                 return 0
+
+        def _style_value() -> str:
+            if not use_style.value:
+                return ""
+            return "rotating" if (rot_style.value or "").lower().startswith("rotat") else "fixed"
+
+        def _var_sets() -> list:
+            """All manually-entered rotation sets — one per non-empty line, each
+            line's patterns pipe-separated. Every set is tried by the search."""
+            if not use_style.value:
+                return []
+            sets = []
+            for line in (variations.value or "").splitlines():
+                parts = [p.strip() for p in line.split("|") if p.strip()]
+                if parts:
+                    sets.append(parts)
+            return sets
+
+        def _var_list() -> list:
+            """The first/only rotation set — for call sites that re-simulate one
+            exact scenario (manual editor, publish, applying a chosen result)."""
+            sets = _var_sets()
+            return sets[0] if sets else []
 
         def _baseline_kwargs() -> dict:
             n, ln, an, av, mp, c247, fd, err = _nums()
@@ -2426,7 +1608,19 @@ def render_simulator() -> None:
                 # controls length-grid density below (a genuinely continuous
                 # dimension), but headcount is a small, cheap-to-enumerate
                 # integer axis, so both depths search it exhaustively.
-                off_counts = list(range(4, 21))
+                # Range is user-editable (Range Min/Max) — no longer fixed to
+                # 4-20; falls back to that default only if the fields are blank
+                # or invalid.
+                try:
+                    lo = int((officers_range_lo.value or "4").strip())
+                except ValueError:
+                    lo = 4
+                try:
+                    hi = int((officers_range_hi.value or "20").strip())
+                except ValueError:
+                    hi = 20
+                lo, hi = max(1, min(lo, hi)), max(lo, hi)
+                off_counts = list(range(lo, hi + 1))
             # Unselected shift length must search the full 8-12.5h half-hour
             # grid regardless of depth (AGENTS.md: "if off, all shift lengths
             # in range of 8 and 12.5 hours in .5 hour increments should be
@@ -2447,7 +1641,7 @@ def render_simulator() -> None:
                 "free_starts": free_starts,
                 "free_lengths": free_lengths,
                 "free_officer_counts": free_officers,
-                "free_variations": not use_style.value or not _var_list(),
+                "free_variations": not use_style.value or not _var_sets(),
                 # Always 28-day hard eval — shorter windows can false-green lean N
                 "simulation_days": 56,
                 "coverage_247": int(c247) if use_247.value and c247 is not None else 0,
@@ -2461,6 +1655,7 @@ def render_simulator() -> None:
                 "require_hard_ok": require_hard_ok,
                 "rotation_style": _style_value(),
                 "rotation_variations": _var_list(),
+                "rotation_variation_sets": _var_sets(),
                 "stagger_phases": True,
                 "nearby_start_hops": _parse_nearby_hops(),
                 "allow_offday_coverage": bool(allow_offday.value),
@@ -2855,6 +2050,231 @@ def render_simulator() -> None:
                     )
                     ui.button("Soften & Search", on_click=_soften).classes("btn-ghost").props("no-caps outline")
                     ui.button("Close", on_click=_cancel).classes("btn-ghost").props("no-caps outline")
+            dlg.open()
+
+        def _constraint_context() -> dict:
+            """Currently locked form values for suggestion engine."""
+            return {
+                "use_rotation": bool(use_rotation.value),
+                "rotation": getattr(rotation, "value", None),
+                "use_officers": bool(use_officers.value),
+                "officers": officers.value,
+                "use_length": bool(use_length.value),
+                "length": length.value,
+                "use_annual": bool(use_annual.value),
+                "annual": annual.value,
+                "annual_var": annual_var.value,
+                "use_starts": bool(use_starts.value),
+                "starts": starts.value,
+                "use_min_ps": bool(use_min_ps.value),
+                "min_ps": min_ps.value,
+                "use_247": bool(use_247.value),
+                "cov247": cov247.value,
+                "use_style": bool(use_style.value),
+                "variations": variations.value,
+                "rot_style": getattr(rot_style, "value", None),
+                "use_windows": bool(use_windows.value),
+                "windows": list(state.get("windows") or []),
+                "use_nearby": bool(use_nearby.value),
+                "nearby_hops": nearby_hops.value,
+                "allow_offday": bool(allow_offday.value),
+                "use_flsa": bool(use_flsa.value),
+                "flsa_days": flsa_days.value,
+                "use_fatigue": bool(use_fatigue.value),
+                "min_rest": min_rest.value,
+                "max_consec": max_consec.value,
+                "use_certs": bool(use_certs.value),
+                "required_certs": (cert_codes.value if use_certs.value else ""),
+            }
+
+        def _apply_suggest_values(values: dict) -> None:
+            if not values:
+                return
+
+            def _has_value(*keys: str) -> bool:
+                # A lock may only be restored as locked if every value it needs
+                # actually came back with it — otherwise the form reloads into a
+                # stuck "locked but empty" state that blocks Find Best with a
+                # silent "Fix numbers" error until the user notices and manually
+                # unlocks it.
+                for k in keys:
+                    v = values.get(k)
+                    if v is None or (isinstance(v, str) and not v.strip()):
+                        return False
+                return True
+
+            state["suppress_suggest"] = True
+            try:
+                if values.get("rotation"):
+                    try:
+                        rotation.value = values["rotation"]
+                    except Exception:
+                        pass
+                if "use_rotation" in values:
+                    use_rotation.value = bool(values["use_rotation"]) and _has_value("rotation")
+                    _set_enabled([rotation], bool(use_rotation.value))
+                if values.get("officers") is not None:
+                    officers.value = str(values["officers"])
+                if "use_officers" in values:
+                    use_officers.value = bool(values["use_officers"]) and _has_value("officers")
+                    _set_enabled([officers], bool(use_officers.value))
+                if values.get("length") is not None:
+                    length.value = str(values["length"])
+                if "use_length" in values:
+                    use_length.value = bool(values["use_length"]) and _has_value("length")
+                    _set_enabled([length], bool(use_length.value))
+                if values.get("annual") is not None:
+                    annual.value = str(values["annual"])
+                if values.get("annual_var") is not None:
+                    annual_var.value = str(values["annual_var"])
+                if "use_annual" in values:
+                    use_annual.value = bool(values["use_annual"]) and _has_value("annual")
+                    _set_enabled([annual, annual_var], bool(use_annual.value))
+                if values.get("starts") is not None:
+                    starts.value = str(values["starts"])
+                if "use_starts" in values:
+                    use_starts.value = bool(values["use_starts"]) and _has_value("starts")
+                    _set_enabled([starts], bool(use_starts.value))
+                if values.get("min_ps") is not None:
+                    min_ps.value = str(values["min_ps"])
+                if "use_min_ps" in values:
+                    use_min_ps.value = bool(values["use_min_ps"]) and _has_value("min_ps")
+                    _set_enabled([min_ps], bool(use_min_ps.value))
+                if values.get("cov247") is not None:
+                    cov247.value = str(values["cov247"])
+                if "use_247" in values:
+                    use_247.value = bool(values["use_247"]) and _has_value("cov247")
+                    _set_enabled([cov247], bool(use_247.value))
+                if values.get("variations") is not None:
+                    variations.value = str(values["variations"])
+                if values.get("rot_style"):
+                    try:
+                        rot_style.value = values["rot_style"]
+                    except Exception:
+                        pass
+                if "use_style" in values:
+                    use_style.value = bool(values["use_style"]) and _has_value("variations")
+                    _set_enabled([rot_style, multi_catalog, variations], bool(use_style.value))
+                if "use_windows" in values:
+                    use_windows.value = bool(values["use_windows"])
+                if "windows" in values:
+                    state["windows"] = list(values.get("windows") or [])
+                    try:
+                        _refresh_win_list()
+                    except Exception:
+                        pass
+                if values.get("nearby_hops") is not None:
+                    nearby_hops.value = str(values["nearby_hops"])
+                if "use_nearby" in values:
+                    use_nearby.value = bool(values["use_nearby"]) and _has_value("nearby_hops")
+                    _set_enabled([nearby_hops], bool(use_nearby.value))
+                if "allow_offday" in values:
+                    allow_offday.value = bool(values["allow_offday"])
+                if values.get("flsa_days") is not None:
+                    flsa_days.value = str(values["flsa_days"])
+                if "use_flsa" in values:
+                    use_flsa.value = bool(values["use_flsa"])
+                    _set_enabled([flsa_days], bool(use_flsa.value))
+
+                try:
+                    _refresh_space_estimate()
+                except Exception:
+                    pass
+                _persist_form()
+            finally:
+                state["suppress_suggest"] = False
+
+        def _show_constraint_suggestions(field: str, *, force: bool = False) -> None:
+            if state.get("restoring_form") or state.get("suppress_suggest"):
+                return
+            ctx = _constraint_context()
+            # Only guide when other constraints already locked (or forced Help)
+            field_flags = {
+                "rotation": "use_rotation",
+                "officers": "use_officers",
+                "length": "use_length",
+                "annual": "use_annual",
+                "starts": "use_starts",
+                "min_ps": "use_min_ps",
+                "coverage_247": "use_247",
+                "variations": "use_style",
+                "style": "use_style",
+                "windows": "use_windows",
+                "nearby": "use_nearby",
+                "flsa": "use_flsa",
+                "offday": "allow_offday",
+            }
+            self_flag = field_flags.get((field or "").lower())
+            other_flags = (
+                "use_rotation",
+                "use_officers",
+                "use_length",
+                "use_annual",
+                "use_starts",
+                "use_min_ps",
+                "use_247",
+                "use_style",
+                "use_windows",
+                "use_nearby",
+                "use_flsa",
+                "allow_offday",
+            )
+            other_locked = any(bool(ctx.get(k)) for k in other_flags if k != self_flag)
+            if not force and not other_locked:
+                return
+            # Suggest from other locks; temporarily clear self so engine ignores empty new field
+            ctx_for = dict(ctx)
+            if self_flag:
+                ctx_for[self_flag] = False
+            sugg = suggest_constraint(field, ctx_for)
+            opts = list(sugg.get("options") or [])
+            if not opts and not force:
+                return
+
+            with (
+                ui.dialog() as dlg,
+                ui.card()
+                .classes("q-pa-md")
+                .style(
+                    "min-width:22rem;max-width:34rem;background:#0C1A2E;color:#E8EDF4;"
+                    "border:1px solid rgba(91,141,239,0.45)"
+                ),
+            ):
+                ui.label(sugg.get("title") or "Suggestions").style("font-weight:700;font-size:1.1rem;color:#F8FAFC")
+                ui.label(sugg.get("explanation") or "").style(
+                    "color:#9AABC4;font-size:0.88rem;margin:6px 0 10px;white-space:pre-wrap"
+                )
+                ui.label(sugg.get("custom_hint") or "").style("color:#86efac;font-size:0.82rem;margin-bottom:10px")
+                for opt in opts:
+                    lab = opt.get("label") or "Option"
+                    if opt.get("recommended"):
+                        lab = "★ " + lab
+                    why = opt.get("why") or ""
+                    with ui.row().classes("w-full items-start gap-2 q-mb-sm flex-wrap"):
+                        with ui.column().classes("flex-1"):
+                            ui.label(lab).style("color:#E8EDF4;font-weight:600;font-size:0.92rem")
+                            if why:
+                                ui.label(why).style("color:#9AABC4;font-size:0.8rem;white-space:pre-wrap")
+
+                        def _pick(vals=opt.get("values") or {}):
+                            _apply_suggest_values(vals)
+                            dlg.close()
+                            ui.notify("Suggestion applied — edit freely anytime", type="positive")
+
+                        ui.button("Use", on_click=_pick).classes("btn-primary").props("dense no-caps unelevated")
+                with ui.row().classes("gap-2 q-mt-sm flex-wrap"):
+                    ui.button(
+                        "Enter My Own Value",
+                        on_click=dlg.close,
+                    ).classes("btn-ghost").props("no-caps outline")
+                    ui.button(
+                        "Why These?",
+                        on_click=lambda: ui.notify(
+                            sugg.get("explanation") or "Based on locked constraints",
+                            type="info",
+                            multi_line=True,
+                        ),
+                    ).classes("btn-ghost").props("no-caps outline")
             dlg.open()
 
         def _precheck_conflicts(*, force_dialog: bool = True) -> bool:
@@ -3762,79 +3182,15 @@ def render_simulator() -> None:
             r = pin_option(row)
             ui.notify(f"Pinned: {r.get('label')}", type="positive")
 
-        def show_pins():
-            pins = list_pinned_options()
-            with (
-                ui.dialog() as dlg,
-                ui.card().classes("q-pa-md").style("min-width:22rem;max-width:40rem;background:#0C1A2E;color:#E8EDF4"),
-            ):
-                ui.label("Pinned Options").style("font-weight:700;font-size:1.05rem")
-                if not pins:
-                    ui.label("None yet.").style("color:#9AABC4")
-                for i, p in enumerate(pins[:15]):
-                    row = p.get("row") or {}
-                    lab = f"{p.get('label')} · N={row.get('num_officers')} · {p.get('pinned_at')}"
-
-                    def _load_pin(r=row):
-                        state["selected_row"] = r
-                        _apply_ranked_option(r)
-                        dlg.close()
-                        ui.notify("Pinned option loaded", type="positive")
-
-                    def _drop(idx=i):
-                        unpin_option(idx)
-                        dlg.close()
-                        ui.notify("Unpinned", type="info")
-
-                    with ui.row().classes("gap-2 items-center flex-wrap q-mt-xs"):
-                        ui.button(lab[:80], on_click=_load_pin).classes("btn-ghost").props("no-caps outline dense")
-                        ui.button("×", on_click=_drop).classes("btn-ghost").props("dense flat")
-                ui.button("Close", on_click=dlg.close).classes("btn-ghost q-mt-md").props("no-caps outline")
-            dlg.open()
-
-        def do_heat():
-            res = state.get("result") or {}
-            from logic.optimizer_features import shift_coverage_heatmap
-
-            hm = shift_coverage_heatmap(res)
-            if not hm.get("success"):
-                set_plan("Heatmap unavailable: " + str(hm.get("message")))
-                return
-
-            def _render():
-                plan_box.clear()
-                with plan_box:
-                    ui.label("Shift Coverage Heatmap").style(
-                        "font-size: 1.2rem; font-weight: bold; color: #F8FAFC; margin-bottom: 8px;"
-                    )
-                    with ui.row().classes("gap-1 items-start"):
-                        matrix = hm.get("matrix", [])
-                        labels = hm.get("day_labels", [])
-                        for wd, day_label in enumerate(labels):
-                            if wd >= len(matrix):
-                                continue
-                            with ui.column().classes("gap-0"):
-                                ui.label(day_label).style(
-                                    "font-size: 0.8rem; font-weight: bold; color: #9AABC4; text-align: center;"
-                                )
-                                for val in matrix[wd]:
-                                    color = "#3B7DD8" if val >= 2 else ("#5b8def" if val >= 1 else "#0f172a")
-                                    if val < hm.get("coverage_threshold", 1):
-                                        color = "#ef4444"
-                                    ui.element("div").style(
-                                        f"width: 24px; height: 10px; background-color: {color}; margin-bottom: 1px;"
-                                    )
-                                    ui.tooltip(f"{val} officers")
-                    ui.label(hm.get("message", "")).style("color: #E8EDF4; margin-top: 8px;")
-
-            _ui_safe(_render)
-            ui.notify("Heat grid visual ready", type="info")
-
-        def do_window_drill():
-            res = state.get("result") or state.get("opt_result") or {}
-            lines = explain_window_failures(res)
-            set_why("\n".join(lines))
-            ui.notify("Window drill-down in Why panel", type="info")
+        tools = render_results_panel_tools(
+            state, _apply_ranked_option, lambda data: _apply_form_payload(data), set_plan, plan_box, _ui_safe, set_why
+        )
+        show_search_history = tools["show_search_history"]
+        show_pins = tools["show_pins"]
+        show_slots = tools["show_slots"]
+        do_heat = tools["do_heat"]
+        show_weekend_heat = tools["show_weekend_heat"]
+        do_window_drill = tools["do_window_drill"]
 
         def do_share():
             res = state.get("opt_result") or {}
@@ -3862,51 +3218,6 @@ def render_simulator() -> None:
                 ranked_row=state.get("selected_row"),
             )
             ui.notify(f"Saved scenario slot {r.get('slot')}", type="positive")
-
-        def show_slots():
-            data = load_scenario_slots()
-            with (
-                ui.dialog() as dlg,
-                ui.card().classes("q-pa-md").style("min-width:22rem;background:#0C1A2E;color:#E8EDF4"),
-            ):
-                ui.label("Multi-Scenario A / B / C").style("font-weight:700")
-                for letter in ("A", "B", "C"):
-                    slot = data.get(letter) or {}
-                    if not slot:
-                        ui.label(f"{letter}: empty").style("color:#7A8FA8;margin-top:6px")
-                        continue
-                    ui.label(
-                        f"{letter}: {slot.get('saved_at')} · "
-                        f"{'OK' if slot.get('result_success') else '—'} · "
-                        f"{(slot.get('message') or '')[:50]}"
-                    ).style("color:#D6E6FF;margin-top:6px")
-
-                    def _load(s=slot):
-                        row = s.get("ranked_row") or s.get("best")
-                        if row:
-                            _apply_ranked_option(row)
-                        cfg = s.get("config") or {}
-                        if cfg:
-                            _apply_form_payload(
-                                {
-                                    "officers": cfg.get("num_officers"),
-                                    "length": cfg.get("shift_length_hours"),
-                                    "annual": cfg.get("annual_hours_target"),
-                                    "starts": ", ".join(cfg.get("shift_starts") or [])
-                                    if isinstance(cfg.get("shift_starts"), list)
-                                    else cfg.get("shift_starts"),
-                                    "variations": " | ".join(cfg.get("rotation_variations") or [])
-                                    if isinstance(cfg.get("rotation_variations"), list)
-                                    else cfg.get("rotation_variations"),
-                                    "windows": cfg.get("extra_windows"),
-                                }
-                            )
-                        dlg.close()
-                        ui.notify("Slot loaded", type="positive")
-
-                    ui.button(f"Load {letter}", on_click=_load).classes("btn-ghost").props("no-caps outline dense")
-                ui.button("Close", on_click=dlg.close).classes("btn-ghost q-mt-md").props("no-caps outline")
-            dlg.open()
 
         def lock_selected_seed():
             row = state.get("selected_row")
@@ -3956,6 +3267,8 @@ def render_simulator() -> None:
         def _form_payload() -> dict:
             return {
                 "officers": officers.value,
+                "officers_range_lo": officers_range_lo.value,
+                "officers_range_hi": officers_range_hi.value,
                 "length": length.value,
                 "annual": annual.value,
                 "annual_var": annual_var.value,
@@ -4014,6 +3327,10 @@ def render_simulator() -> None:
 
             if data.get("officers") is not None:
                 officers.value = str(data["officers"])
+            if data.get("officers_range_lo") is not None:
+                officers_range_lo.value = str(data["officers_range_lo"])
+            if data.get("officers_range_hi") is not None:
+                officers_range_hi.value = str(data["officers_range_hi"])
             if data.get("length") is not None:
                 length.value = str(data["length"])
             if data.get("annual") is not None:
@@ -4155,26 +3472,6 @@ def render_simulator() -> None:
             except Exception:
                 pass
 
-        def show_search_history():
-            rows = list_search_history(limit=12)
-            with (
-                ui.dialog() as dlg,
-                ui.card().classes("q-pa-md").style("min-width:22rem;max-width:40rem;background:#0C1A2E;color:#E8EDF4"),
-            ):
-                ui.label("Recent Optimizer Searches").style("font-weight:700;font-size:1.05rem;color:#F8FAFC")
-                if not rows:
-                    ui.label("No searches yet.").style("color:#9AABC4")
-                for row in rows:
-                    ui.label(
-                        f"{row.get('at')} · "
-                        f"{'OK' if row.get('success') else 'NO'} · "
-                        f"N={row.get('num_officers') or '—'} · "
-                        f"{row.get('wall_time_ms') or '—'}ms · "
-                        f"{(row.get('message') or '')[:60]}"
-                    ).style("color:#D6E6FF;font-size:0.85rem;margin-top:6px;white-space:pre-wrap")
-                ui.button("Close", on_click=dlg.close).classes("btn-ghost q-mt-md").props("no-caps outline")
-            dlg.open()
-
         def copy_summary():
             text = ""
             try:
@@ -4194,15 +3491,6 @@ def render_simulator() -> None:
                 # Fallback path for environments without clipboard API
                 set_why(text)
                 ui.notify("Summary shown in Why panel (clipboard unavailable)", type="info")
-
-        def show_weekend_heat():
-            res = state.get("result") or state.get("opt_result") or {}
-            if res.get("best") and not res.get("metrics"):
-                # use applied sim result when present
-                pass
-            lines = weekend_night_heat_lines(state.get("result") or res)
-            set_why("\n".join(lines))
-            ui.notify("Weekend heat in Why panel", type="info")
 
         def export_config():
             r = export_form_config_json(_form_payload())

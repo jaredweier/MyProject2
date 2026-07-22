@@ -110,7 +110,7 @@ def _officer_unavailable_on_date(officer_id: int, target_date: date) -> bool:
         (officer_id, date_str),
     )
     found = cursor.fetchone() is not None
-    conn.close()
+    pass  # conn.close() removed
     return found
 
 

@@ -16,6 +16,7 @@ from config import (
     is_high_risk_night,
 )
 from validators import format_date
+from validators_rules import validate_minimum_rest_gap
 
 try:
     from logic import rust_bridge
@@ -159,6 +160,20 @@ def _squad_working(rotation_type: str, squad: str, cycle_day: int, preset: Dict)
         return ((cycle_day - 1) % preset["cycle_length"]) < half
     offset = preset["cycle_length"] // preset.get("squads", 2)
     return ((cycle_day - 1 + offset) % preset["cycle_length"]) < half
+
+
+def _preset_annual_hours(rotation_type: str, squad: str, preset: Dict, shift_length_hours: float) -> float:
+    """Exact cycle-fraction annual-hours projection for a squad-preset rotation —
+    the preset equivalent of rotation_patterns.projected_annual_hours() for custom
+    multi-block patterns. Computed purely from the preset's repeating on/off cycle,
+    so it is independent of simulation_days/sim_start_date: starting the sim mid-year
+    (or any date) does not change the projection, since the schedule repeats
+    identically all year regardless of which day you started counting from."""
+    cycle = int(preset.get("cycle_length") or 14)
+    if cycle <= 0:
+        return 0.0
+    on_days = sum(1 for d in range(1, cycle + 1) if _squad_working(rotation_type, squad, d, preset))
+    return round((on_days / cycle) * 365.25 * shift_length_hours, 1)
 
 
 def _assign_officers(
@@ -987,6 +1002,7 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
     night_risk_gaps = 0
     total_gap_hours = 0
     day_assignments: List[Tuple[date, str, str]] = []
+    slot_assignments: Dict[int, List[Tuple[date, str, str]]] = {i: [] for i in range(len(slots))}
     per_slot_work_flags: List[List[bool]] = [[] for _ in slots]
     prev_day_starts: List[str] = []
     offday_coverage_total = 0
@@ -1057,17 +1073,19 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
         # Track used starts only (empty fixed templates are not gaps when flexible)
         used_counts: Dict[str, int] = {}
         today_starts: List[str] = []
-        for slot, (st, en) in zip(working_officers, day_bands):
+        for wi, (slot, (st, en)) in enumerate(zip(working_officers, day_bands)):
             used_counts[st] = used_counts.get(st, 0) + 1
             shift_counts[st] = shift_counts.get(st, 0) + 1
             day_assignments.append((target, st, en))
+            slot_assignments[working_indices[wi]].append((target, st, en))
             today_starts.append(st)
 
         # Off-day coverage: multi-block OFF officers can start at home/nearby when
         # work-day body count alone cannot staff min window / 24/7 floors.
         offday_adds = 0
         if getattr(config, "allow_offday_coverage", False) and custom_patterns and shift_templates:
-            off_slots = [slots[si] for si in range(len(slots)) if si not in working_indices]
+            off_slot_indices = [si for si in range(len(slots)) if si not in working_indices]
+            off_slots = [slots[si] for si in off_slot_indices]
             need_bodies = max(
                 int(config.coverage_247 or 0),
                 int(config.min_per_shift or 0),
@@ -1088,7 +1106,7 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
                 # Prefer dedicated 19:00-class starts for window
                 n_19 = sum(1 for s in today_starts if abs(_hhmm_to_min(s) - 19 * 60) <= 30)
                 short = max(short, win_min - n_19 if n_19 < win_min else 0)
-            for off_slot in off_slots:
+            for off_wi, off_slot in enumerate(off_slots):
                 if short <= 0:
                     break
                 home = off_slot.shift_start or shift_templates[0][0]
@@ -1122,6 +1140,7 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
                 pick_i = prefer[0] if prefer else home_i
                 st, en = shift_templates[pick_i]
                 day_assignments.append((target, st, en))
+                slot_assignments[off_slot_indices[off_wi]].append((target, st, en))
                 today_starts.append(st)
                 used_counts[st] = used_counts.get(st, 0) + 1
                 shift_counts[st] = shift_counts.get(st, 0) + 1
@@ -1165,20 +1184,21 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
             }
         )
 
-    # Annual hours: use rotation-cycle fraction when multi-block patterns are set.
-    # Short sim windows (28d) + phase stagger produce noisy work_day counts that
-    # falsely put everyone outside a tight ±20h band even when the pattern is
-    # exactly 2008h (e.g. 11/16 × 365 × 8h = 2007.5).
-    hours_per_work_day = config.shift_length_hours
+    # Annual hours: always a pure cycle-fraction projection, never extrapolated
+    # from the (short, sim_start_date-dependent) simulated window — window-based
+    # extrapolation falsely put everyone outside a tight ±20h band even when the
+    # pattern is exactly 2008h (e.g. 11/16 × 365 × 8h = 2007.5), and it also drifted
+    # depending on where in the cycle the sim happened to start (mid-year dates).
     if custom_patterns and slot_patterns:
         from logic.rotation_patterns import projected_annual_hours
 
         for si, slot in enumerate(slots):
             slot.projected_annual_hours = projected_annual_hours(slot_patterns[si], config.shift_length_hours)
     else:
-        annual_factor = 365 / max(config.simulation_days, 1)
         for slot in slots:
-            slot.projected_annual_hours = round(slot.work_days_in_sim * hours_per_work_day * annual_factor, 1)
+            slot.projected_annual_hours = _preset_annual_hours(
+                config.rotation_type, slot.squad, preset, config.shift_length_hours
+            )
 
     hours_list = [s.projected_annual_hours for s in slots]
     avg_hours = sum(hours_list) / len(hours_list) if hours_list else 0
@@ -1206,7 +1226,12 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
     if config.avoid_flsa_overtime:
         from logic.labor_compliance import flsa_threshold_for_period_days
 
-        period_days = max(7, min(int(config.flsa_work_period_days or 28), 28))
+        # FLSA §207(k) work period is the rotation's own cycle length, capped at
+        # 28 days (the statutory max for law-enforcement) — not a free-typed
+        # value. Rotations shorter than a week still use a 7-day floor; rotations
+        # longer than 28 days (e.g. some multi-block or EOWEO patterns) are
+        # evaluated over the first 28 days of their cycle, per the statutory cap.
+        period_days = max(7, min(int(cycle_length or 28), 28))
         try:
             flsa_threshold = flsa_threshold_for_period_days(period_days)
         except Exception:
@@ -1332,35 +1357,8 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
     rest_failures = 0
     min_rest = float(getattr(config, "min_rest_hours", 0) or 0)
     if min_rest > 0 and day_assignments:
-        # Group assignments by slot index for chronological gap checking
-        slot_asg_map: Dict[int, List[Tuple[date, str, str]]] = {i: [] for i in range(len(slots))}
-        # day_assignments are (date, start, end) in sim order — map back to slot
-        # via per_slot_work_flags which tracks slot work days in order.
-        slot_day_idx: List[int] = [0] * len(slots)  # pointer into per_slot_work_flags
-        asg_flat: List[Tuple[int, date, str, str]] = []
-        day_iter_off = 0
-        for day_offset in range(config.simulation_days):
-            target_d = sim_start + timedelta(days=day_offset)
-            for si in range(len(slots)):
-                if day_offset < len(per_slot_work_flags[si]) and per_slot_work_flags[si][day_offset]:
-                    # Find assignment for this slot on this day
-                    # Assignments were appended in order: working_officers then off-day fills
-                    # We use (date, shift_start) key matching slot home band
-                    pass  # populated below from day_assignments chronologically
-        # Rebuild per-slot chronological assignment list
-        _slot_assigns: Dict[int, List[Tuple[date, str, str]]] = {i: [] for i in range(len(slots))}
-        _day_slot_cursor = [0] * len(slots)
-        for day_offset in range(config.simulation_days):
-            target_d = sim_start + timedelta(days=day_offset)
-            for si, slot in enumerate(slots):
-                if day_offset < len(per_slot_work_flags[si]) and per_slot_work_flags[si][day_offset]:
-                    # Match to day_assignments by date + slot home band (best-effort)
-                    for da in day_assignments:
-                        if da[0] == target_d:
-                            _slot_assigns[si].append(da)
-                            break
         for si in range(len(slots)):
-            asg_list = _slot_assigns[si]
+            asg_list = slot_assignments[si]
             for k in range(1, len(asg_list)):
                 prev_date, prev_st, prev_en = asg_list[k - 1]
                 curr_date, curr_st, curr_en = asg_list[k]
@@ -1374,7 +1372,7 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
                 day_gap_m = int((curr_date - prev_date).days) * 24 * 60
                 curr_start_abs = day_gap_m + _hhmm_to_min(curr_st)
                 rest_gap = curr_start_abs - prev_end_m
-                if rest_gap < min_rest * 60 - 1:  # 1-minute tolerance
+                if not validate_minimum_rest_gap(rest_gap / 60.0 + 1 / 60.0, min_rest).ok:
                     rest_failures += 1
         if rest_failures:
             hard_ok = False
@@ -1498,10 +1496,9 @@ def _enrich_rust_sim_metrics(
 ) -> Dict:
     """Fill presentation metrics Rust omits (gap hours, night risk, annual hours).
 
-    Fix (2025-07): When custom multi-block patterns are active, use
-    projected_annual_hours() (cycle-based, accurate) instead of the noisy
-    28-day extrapolation.  The extrapolation is kept only for the squad-preset
-    path where patterns are not available.
+    Annual hours are always a pure cycle-fraction projection — custom multi-block
+    patterns via projected_annual_hours(), squad presets via _preset_annual_hours().
+    Neither depends on simulation_days or sim_start_date.
     """
     gap_events = int(metrics.get("gap_events", 0))
     total_gap_hours = gap_events * config.shift_length_hours
@@ -1526,10 +1523,13 @@ def _enrich_rust_sim_metrics(
             slot.projected_annual_hours = projected_annual_hours(slot_patterns[si], config.shift_length_hours)
             hours_list.append(slot.projected_annual_hours)
     else:
-        # Fallback: extrapolation (squad presets without custom_patterns)
-        annual_factor = 365 / max(config.simulation_days, 1)
+        # Exact cycle-fraction projection (squad presets without custom_patterns) —
+        # matches the Python path; independent of simulation_days/sim_start_date.
+        preset = ROTATION_PRESETS.get(config.rotation_type) or {}
         for slot in slots:
-            slot.projected_annual_hours = round(slot.work_days_in_sim * config.shift_length_hours * annual_factor, 1)
+            slot.projected_annual_hours = _preset_annual_hours(
+                config.rotation_type, slot.squad, preset, config.shift_length_hours
+            )
             hours_list.append(slot.projected_annual_hours)
 
     avg_hours = sum(hours_list) / len(hours_list) if hours_list else 0.0

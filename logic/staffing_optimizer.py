@@ -78,6 +78,7 @@ DEFAULT_CONSTRAINT_WEIGHTS: Dict[str, float] = {
     "gaps": 80.0,
     "flsa": 70.0,
     "annual": 40.0,  # year math is approximate — softest by default
+    "annual_spread": 40.0,  # peer-hours fairness; independent of the annual-target weight
     "headcount": 10.0,  # prefer fewer officers when equal quality
 }
 
@@ -168,7 +169,6 @@ def generate_start_packs(shift_length_hours: float, *, max_packs: int = 1000, nu
     # Equal-spaced bands generated FIRST so they are never crowded out by the
     # combinatorial section hitting max_packs.  These are the most analytically
     # sound packs for coverage analysis.
-    length = float(shift_length_hours)
     anchors = ["05:00", "06:00", "07:00", "18:00", "19:00"]
     for spacing_h in [6, 8, 12]:
         spacing_min = spacing_h * 60
@@ -357,6 +357,57 @@ def _day_body_counts(
         if (base_wd + d) % 7 in (4, 5):
             fri_sat.append(c)
     return day_counts, fri_sat
+
+
+_PRESET_BODY_CACHE: Dict[Tuple[str, int, int, int], Tuple[List[int], List[int]]] = {}
+
+
+def _day_body_counts_preset(
+    rot_key: str,
+    n_slots: int,
+    simulation_days: int,
+    sim_start: date,
+) -> Tuple[List[int], List[int]]:
+    """Body counts for a fixed preset rotation (2-squad A/B pattern) — the cheap-reject
+    equivalent of _day_body_counts for the (very common) no-custom-variations path."""
+    from config import ROTATION_PRESETS
+    from simulator import _squad_working
+
+    cache_key = (rot_key, n_slots, simulation_days, sim_start.toordinal())
+    cached = _PRESET_BODY_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    preset = ROTATION_PRESETS.get(rot_key) or {}
+    squads = ["A", "B"] if preset.get("squads", 2) >= 2 else ["A"]
+    slot_squads = [squads[i % len(squads)] for i in range(n_slots)]
+    cycle = int(preset.get("cycle_length") or 14)
+    day_counts: List[int] = [0] * simulation_days
+    fri_sat: List[int] = []
+    base_wd = sim_start.weekday()
+    for d in range(simulation_days):
+        cycle_day = (d % cycle) + 1
+        c = sum(1 for sq in slot_squads if _squad_working(rot_key, sq, cycle_day, preset))
+        day_counts[d] = c
+        if (base_wd + d) % 7 in (4, 5):
+            fri_sat.append(c)
+    result = (day_counts, fri_sat)
+    if len(_PRESET_BODY_CACHE) > 500:
+        _PRESET_BODY_CACHE.clear()
+    _PRESET_BODY_CACHE[cache_key] = result
+    return result
+
+
+def _preset_avg_annual_hours(rot_key: str, n_slots: int, shift_length: float) -> float:
+    """Mean projected annual hours across a preset's squad slots — phase-independent,
+    so (unlike custom multi-block patterns) it does not depend on the candidate's
+    pat_map and can be computed once per (rotation, N, length)."""
+    from config import ROTATION_PRESETS
+    from simulator import _preset_annual_hours
+
+    preset = ROTATION_PRESETS.get(rot_key) or {}
+    squads = ["A", "B"] if preset.get("squads", 2) >= 2 else ["A"]
+    hours = [_preset_annual_hours(rot_key, squads[i % len(squads)], preset, shift_length) for i in range(n_slots)]
+    return sum(hours) / max(len(hours), 1)
 
 
 def _shift_end_hhmm(start: str, length_hours: float) -> str:
@@ -621,43 +672,63 @@ def _cheap_reject(
     precomputed: Optional[Tuple[List[int], List[int]]] = None,
     nearby_hops: int = 1,
     allow_offday_coverage: bool = False,
+    preset_avg_hours: Optional[float] = None,
 ) -> Optional[str]:
     """Prune layouts that cannot possibly meet hard floors (bodies / pattern annual mean)."""
     from logic.rotation_patterns import projected_annual_hours
 
     del n_bands  # kept for API compat; window floor uses window_min from extra_windows
-    if patterns:
-        if annual_hard:
-            # Pattern math is cycle-based year-average — phase does not change hours.
-            # Reject only when *mean* projected is outside target band (not peer equality).
-            hours = [projected_annual_hours(patterns[pat_map[i] % len(patterns)], shift_length) for i in range(n_slots)]
-            avg = sum(hours) / max(len(hours), 1)
-            # B4 fix: only apply the 2% floor when variance is truly unset (<=0).
-            # Never silently override a user-set tight variance (e.g. ±20h).
-            if float(annual_variance or 0) > 0:
-                band = float(annual_variance)
-            else:
-                band = abs(float(annual_target)) * 0.02
-            if abs(avg - float(annual_target)) > band + 1e-6:
-                return "annual"
-        if precomputed is not None:
-            day_counts, fri_sat = precomputed
+    # Annual-hours mean floor: custom multi-block patterns use the candidate's own
+    # phase/pattern-slot map; preset (squad A/B) rotations have a fixed, phase-
+    # independent mean passed in as preset_avg_hours — previously this whole check
+    # only ran when `patterns` was truthy, so preset-only candidates (the common
+    # case) never got cheaply rejected on annual hours at all.
+    avg: Optional[float] = None
+    if patterns and annual_hard:
+        # Pattern math is cycle-based year-average — phase does not change hours.
+        # Reject only when *mean* projected is outside target band (not peer equality).
+        hours = [projected_annual_hours(patterns[pat_map[i] % len(patterns)], shift_length) for i in range(n_slots)]
+        avg = sum(hours) / max(len(hours), 1)
+    elif preset_avg_hours is not None and annual_hard:
+        avg = float(preset_avg_hours)
+    if avg is not None:
+        # B4 fix: only apply the 2% floor when variance is truly unset (<=0).
+        # Never silently override a user-set tight variance (e.g. ±20h).
+        if float(annual_variance or 0) > 0:
+            band = float(annual_variance)
         else:
-            day_counts, fri_sat = _day_body_counts(
-                patterns,
-                phases,
-                pat_map,
-                n_slots=n_slots,
-                simulation_days=simulation_days,
-                sim_start=sim_start,
-            )
-        if cov247 > 0 and day_counts and min(day_counts) < cov247:
-            return "coverage_247"
-        # Body floor for windows = max min_officers from windows (not n_bands heuristic).
-        # When off-day coverage is OFF, body floor is hard: OFF officers do not work.
-        if use_windows and fri_sat and window_min > 0:
-            if min(fri_sat) < min(window_min, n_slots):
-                return "window"
+            band = abs(float(annual_target)) * 0.02
+        if abs(avg - float(annual_target)) > band + 1e-6:
+            return "annual"
+
+    # Body-count floors (24/7, windows, min-per-shift) apply to ANY schedule shape —
+    # preset rotations included — as long as day_counts is available (either passed
+    # in precomputed, or derivable from patterns). Previously this whole block sat
+    # under `if patterns:`, so preset-only candidates (no custom multi-block
+    # variations) skipped every cheap check and always fell through to a full
+    # simulate_schedule() call, even when the floor was trivially unreachable.
+    if precomputed is not None:
+        day_counts, fri_sat = precomputed
+    elif patterns:
+        day_counts, fri_sat = _day_body_counts(
+            patterns,
+            phases,
+            pat_map,
+            n_slots=n_slots,
+            simulation_days=simulation_days,
+            sim_start=sim_start,
+        )
+    else:
+        return None
+
+    if cov247 > 0 and day_counts and min(day_counts) < cov247:
+        return "coverage_247"
+    # Body floor for windows = max min_officers from windows (not n_bands heuristic).
+    # When off-day coverage is OFF, body floor is hard: OFF officers do not work.
+    if use_windows and fri_sat and window_min > 0:
+        if min(fri_sat) < min(window_min, n_slots):
+            return "window"
+    if patterns:
         # C3 — pack shape: zero covering bands
         if use_windows and shift_starts and extra_windows:
             if not pack_meets_window_bands(shift_starts, shift_length, extra_windows):
@@ -678,8 +749,8 @@ def _cheap_reject(
                 allow_offday_coverage=allow_offday_coverage,
             ):
                 return "window"
-        if min_ps > 0 and day_counts and min(day_counts) < min_ps:
-            return "gaps"
+    if min_ps > 0 and day_counts and min(day_counts) < min_ps:
+        return "gaps"
     return None
 
 
@@ -745,7 +816,7 @@ def _score_metrics(
     for key in ("coverage_247", "windows", "gaps", "flsa", "annual"):
         penalty += v.get(key, 0) * float(weights.get(key, 1.0))
     # Peer spread (officers not identical — penalize large unfairness only)
-    penalty += float(v.get("annual_spread") or 0) * float(weights.get("annual", 40.0)) * 0.05
+    penalty += float(v.get("annual_spread") or 0) * float(weights.get("annual_spread", 40.0)) * 0.05
     # Clamp n_off to >=1 so a degenerate 0-officer config never escapes the headcount penalty
     penalty += max(1, n_off) * float(weights.get("headcount", 10.0)) * 0.05
     # Multi-block: prefer mixed pattern maps over all-officers-same-pattern
@@ -839,6 +910,7 @@ def _resolve_axes(
     free_variations,
     rotation_variations,
     rotation_style,
+    rotation_variation_sets=None,
 ):
     from logic.rotation_config import get_rotation_config
     from logic.staffing_config import get_staffing_config
@@ -896,15 +968,30 @@ def _resolve_axes(
         locked_starts_opts = [default_starts]
 
     base_variations = [v for v in (rotation_variations or []) if (v or "").strip()]
+    # Multiple manually-entered alternative sets — each is tried as its own
+    # independent structural candidate (same as a locked single set, just more
+    # than one). Falls back to the single base_variations set, then the
+    # free-variations catalog, then plain (no custom variation).
+    manual_sets = [[v for v in (s or []) if (v or "").strip()] for s in (rotation_variation_sets or [])]
+    manual_sets = [s for s in manual_sets if s]
     style = (rotation_style or "").strip().lower()
-    if base_variations:
-        variation_sets: List[List[str]] = [list(base_variations)]
+    if manual_sets:
+        variation_sets: List[List[str]] = manual_sets
+        if not base_variations:
+            base_variations = manual_sets[0]
+    elif base_variations:
+        variation_sets = [list(base_variations)]
     elif free_variations:
-        variation_sets = [list(v) for v in MULTI_BLOCK_CATALOG]
+        # Include the "no custom variation" option so preset rotations are still
+        # tried in their plain form — omitting it meant a locked preset rotation
+        # combined with a free style/variations search was NEVER evaluated on its
+        # own, only ever wrapped in a (mismatched) multi-block catalog pattern.
+        variation_sets = [[]] + [list(v) for v in MULTI_BLOCK_CATALOG]
     else:
         variation_sets = [[]]
-    if base_variations and style not in ("fixed", "rotating"):
-        style = "rotating" if any("," in v for v in base_variations) else "fixed"
+    any_comma = any("," in v for s in variation_sets for v in s)
+    if (base_variations or manual_sets) and style not in ("fixed", "rotating"):
+        style = "rotating" if any_comma else "fixed"
     elif free_variations and style not in ("fixed", "rotating"):
         style = "rotating"
 
@@ -950,6 +1037,7 @@ def estimate_search_space(
     shift_length_options: Optional[List[float]] = None,
     rotation_style: str = "",
     rotation_variations: Optional[List[str]] = None,
+    rotation_variation_sets: Optional[List[List[str]]] = None,
     free_officer_counts: bool = False,
     free_starts: bool = False,
     free_lengths: bool = False,
@@ -977,6 +1065,7 @@ def estimate_search_space(
         free_lengths=free_lengths,
         free_variations=free_variations,
         rotation_variations=rotation_variations,
+        rotation_variation_sets=rotation_variation_sets,
         rotation_style=rotation_style,
     )
 
@@ -1127,6 +1216,7 @@ def optimize_staffing_scenarios(
     require_hard_ok: bool = True,
     rotation_style: str = "",
     rotation_variations: Optional[List[str]] = None,
+    rotation_variation_sets: Optional[List[List[str]]] = None,
     stagger_phases: bool = True,
     shift_starts_options: Optional[List[List[str]]] = None,
     shift_length_options: Optional[List[float]] = None,
@@ -1201,6 +1291,7 @@ def optimize_staffing_scenarios(
         shift_length_options=shift_length_options,
         rotation_style=rotation_style,
         rotation_variations=rotation_variations,
+        rotation_variation_sets=rotation_variation_sets,
         free_officer_counts=free_officer_counts,
         free_starts=free_starts,
         free_lengths=free_lengths,
@@ -1221,6 +1312,7 @@ def optimize_staffing_scenarios(
         free_lengths=free_lengths,
         free_variations=free_variations,
         rotation_variations=rotation_variations,
+        rotation_variation_sets=rotation_variation_sets,
         rotation_style=rotation_style,
     )
 
@@ -1253,22 +1345,33 @@ def optimize_staffing_scenarios(
     early_skip_all = True
     early_reasons: List[str] = []
     length0 = float(axes["length_opts"][0]) if axes["length_opts"] else float(shift_length_hours or 8)
+    # Check every variation SET the real search will try (not just the first/
+    # locked one) — a set is only truly impossible for this N if every set is.
+    var_sets_to_check = axes.get("variation_sets") or [axes.get("base_variations") or []]
     for n_try in axes["officer_counts"]:
-        reason = early_impossible_proof(
-            num_officers=int(n_try),
-            shift_length_hours=length0,
-            annual_hours_target=float(annual),
-            annual_hours_variance=float(annual_hours_variance),
-            annual_hours_hard=bool(annual_hours_hard),
-            rotation_variations=axes.get("base_variations") or None,
-            coverage_247=cov247,
-            window_min=window_min,
-            rotation_style=style or "rotating",
-        )
-        if reason:
-            early_reasons.append(f"N={n_try}: {reason}")
-        else:
+        n_reasons: List[str] = []
+        n_possible = False
+        for vset in var_sets_to_check:
+            reason = early_impossible_proof(
+                num_officers=int(n_try),
+                shift_length_hours=length0,
+                annual_hours_target=float(annual),
+                annual_hours_variance=float(annual_hours_variance),
+                annual_hours_hard=bool(annual_hours_hard),
+                rotation_variations=vset or None,
+                coverage_247=cov247,
+                window_min=window_min,
+                rotation_style=style or "rotating",
+            )
+            if reason:
+                n_reasons.append(reason)
+            else:
+                n_possible = True
+                break
+        if n_possible:
             early_skip_all = False
+        else:
+            early_reasons.append(f"N={n_try}: {n_reasons[0] if n_reasons else 'constraints'}")
     if early_skip_all and axes["officer_counts"] and require_hard_ok:
         # Still one soft full-sim so UI gets near-miss options (not empty silence).
         from simulator import SimulatorConfig, simulate_schedule
@@ -1538,7 +1641,6 @@ def optimize_staffing_scenarios(
                         # Explore multiple start packs (diverse options), not one pack only.
                         max_hard_results = 24
                         max_unique_start_packs = 8
-                        found_hard_for_n = False
 
                         def _unique_packs() -> int:
                             return len(
@@ -1664,7 +1766,6 @@ def optimize_staffing_scenarios(
                                     max_consecutive_work_days=int(max_consecutive_work_days),
                                 ):
                                     results.append(row)
-                                    found_hard_for_n = True
                                     # Keep scanning more packs/phases for alternate options
                                     if len(results) >= max_hard_results:
                                         break
@@ -1692,6 +1793,13 @@ def optimize_staffing_scenarios(
                                 Tuple[Tuple[int, ...], Tuple[int, ...]],
                                 Tuple[List[int], List[int]],
                             ] = {}
+                            # Preset annual mean is phase/pat_map-independent — compute once
+                            # per (rotation, N, length) instead of per candidate.
+                            preset_avg_hours = (
+                                None
+                                if parsed_patterns
+                                else _preset_avg_annual_hours(rot_key, int(n_off), float(length))
+                            )
                             candidates: List[Tuple[float, Optional[List[int]], Optional[List[int]], bool]] = []
                             for ph in phase_layouts:
                                 if _cancelled():
@@ -1759,7 +1867,45 @@ def optimize_staffing_scenarios(
                                         else:
                                             candidates.append((float(body_score), ph, pm, True))
                                     else:
-                                        candidates.append((0.0, ph, pm, True))
+                                        day_counts, fri_sat = _day_body_counts_preset(
+                                            rot_key, int(n_off), int(simulation_days), sim_start
+                                        )
+                                        body_score = (min(day_counts) if day_counts else 0) * 1000 + (
+                                            min(fri_sat) if fri_sat else 0
+                                        ) * 100
+                                        reason = _cheap_reject(
+                                            None,
+                                            None,
+                                            None,
+                                            n_slots=int(n_off),
+                                            shift_length=float(length),
+                                            annual_target=float(annual),
+                                            annual_variance=float(annual_hours_variance),
+                                            annual_hard=bool(annual_hours_hard),
+                                            simulation_days=int(simulation_days),
+                                            cov247=cov247,
+                                            use_windows=bool(use_extra_windows and windows),
+                                            window_min=window_min,
+                                            n_bands=n_bands,
+                                            min_ps=int(min_ps),
+                                            sim_start=sim_start,
+                                            shift_starts=starts,
+                                            extra_windows=windows,
+                                            precomputed=(day_counts, fri_sat),
+                                            nearby_hops=nearby_hops,
+                                            allow_offday_coverage=offday_ok,
+                                            preset_avg_hours=preset_avg_hours,
+                                        )
+                                        if reason:
+                                            pruned_cheap += 1
+                                            fail_hist["cheap_reject"] += 1
+                                            fail_hist[reason] = fail_hist.get(reason, 0) + 1
+                                            if require_hard_ok:
+                                                rejected_hard += 1
+                                            cheap_score = body_score - float(_cheap_penalty.get(reason, 25_000))
+                                            candidates.append((cheap_score, ph, pm, False))
+                                        else:
+                                            candidates.append((float(body_score), ph, pm, True))
                             if _cancelled():
                                 break
 
@@ -1947,7 +2093,6 @@ def optimize_staffing_scenarios(
                                             best_miss_row = row
                                         continue
                                     results.append(row)
-                                    found_hard_for_n = True
                                     if found_hard_structural:
                                         rank_pool_remaining -= 1
                                     else:
@@ -2126,7 +2271,6 @@ def optimize_staffing_scenarios(
                                                 best_miss_row = row
                                             continue
                                         results.append(row)
-                                        found_hard_for_n = True
                                         if found_hard_structural:
                                             rank_pool_remaining -= 1
                                         else:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Dict, List, Optional
 
-from database import get_connection
+from database import connection
 from logic.users import log_audit_action
 from validators import normalize_optional_text
 
@@ -25,31 +25,29 @@ def save_simulator_scenario(
     if tag_list:
         # Tags stored in notes prefix for schema compatibility (no migration)
         note_body = f"[tags:{','.join(tag_list)}] {note_body}".strip()
-    conn = get_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute(
-            """
-            INSERT INTO simulator_scenarios (name, config_json, result_json, notes, created_by_user_id)
-            VALUES (?, ?, ?, ?, ?)
-            """,
-            (
-                label,
-                json.dumps(config or {}),
-                json.dumps(result) if result else None,
-                note_body,
-                user_id,
-            ),
-        )
-        scenario_id = cursor.lastrowid
-        conn.commit()
-        log_audit_action("simulator.save_scenario", "simulator_scenario", scenario_id, user_id, label)
-        return {"success": True, "scenario_id": scenario_id}
-    except Exception as exc:
-        conn.rollback()
-        return {"success": False, "message": str(exc)}
-    finally:
-        conn.close()
+    with connection() as conn:
+        cursor = conn.cursor()
+        try:
+            cursor.execute(
+                """
+                INSERT INTO simulator_scenarios (name, config_json, result_json, notes, created_by_user_id)
+                VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    label,
+                    json.dumps(config or {}),
+                    json.dumps(result) if result else None,
+                    note_body,
+                    user_id,
+                ),
+            )
+            scenario_id = cursor.lastrowid
+            conn.commit()
+            log_audit_action("simulator.save_scenario", "simulator_scenario", scenario_id, user_id, label)
+            return {"success": True, "scenario_id": scenario_id}
+        except Exception as exc:
+            conn.rollback()
+            return {"success": False, "message": str(exc)}
 
 
 def _parse_tags_from_notes(notes: Optional[str]) -> List[str]:
@@ -61,36 +59,34 @@ def _parse_tags_from_notes(notes: Optional[str]) -> List[str]:
 
 
 def list_simulator_scenarios(*, limit: int = 30, tag: Optional[str] = None) -> List[Dict]:
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute(
-        """
-        SELECT id, name, notes, created_at, created_by_user_id
-        FROM simulator_scenarios
-        ORDER BY created_at DESC
-        LIMIT ?
-        """,
-        (max(limit, 80) if tag else limit,),
-    )
-    rows = []
-    for r in cursor.fetchall():
-        d = dict(r)
-        d["tags"] = _parse_tags_from_notes(d.get("notes"))
-        if tag and tag not in d["tags"]:
-            continue
-        rows.append(d)
-        if len(rows) >= limit:
-            break
-    conn.close()
+    with connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute(
+            """
+            SELECT id, name, notes, created_at, created_by_user_id
+            FROM simulator_scenarios
+            ORDER BY created_at DESC
+            LIMIT ?
+            """,
+            (max(limit, 80) if tag else limit,),
+        )
+        rows = []
+        for r in cursor.fetchall():
+            d = dict(r)
+            d["tags"] = _parse_tags_from_notes(d.get("notes"))
+            if tag and tag not in d["tags"]:
+                continue
+            rows.append(d)
+            if len(rows) >= limit:
+                break
     return rows
 
 
 def get_simulator_scenario(scenario_id: int) -> Optional[Dict]:
-    conn = get_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM simulator_scenarios WHERE id = ?", (scenario_id,))
-    row = cursor.fetchone()
-    conn.close()
+    with connection() as conn:
+        cursor = conn.cursor()
+        cursor.execute("SELECT * FROM simulator_scenarios WHERE id = ?", (scenario_id,))
+        row = cursor.fetchone()
     if not row:
         return None
     data = dict(row)
@@ -120,11 +116,25 @@ def load_simulator_scenario_for_bid(scenario_id: int) -> Dict:
     config = scenario.get("config") or {}
     from logic.scheduling_sim import run_schedule_simulation
 
-    rotation = config.get("rotation_type") or config.get("rotation") or "4-on-4-off"
-    officers = int(config.get("num_officers") or config.get("target_officer_count") or 8)
-    shift_length = float(config.get("shift_length_hours") or 10.0)
-    annual_hours = float(config.get("annual_hours") or 2080.0)
-    starts = config.get("shift_starts") or config.get("shift_start_times") or ["06:00"]
+    missing: List[str] = []
+    rotation = config.get("rotation_type") or config.get("rotation")
+    if not rotation:
+        rotation, missing = "4-on-4-off", missing + ["rotation_type"]
+    officers = config.get("num_officers") or config.get("target_officer_count")
+    if not officers:
+        officers, missing = 8, missing + ["num_officers"]
+    officers = int(officers)
+    shift_length = config.get("shift_length_hours")
+    if not shift_length:
+        shift_length, missing = 10.0, missing + ["shift_length_hours"]
+    shift_length = float(shift_length)
+    annual_hours = config.get("annual_hours")
+    if not annual_hours:
+        annual_hours, missing = 2080.0, missing + ["annual_hours"]
+    annual_hours = float(annual_hours)
+    starts = config.get("shift_starts") or config.get("shift_start_times")
+    if not starts:
+        starts, missing = ["06:00"], missing + ["shift_starts"]
     if isinstance(starts, str):
         starts = [s.strip() for s in starts.split(",") if s.strip()]
     sim = run_schedule_simulation(
@@ -139,4 +149,9 @@ def load_simulator_scenario_for_bid(scenario_id: int) -> Dict:
     if sim.get("success"):
         sim["scenario_id"] = scenario_id
         sim["scenario_name"] = scenario.get("name")
+    if missing:
+        sim["used_defaults_for"] = missing
+        sim["message"] = (sim.get("message") or "") + (
+            f" (saved scenario was missing {', '.join(missing)} — used defaults)"
+        )
     return sim

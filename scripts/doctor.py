@@ -92,7 +92,7 @@ def run_doctor(verbose: bool = False) -> int:
         if missing:
             db_ok = False
             db_detail = f"missing tables: {', '.join(sorted(missing))}"
-        conn.close()
+        pass  # conn.close() removed
     except Exception as exc:
         db_ok = False
         db_detail = str(exc)

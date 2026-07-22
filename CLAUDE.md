@@ -1,4 +1,10 @@
-# Dodgeville PD â€” Claude / multi-agent notes
+# Dodgeville PD — Claude / multi-agent notes
+
+## READ FIRST — ABSOLUTE (see AGENTS.md for full text)
+- **Caveman:** short bullets. No preamble, no recap, no "let me". Prose only if user asks to explain/docs.
+- **Minimize:** fewest tool calls/tokens to finish fully. No parallel/background spam without checking in. One thing at a time unless told otherwise.
+- **Trust:** never claim fixed/done without user-scenario proof. Unit tests ≠ Chronos working.
+- Broken all session on 2026-07-17 — do not repeat.
 
 ## Graphify = central knowledge base (always first)
 

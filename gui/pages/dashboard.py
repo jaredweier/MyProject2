@@ -57,7 +57,7 @@ def render_dashboard() -> None:
 
         page_header(
             name,
-            f"District duty ops · {format_local_date(today)} · {format_clock()} · "
+            f"District duty ops · {format_local_date(today, style='short')} · {format_clock()} · "
             f"Cycle day {cycle} · Squad {squad} on duty · {n_off} officers active",
             kicker="Chronos Command · ops floor",
         )
@@ -96,7 +96,8 @@ def render_dashboard() -> None:
             with ui.row().classes("w-full justify-between items-start"):
                 with ui.element("div"):
                     ui.html('<div class="page-kicker">Next 24h staffing</div>', sanitize=False)
-                    ui.html(f'<div class="kpi-v">{hero_metric}</div>', sanitize=False)
+                    hero_cls = "kpi-v kpi-crit" if (gaps or issues) else "kpi-v kpi-ok"
+                    ui.html(f'<div class="{hero_cls}">{hero_metric}</div>', sanitize=False)
 
                 # Dynamic Quasar telemetry status chips
                 with ui.row().classes("gap-2 items-center flex-wrap"):
@@ -108,18 +109,18 @@ def render_dashboard() -> None:
                         level="crit" if issues else "ok",
                         icon="nights_stay" if issues else "bedtime",
                     )
-                    ng_chip(f"Open: {n_open}", level="warn" if n_open else "ok", icon="add" if n_open else "check")
-                    ng_chip(
-                        f"Leave Queue: {pending}",
-                        level="warn" if pending else "ok",
-                        icon="pending_actions" if pending else "thumb_up",
-                    )
+                    if n_open:
+                        ng_chip(f"Open: {n_open}", level="warn", icon="add")
+                    if pending:
+                        ng_chip(f"Leave queue: {pending}", level="warn", icon="pending_actions")
                     if swaps:
                         ng_chip(f"Swaps: {swaps}", level="warn", icon="swap_horiz")
                     if n_fat:
                         ng_chip(f"Fatigue: {n_fat}", level="warn", icon="battery_alert")
                     if unread:
                         ng_chip(f"Alerts: {unread}", level="warn", icon="notifications_active")
+                    if not (gaps or issues or n_open or pending or swaps or n_fat or unread):
+                        ng_chip("All clear", level="ok", icon="check_circle")
 
             # Compact roster count inline (was separate panel)
             if not session.is_officer():
@@ -314,14 +315,19 @@ def render_dashboard() -> None:
                     try:
                         week = get_officer_schedule_window(oid, days=7) or {}
                     except Exception as exc:
-                        week = {"success": False, "message": str(exc)}
+                        week = {"success": False, "error": str(exc)}
                     days = week.get("days") or week.get("schedule") or week.get("rows") or []
-                    if not days and week.get("message"):
-                        ui.label(str(week.get("message"))).classes("text-sm text-gray-400")
+                    if week.get("error"):
+                        empty_state(
+                            "Could not load schedule",
+                            f"Try refreshing. ({str(week.get('error', ''))[:80]})",
+                            cta_label="Refresh",
+                            cta_path="/",
+                        )
                     elif not days:
                         empty_state(
-                            "No week rows",
-                            "Open My schedule for the full window.",
+                            "No shifts this week",
+                            "You have no scheduled shifts in the next 7 days.",
                             cta_label="My schedule",
                             cta_path="/my-schedule",
                         )

@@ -644,19 +644,29 @@ def early_impossible_proof(
         ]
     except ValueError as exc:
         return f"invalid multi-block pattern: {exc}"
-    # Mean annual across mixed patterns (assume balanced map)
-    hours = [
-        projected_annual_hours(patterns[i % len(patterns)], float(shift_length_hours))
-        for i in range(max(1, int(num_officers)))
-    ]
-    avg = sum(hours) / len(hours)
+    # The real search (generate_pattern_maps) tries every headcount split between
+    # patterns, not just an even round-robin assignment. The achievable mean
+    # annual hours across all splits spans the full [min, max] range of the
+    # per-pattern projections (all-officers-on-one-pattern at the extremes,
+    # every split in between reachable with integer headcounts). Only declare
+    # impossible when the target band doesn't overlap that reachable range —
+    # checking a single assumed round-robin split falsely proved impossible
+    # scenarios that a different (real, searched) split would satisfy.
+    hours_by_pattern = [projected_annual_hours(p, float(shift_length_hours)) for p in patterns]
+    lo_possible = min(hours_by_pattern)
+    hi_possible = max(hours_by_pattern)
     # B5 fix: only apply 2% floor when variance truly unset (same fix as B4 in cheap_reject)
     if float(annual_hours_variance or 0) > 0:
         band = float(annual_hours_variance)
     else:
         band = abs(float(annual_hours_target)) * 0.02
-    if abs(avg - float(annual_hours_target)) > band + 1.0:
-        return f"pattern mean annual ~{avg:.0f}h outside {annual_hours_target:g}±{annual_hours_variance:g}"
+    target_lo = float(annual_hours_target) - band
+    target_hi = float(annual_hours_target) + band
+    if hi_possible < target_lo - 1.0 or lo_possible > target_hi + 1.0:
+        return (
+            f"pattern mix range {lo_possible:.0f}-{hi_possible:.0f}h cannot reach "
+            f"{annual_hours_target:g}±{annual_hours_variance:g}"
+        )
     if coverage_247 > 0 and int(num_officers) < int(coverage_247):
         return f"officers ({num_officers}) < 24/7 minimum ({coverage_247})"
     if window_min > 0 and int(num_officers) < int(window_min):
@@ -1572,7 +1582,6 @@ def suggest_relaxations(
     if r.get("success") and (r.get("best") or {}).get("hard_constraints_ok"):
         return []  # Already passing
 
-    hist = r.get("failure_histogram") or {}
     near = r.get("near_misses") or []
     best_miss = r.get("best") if not (r.get("best") or {}).get("hard_constraints_ok") else None
     if not best_miss and near:

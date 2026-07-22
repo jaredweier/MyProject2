@@ -53,7 +53,7 @@ Chronos UI = `gui/`. Domain = `logic/*` + `validators`. No SQL in `gui/`.
 Do **not** set `APP_NAME` to all-caps in Python — auth/logic stay Title Case string; paint via `gui/theme.py` brand classes.
 
 **Simulator / staffing (still binding):**
-- UI: `gui/pages/simulator.py` | engine `simulator.py` | `staffing_optimizer` for multi-block
+- UI: `gui/pages/simulator/page.py` | engine `simulator.py` | `staffing_optimizer` for multi-block
 - No invent constraints; OFF days OFF unless opt-in; user numbers **8h / ~2008h / 6-2,5-3**
 - Sensitivity **cheap by default** (`logic/sim_product_pack.py`); deep only if asked
 

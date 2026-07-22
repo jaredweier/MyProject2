@@ -103,7 +103,7 @@ def render_mobile_home() -> None:
                     val = days.get(key) or days.get(format_date(d)) or "—"
                     cls = "mobile-day-card today" if i == 0 else "mobile-day-card"
                     with ui.element("div").classes(cls):
-                        ui.label(f"{format_local_date(d)} · {val}").classes("text-sm font-semibold")
+                        ui.label(f"{format_local_date(d, style='short')} · {val}").classes("text-sm font-semibold")
             else:
                 empty_state(
                     "No week rows yet",
@@ -114,7 +114,7 @@ def render_mobile_home() -> None:
                 for i in range(7):
                     d = today + timedelta(days=i)
                     with ui.element("div").classes("mobile-day-card" + (" today" if i == 0 else "")):
-                        ui.label(format_local_date(d)).classes("text-sm")
+                        ui.label(format_local_date(d, style="short")).classes("text-sm")
 
         # FLSA meter
         with panel("FLSA hours meter", glow=True):

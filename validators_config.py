@@ -250,7 +250,7 @@ def validate_officer_certifications(
     )
     required = cursor.fetchall()
     if not required:
-        conn.close()
+        pass  # conn.close() removed
         return ValidationResult.pass_()
 
     cursor.execute(
@@ -263,7 +263,7 @@ def validate_officer_certifications(
         (officer_id,),
     )
     held = {r["code"]: r["expires_date"] for r in cursor.fetchall()}
-    conn.close()
+    pass  # conn.close() removed
 
     missing = []
     expired = []

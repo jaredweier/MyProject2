@@ -33,6 +33,7 @@ The human has said agents are **untrustworthy and ineffective** when they:
 6. **Optimizer is deep search.** Must pass multi-block variations, stagger, windows, 24/7, annual band, free vs locked dimensions — not a thin rotation×N loop only.
 7. **UI claims:** layout must not jump; primary buttons must be readable (Quasar `primary` color matters); dropdowns must change value; login window/card centered. Human click is the bar.
 8. **Ship language** only after `verify --tier check` + `honest_gate: true`. Day-to-day: one focused test + honest residual list.
+9. **Process hygiene.** Any process you start for a task (dev server, test run, one-off script) must be terminated once it's no longer needed — never leave it running after its task is done. Before starting a new one, check for stray/duplicate processes from earlier work (`Get-CimInstance Win32_Process -Filter "Name='python.exe'"` in PowerShell) and clean up anything abandoned. 2026-07-17: found 20+ stray Python processes (duplicate `verify`/`unittest` runs hung for 3+ hours) plus 2 leftover unrelated backend processes, all silently starving CPU and making unrelated live-UI tests look broken. Also: don't chain multiple tool calls or background tasks at once without checking in — the human was explicit that this wastes tokens/usage.
 
 ---
 
@@ -44,6 +45,14 @@ The human has said agents are **untrustworthy and ineffective** when they:
 | Left “human retest” as residual | User said agent owns UI confirmation | Agent proves product path or states **broken** with residual only |
 | Token theater (40+ min restarts) | Many server kill/restart loops, no product value | One clean server; one real click path; stop if blocked |
 | Free-start packs at 03:00/11:00 etc. | User never asked for odd clock faces | **30-minute grid only**; LE-sane anchors in optimizer |
+
+## Mistakes from 2026-07-17 late evening (do not repeat)
+
+| Mistake | What went wrong | Correct behavior |
+|---------|-----------------|------------------|
+| Broke Caveman + Minimize all session | Long prose replies, chained tool/background calls without checking in, wasted tokens | Short bullets always; one action at a time; ask before parallel/background work |
+| Left stray processes running for hours | 20+ dev-server/test/verify processes hung 3+ hrs, starved CPU, broke live UI tests | Kill every process you start once its task is done (rule 9 above) |
+| Treated 3 point-fixes as the fix | Officer-count band, form-restore lock, WS buffer — real bugs, but simulator/UI has deeper, broader problems the user flagged as needing a **major overhaul**, not patches | Next agent: scope a real simulator/UI redesign pass, don't assume 3 patches = done |
 | Assumed NiceGUI permanent | User: any UI OK; current UI wordy/slop | Logic first; redesign later |
 
 ## Mistakes from 2026-07-14 simulator session (do not repeat)
