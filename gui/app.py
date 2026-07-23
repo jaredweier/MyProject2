@@ -432,7 +432,8 @@ def run(argv: list[str] | None = None) -> None:
 
     args = _parse_args(argv if argv is not None else sys.argv[1:])
     mode = _resolve_mode(args)
-    port = args.port or int(os.environ.get("SCHEDULER_PORT", "8080"))
+    # Railway and similar hosts provide PORT; keep SCHEDULER_PORT for local/cloud installs.
+    port = args.port or int(os.environ.get("PORT") or os.environ.get("SCHEDULER_PORT", "8080"))
     if mode == "web":
         host = args.host or os.environ.get("SCHEDULER_HOST", "0.0.0.0")
         show, native = False, False
