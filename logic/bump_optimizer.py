@@ -218,8 +218,15 @@ def suggest_bump_chain(
     max_depth: int = 8,
     *,
     supervisor_override: bool = False,
+    relaxed_constraint: Optional[str] = None,
 ) -> BumpChainSuggestion:
-    """Suggest a complete bump chain with step-by-step coverage detail."""
+    """Suggest a complete bump chain with step-by-step coverage detail.
+
+    `relaxed_constraint` (e.g. "minimum_rest" or "consecutive_days") narrows a
+    supervisor override to the one named constraint instead of relaxing both;
+    a blanket `supervisor_override=True` with no `relaxed_constraint` still
+    relaxes both, unchanged for legacy callers.
+    """
     req_date = parse_date(request_date)
 
     with connection() as conn:
@@ -247,7 +254,8 @@ def suggest_bump_chain(
 
     schedule_context = _scheduling().get_generated_schedule_day_context(req_date)
     shift_times = list(get_active_shift_times().values())
-    enforce_compliance = not supervisor_override
+    enforce_minimum_rest = not (supervisor_override and relaxed_constraint in (None, "minimum_rest"))
+    enforce_consecutive_work = not (supervisor_override and relaxed_constraint in (None, "consecutive_days"))
     rest_window_start = req_date - timedelta(days=1)
     rest_window_end = req_date + timedelta(days=1)
     covering_shift_starts = _scheduling()._load_covering_shift_starts_for_range(rest_window_start, rest_window_end)
@@ -269,8 +277,8 @@ def suggest_bump_chain(
         get_active_rotation_cycle_length(),
         config.BUMP_ASSIGNMENTS_BEFORE_BUSY,
         max_depth,
-        enforce_minimum_rest=enforce_compliance,
-        enforce_consecutive_work=enforce_compliance,
+        enforce_minimum_rest=enforce_minimum_rest,
+        enforce_consecutive_work=enforce_consecutive_work,
         max_consecutive_work_days=get_max_consecutive_work_days(),
         covering_shift_starts=covering_shift_starts,
     )
@@ -282,6 +290,7 @@ def suggest_bump_chain(
         squad,
         shift_start,
         supervisor_override=supervisor_override,
+        relaxed_constraint=relaxed_constraint,
         max_depth=max_depth,
     )
     if rust_data is None:

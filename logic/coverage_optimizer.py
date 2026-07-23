@@ -615,9 +615,16 @@ def optimize_day_off_coverage(
     shift_start: str,
     *,
     supervisor_override: bool = False,
+    relaxed_constraint: Optional[str] = None,
     max_depth: int = 8,
 ) -> BumpChainSuggestion:
-    """Entry for day-off / bump: best complete chain or manual-review failure."""
+    """Entry for day-off / bump: best complete chain or manual-review failure.
+
+    `relaxed_constraint` (when set, e.g. "minimum_rest" or "consecutive_days")
+    narrows a supervisor override to the one named constraint instead of
+    relaxing both — a blanket `supervisor_override=True` with no
+    `relaxed_constraint` still relaxes both, unchanged for legacy callers.
+    """
     from logic.bump_optimizer import (
         _bump_assignment_counts_for_date,
         _consecutive_days_manual_failure,
@@ -633,7 +640,8 @@ def optimize_day_off_coverage(
     policy.max_cascade_depth = max_depth
     req_date = parse_date(request_date)
     schedule_context = get_generated_schedule_day_context(req_date)
-    enforce = not supervisor_override
+    enforce_minimum_rest = not (supervisor_override and relaxed_constraint in (None, "minimum_rest"))
+    enforce_consecutive_work = not (supervisor_override and relaxed_constraint in (None, "consecutive_days"))
 
     plans = search_best_coverage_plans(
         original_officer_id,
@@ -642,8 +650,8 @@ def optimize_day_off_coverage(
         shift_start,
         schedule_context,
         policy=policy,
-        enforce_minimum_rest=enforce,
-        enforce_consecutive_work=enforce,
+        enforce_minimum_rest=enforce_minimum_rest,
+        enforce_consecutive_work=enforce_consecutive_work,
     )
     best = plans[0]
     if best.success:
@@ -662,12 +670,13 @@ def optimize_day_off_coverage(
     band = normalize_shift_band(shift_start)
     counts = _bump_assignment_counts_for_date(request_date)
     excluded: Set[int] = {original_officer_id}
-    if enforce:
+    if enforce_minimum_rest:
         rest = _minimum_rest_manual_failure(
             request_date, band, schedule_context, counts, excluded, original_officer_id, squad, name, band
         )
         if rest:
             return rest
+    if enforce_consecutive_work:
         consecutive = _consecutive_days_manual_failure(
             request_date, band, schedule_context, counts, excluded, original_officer_id, squad, name, band
         )

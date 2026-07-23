@@ -887,6 +887,10 @@ def process_day_off_request(
                         request["squad"],
                         covered_start,
                         supervisor_override=True,
+                        # Narrow the override to the one constraint that
+                        # actually failed above, instead of relaxing both
+                        # minimum-rest and consecutive-work blanket-style.
+                        relaxed_constraint=constraint_probe.failure_reason,
                     )
                     if manual_override
                     else constraint_probe
