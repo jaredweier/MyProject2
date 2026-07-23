@@ -2605,6 +2605,16 @@ def render_simulator() -> None:
                 lines.append(result["space_note"])
             if result.get("solver_status"):
                 lines.append(f"Solver status: {result['solver_status'].replace('_', ' ')}")
+            canonical_status = result.get("canonical_status")
+            if canonical_status is not None:
+                status_label = getattr(canonical_status, "value", str(canonical_status))
+                lines.append(f"Canonical status: {status_label}")
+            sim_report = result.get("simulation_report")
+            verification = getattr(sim_report, "verification", None) if sim_report is not None else None
+            if verification is not None:
+                verdict = "PASSED" if verification.verified else "FAILED"
+                detail = f" ({', '.join(verification.violations)})" if verification.violations else ""
+                lines.append(f"Independent verification: {verdict}{detail}")
             if result.get("budget_exhausted"):
                 lines.append(
                     "Time budget reached — best-so-far shown; a longer Deep search may still find better options."

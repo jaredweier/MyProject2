@@ -34,6 +34,13 @@ from datetime import date, timedelta
 from typing import Dict, List, Optional, Sequence, Tuple
 
 from logic.rotation_patterns import RotationPattern, projected_annual_hours
+from logic.scheduling_contracts import (
+    ScheduleCandidate,
+    SimulationReport,
+    compute_input_hash,
+    compute_policy_hash,
+    to_canonical_status,
+)
 
 
 def lexicographic_coefficients(ordered_bounds: Sequence[Tuple[str, int]]) -> Dict[str, int]:
@@ -74,7 +81,18 @@ def _max_cyclic_run(duty: Sequence[bool]) -> int:
     return min(best, n)
 
 
-def solve_phase_variant(
+def solve_phase_variant(*args, **kwargs) -> Dict:
+    """Public entry — see `_solve_phase_variant` for the model; this wrapper
+    attaches the canonical `ScheduleStatus` (master plan section 3) additively,
+    plus a `simulation_report` preview of the typed contract."""
+    result = _solve_phase_variant(*args, **kwargs)
+    status = to_canonical_status(result.get("status", "unknown"))
+    result["canonical_status"] = status
+    result["simulation_report"] = _cpsat_result_to_report(result, status, kwargs)
+    return result
+
+
+def _solve_phase_variant(
     patterns: Sequence[RotationPattern],
     *,
     n_officers: int,
@@ -233,7 +251,21 @@ def _parse_hhmm(value: str) -> int:
     return int(parts[0]) * 60 + int(parts[1])
 
 
-def solve_full_assignment(
+def solve_full_assignment(*args, **kwargs) -> Dict:
+    """Public entry — see `_solve_full_assignment` for the model; this wrapper
+    attaches the canonical `ScheduleStatus` (master plan section 3) additively.
+    A solution-pool result (list under "solutions") is stamped per-entry."""
+    result = _solve_full_assignment(*args, **kwargs)
+    if "solutions" in result and isinstance(result["solutions"], list):
+        for sol in result["solutions"]:
+            sol["canonical_status"] = to_canonical_status(sol.get("solver_status", "unknown"))
+    status = to_canonical_status(result.get("status", "unknown"))
+    result["canonical_status"] = status
+    result["simulation_report"] = _cpsat_result_to_report(result, status, kwargs)
+    return result
+
+
+def _solve_full_assignment(
     patterns: Sequence[RotationPattern],
     *,
     n_officers: int,
@@ -593,7 +625,105 @@ def solve_full_assignment(
     }
 
 
-def solve_cycle_day_starts(
+def solve_cycle_day_starts(*args, **kwargs) -> Dict:
+    """Public entry — see `_solve_cycle_day_starts` for the model; this wrapper
+    attaches the canonical `ScheduleStatus` (master plan section 3) additively,
+    plus a `simulation_report` (`SimulationReport`) built from the same raw
+    result. Because `cycle_starts_per_officer` already gives the exact start
+    (or off) per cycle-day, the report's `verification` is independently
+    recalculated via `logic.coverage_timeline.verify_schedule_candidate` —
+    no duty-vector reconstruction needed, so no risk of drifting from the
+    solver's own time model."""
+    result = _solve_cycle_day_starts(*args, **kwargs)
+    status = to_canonical_status(result.get("status", "unknown"))
+    result["canonical_status"] = status
+    report = _cpsat_result_to_report(result, status, kwargs)
+    report.verification = _verify_cycle_day_starts(result, kwargs)
+    result["simulation_report"] = report
+    return result
+
+
+def _verify_cycle_day_starts(result: Dict, kwargs: Dict):
+    """Independently recheck a feasible `solve_cycle_day_starts` result by
+    replaying its exact per-cycle-day starts through the canonical verifier.
+    Returns None when there isn't enough evidence to check (never fabricates
+    a pass)."""
+    cycle_starts = result.get("cycle_starts_per_officer")
+    shift_length_hours = kwargs.get("shift_length_hours")
+    sim_start_date = kwargs.get("sim_start_date")
+    if result.get("status") != "feasible" or not cycle_starts or not shift_length_hours or not sim_start_date:
+        return None
+    cycle_len = len(cycle_starts[0]) if cycle_starts[0] else 0
+    if not cycle_len:
+        return None
+
+    from logic.coverage_timeline import CoverageWindow, verify_schedule_candidate
+
+    assignments = []
+    for officer_days in cycle_starts:
+        for d, start in enumerate(officer_days):
+            if not start:
+                continue
+            day = sim_start_date + timedelta(days=d)
+            start_m = _parse_hhmm(start)
+            end_m = (start_m + int(round(float(shift_length_hours) * 60))) % (24 * 60)
+            end = f"{end_m // 60:02d}:{end_m % 60:02d}"
+            assignments.append((day, start, end))
+
+    days = [sim_start_date + timedelta(days=d) for d in range(cycle_len)]
+    windows = []
+    for w in kwargs.get("extra_windows") or []:
+        if isinstance(w, dict) and w.get("enabled", True):
+            windows.append(
+                CoverageWindow(
+                    min_officers=int(w.get("min_officers") or 0),
+                    start_time=str(w.get("start_time") or "00:00"),
+                    end_time=str(w.get("end_time") or "23:59"),
+                    specific_date=w.get("specific_date"),
+                    weekday=w.get("weekday"),
+                    label=str(w.get("label") or "Window"),
+                )
+            )
+    return verify_schedule_candidate(assignments, days, min_247=int(kwargs.get("coverage_247") or 0), windows=windows)
+
+
+def _candidate_from_cpsat_result(result: Dict) -> ScheduleCandidate:
+    """Build a `ScheduleCandidate` from any of the three CP-SAT entry points'
+    feasible-result shapes — they share `phase`/`pattern_map` and optionally
+    `shift_starts_per_officer`/`cycle_starts_per_officer`."""
+    n = len(result.get("phase") or [])
+    starts = result.get("shift_starts_per_officer")
+    cycle_starts = result.get("cycle_starts_per_officer")
+    assignments = [
+        {
+            "officer_id": o,
+            "phase": result["phase"][o],
+            "pattern": result["pattern_map"][o],
+            "shift_starts": starts[o] if starts else None,
+            "cycle_starts": cycle_starts[o] if cycle_starts else None,
+        }
+        for o in range(n)
+    ]
+    return ScheduleCandidate(assignments=assignments)
+
+
+def _cpsat_result_to_report(result: Dict, status, kwargs: Dict) -> SimulationReport:
+    candidates = []
+    if result.get("status") == "feasible":
+        candidates = [_candidate_from_cpsat_result(result)]
+        # solutions[0] duplicates the top-level fields already used above.
+        candidates.extend(_candidate_from_cpsat_result(s) for s in (result.get("solutions") or [])[1:])
+    return SimulationReport(
+        status=status,
+        candidates=candidates,
+        solver="cp-sat",
+        input_hash=compute_input_hash({k: v for k, v in kwargs.items() if k != "patterns"}),
+        policy_hash=compute_policy_hash(kwargs),
+        warnings=[result["reason"]] if result.get("reason") else [],
+    )
+
+
+def _solve_cycle_day_starts(
     patterns: Sequence[RotationPattern],
     *,
     n_officers: int,

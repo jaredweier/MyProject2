@@ -22,6 +22,15 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, TypedDict
 
 import config
+from logic.scheduling_contracts import (
+    ScheduleCandidate,
+    ScheduleStatus,
+    SimulationReport,
+    VerificationReport,
+    compute_input_hash,
+    compute_policy_hash,
+    to_canonical_status,
+)
 
 InputRole = Literal["hard_constraint", "soft_preference", "open_variable"]
 
@@ -1401,7 +1410,97 @@ def estimate_search_space(
     }
 
 
-def optimize_staffing_scenarios(
+def optimize_staffing_scenarios(*args, **kwargs) -> Dict:
+    """Public entry — see `_optimize_staffing_scenarios` for the search; this
+    wrapper attaches the canonical `ScheduleStatus` (master plan section 3)
+    additively from `solver_status`, never overwriting the legacy fields.
+    Also attaches `simulation_report`, a `SimulationReport` preview built
+    from the ranked scenario rows."""
+    result = _optimize_staffing_scenarios(*args, **kwargs)
+    status = to_canonical_status(result.get("solver_status", "unknown"))
+    result["canonical_status"] = status
+    result["simulation_report"] = _ranked_result_to_report(result, status, kwargs)
+    return result
+
+
+def _candidate_from_ranked_row(row: Dict) -> ScheduleCandidate:
+    n = int(row.get("num_officers") or 0)
+    home_starts = row.get("officer_home_starts") or []
+    cycle_starts = row.get("officer_cycle_starts") or []
+    assignments = [
+        {
+            "officer_id": o,
+            "home_start": home_starts[o] if o < len(home_starts) else None,
+            "cycle_starts": cycle_starts[o] if o < len(cycle_starts) else None,
+        }
+        for o in range(n)
+    ]
+    metrics = row.get("metrics") or {}
+    objective_values = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+    return ScheduleCandidate(
+        assignments=assignments,
+        objective_values=objective_values,
+        applied_hard_constraints=[] if row.get("hard_constraints_ok") else list(row.get("failed_constraints") or []),
+        relaxations=list(row.get("failed_constraints") or []),
+    )
+
+
+def _ranked_result_to_report(result: Dict, status, kwargs: Dict) -> SimulationReport:
+    ranked = result.get("ranked") or []
+    candidates = [_candidate_from_ranked_row(row) for row in ranked]
+    return SimulationReport(
+        status=status,
+        candidates=candidates,
+        solver="staffing_optimizer",
+        verification=_verification_from_ranked_rows(ranked),
+        input_hash=compute_input_hash(kwargs),
+        policy_hash=compute_policy_hash(kwargs),
+        runtime_sec=float(result.get("wall_time_ms") or 0) / 1000.0,
+        search_statistics={
+            "scenarios_evaluated": result.get("scenarios_evaluated"),
+            "scenarios_kept": result.get("scenarios_kept"),
+            "search_exhaustive": result.get("search_exhaustive"),
+            "budget_exhausted": result.get("budget_exhausted"),
+        },
+        warnings=[result["message"]] if result.get("message") else [],
+    )
+
+
+def _verification_from_ranked_rows(ranked: List[Dict]):
+    """Adapt each row's already-computed `hard_constraints_ok`/`violations`
+    (from `simulate_schedule`'s own sweep-line check — see
+    `logic/staffing_cpsat.py` module docstring) into a typed
+    `VerificationReport`. Does not re-derive coverage from raw assignments —
+    ranked rows don't carry per-minute assignment data, only the sweep-line
+    check's already-computed verdict, so this wraps that verdict rather than
+    risking a second, possibly-inconsistent time model."""
+    if not ranked:
+        return None
+    violations: List[str] = []
+    checked: set = set()
+    verified = True
+    for row in ranked:
+        if not row.get("hard_constraints_ok"):
+            verified = False
+        # row["violations"] is the full checked-category vector (dict,
+        # category -> count, present whether or not that category actually
+        # failed) — row["failed_constraints"] is the already-filtered list
+        # of categories that actually failed. Use the latter for both, or
+        # every row would report every checked category as a "violation"
+        # regardless of its count.
+        failed = [str(c) for c in row.get("failed_constraints") or []]
+        violations.extend(failed)
+        checked.update(str(c) for c in (row.get("violations") or {}))
+    return VerificationReport(
+        verified=verified,
+        status=ScheduleStatus.FEASIBLE if verified else ScheduleStatus.INFEASIBLE,
+        violations=violations,
+        checked_constraints=sorted(checked),
+        notes="derived from simulate_schedule's own sweep-line check per ranked row",
+    )
+
+
+def _optimize_staffing_scenarios(
     *,
     rotation_types: Optional[List[str]] = None,
     officer_counts: Optional[List[int]] = None,

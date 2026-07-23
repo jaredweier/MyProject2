@@ -7,6 +7,7 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from logic.operations import get_department_setting, set_department_setting
+from logic.scheduling_contracts import ScheduleStatus, VerificationReport
 from logic.users import log_audit_action
 from validators import format_date, parse_date, storage_date_str
 
@@ -291,6 +292,23 @@ def _unlock_base_if_needed(year: int, month: int) -> None:
 
 
 def verify_plan_for_implementation(result: Dict, config: Dict) -> Dict:
+    """Independently recalculate apply-time hard coverage and annual-hour
+    claims. Wrapper: attaches a typed `verification_report` (master plan
+    section 3 `VerificationReport`) additively — legacy `ok`/`status`/
+    `failures`/`unknown` keys are unchanged and remain the source of truth
+    for existing callers."""
+    out = _verify_plan_for_implementation(result, config)
+    out["verification_report"] = VerificationReport(
+        verified=bool(out["ok"]),
+        status=ScheduleStatus(out["status"]),
+        violations=[str(f) for f in out.get("failures") or []],
+        checked_constraints=sorted({f.get("constraint", "") for f in out.get("failures") or [] if isinstance(f, dict)}),
+        notes="; ".join(out.get("unknown") or []),
+    )
+    return out
+
+
+def _verify_plan_for_implementation(result: Dict, config: Dict) -> Dict:
     """Independently recalculate apply-time hard coverage and annual-hour claims."""
     from logic.coverage_timeline import CoverageWindow, evaluate_day_coverage
 

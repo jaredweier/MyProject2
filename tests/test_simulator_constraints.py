@@ -734,6 +734,11 @@ class SimulatorConstraintsTests(unittest.TestCase):
     def test_open_search_uses_preset_cpsat_for_six_officer_solution(self):
         from logic.scheduling_sim import run_staffing_optimizer
 
+        # Diagnosed 2026-07-23: not a routing/logic regression. Isolated run
+        # 13.22s; reproduced full 569-test sequential suite passing at 371s
+        # total. A 30s budget is tight against real CPU-load variance late in
+        # a long single-process sequential run; 60s absorbs that noise without
+        # weakening the assertion (still fails loud if the search regresses).
         result = run_staffing_optimizer(
             rotation_types=["2-2-3 (14-day)"],
             officer_counts=[6],
@@ -751,7 +756,7 @@ class SimulatorConstraintsTests(unittest.TestCase):
             free_lengths=True,
             free_variations=False,
             simulation_days=28,
-            time_budget_seconds=30,
+            time_budget_seconds=60,
         )
 
         self.assertTrue(result.get("success"), result.get("message"))
