@@ -596,14 +596,26 @@ def search_best_coverage_plans(
     if unique:
         return unique
 
-    # No complete plan
+    # No complete plan. Distinguish a real proof (beam ran empty on its own)
+    # from a budget cutoff (node cap hit while the beam still had unexplored
+    # candidates) — the latter is UNKNOWN, not a proof of infeasibility, even
+    # though failure_reason stays "no_replacement" for override_authority's
+    # existing CONSTRAINT_ALIASES mapping.
+    budget_capped = explored >= max_nodes and bool(beam)
+    message = "No complete coverage plan under current staffing and compliance rules"
+    if budget_capped:
+        message = (
+            f"No complete coverage plan found within the search budget "
+            f"({max_nodes} nodes) — not proven impossible, search was cut off"
+        )
     return [
         BumpChainSuggestion(
             success=False,
-            message="No complete coverage plan under current staffing and compliance rules",
+            message=message,
             requires_manual=True,
             failure_reason="no_replacement",
             alternatives_considered=explored,
+            search_complete=not budget_capped,
         )
     ]
 
