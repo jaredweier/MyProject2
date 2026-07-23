@@ -1,6 +1,12 @@
 # Dodgeville PD — Claude / multi-agent notes
 
-## READ FIRST — ABSOLUTE (see AGENTS.md for full text)
+## READ FIRST — ABSOLUTE, every new session, before any other action
+1. `AGENTS.md` (repo root) — binding agent rules, caveman/minimize/trust/silence.
+2. `docs/HANDOFF.md` § NEXT SESSION (top of file) — last landings, open residuals, what's uncommitted.
+3. `C:\Users\Windows\Chronos Workspace\docs\PRODUCT_MASTER_PLAN.md` — canonical product direction; mandatory before any product planning or implementation. Do not edit files there — implementation only happens in this workspace.
+
+Do these three reads before touching code, even on a fast/cold start. This is the same bootstrap `scripts/session_auto_bootstrap.py` gives Grok/Cursor sessions via `logs/SESSION_CONTRACT.md` — Claude Code sessions get it from this file instead, since no SessionStart hook is wired for this host.
+
 - **Caveman:** short bullets. No preamble, no recap, no "let me". Prose only if user asks to explain/docs.
 - **Minimize:** fewest tool calls/tokens to finish fully. No parallel/background spam without checking in. One thing at a time unless told otherwise.
 - **Trust:** never claim fixed/done without user-scenario proof. Unit tests ≠ Chronos working.
