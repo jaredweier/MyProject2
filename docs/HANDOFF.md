@@ -1,3 +1,86 @@
+## 2026-07-23 NEWEST — Master plan Phase 2 started (bumping/leave correctness)
+
+Committed the prior session's large uncommitted diff (was sitting across 3
+areas for multiple sessions — see entries below, now landed as 3 commits:
+`1f60a37` scheduling contracts/Tier A, `a83f3c0` MFA/OIDC/audit/withholding,
+`86d368b` this doc). Also fixed a real gap: `CLAUDE.md` (auto-loaded every
+Claude Code session) had no pointer to `AGENTS.md`/`docs/HANDOFF.md`/the
+master plan — that bootstrap only existed for Grok/Cursor via
+`scripts/session_auto_bootstrap.py`'s SessionStart hook, which Claude Code
+doesn't have wired. Fixed in commit `533b377`.
+
+**Then began master plan §14 Phase 2** ("bumping and leave correctness").
+Audited the 6 Phase 2 requirements against real code (not just trusting this
+doc's own prior "already correct" claims — 2 of them turned out to be
+overstated):
+
+1. **Typed constraint-specific relaxation — was PARTIAL, now DONE** (`7d4aba4`).
+   `logic/override_authority.py` already built a typed relaxation record
+   (constraint_code/reason/expiry) for the audit trail, but enforcement at
+   `suggest_bump_chain`/`optimize_day_off_coverage` still collapsed any
+   `supervisor_override=True` into relaxing BOTH minimum-rest and
+   consecutive-work together — a manual-review override approved for one
+   violation silently also permitted the other, unapproved. Added
+   `relaxed_constraint: Optional[str]` to both functions (bump_optimizer.py,
+   coverage_optimizer.py); `requests.py::process_day_off_request` now passes
+   the actual failed constraint instead of a bare boolean. Both the rust
+   search and python fallback get the same value so they can't disagree.
+   Legacy callers (e.g. `ops_desk.py` preview) that don't pass it keep old
+   blanket-relax behavior — unchanged. Verified: 56+4 targeted tests +
+   `verify --tier fast` (including AUD-007 which exercises this exact path).
+2. **Whole-plan bump verification in batch approval — CONFIRMED PARTIAL, NOT
+   FIXED, high risk, needs a follow-up session.** In
+   `bulk_approve_auto_ok_requests` (`logic/requests.py` ~1130-1250), each
+   candidate's bump chain/coverage check is computed once *before* the batch
+   write transaction opens, then applied via `_verified_suggestion` inside
+   the transaction **without recomputing against schedule state as mutated
+   by earlier candidates in the same batch** — unlike the single-request
+   `preferred_chain` path (lines 845-872), which does recompute.
+   **Attempted the obvious fix** (swap `_verified_suggestion=suggestion` for
+   `preferred_chain=list(suggestion.chain)` + drop the stale
+   `coverage_verified=True` shortcut, reusing the already-tested
+   recomputation path) — **it broke a real test**
+   (`test_bulk_approval_rolls_back_every_request_when_second_outbox_fails`)
+   with `database table is locked: schedule_overrides`: the recomputation
+   path (`search_best_coverage_plans` / `get_generated_schedule_day_context`)
+   opens its own connection instead of accepting the batch's open write
+   transaction's `conn`, and SQLite's single-writer model rejects the nested
+   read while the batch transaction holds the write lock. **Reverted in the
+   same session** (working tree confirmed byte-identical to before the
+   attempt). Real fix needs the recomputation call chain threaded to accept
+   an existing `conn` instead of always opening `connection()` fresh — a
+   bigger, more invasive change than a one-line swap. Flagged as **high
+   risk, skip until user verifies** per this session's instruction. Do not
+   re-attempt the naive swap — it's a known dead end that will reproduce the
+   same lock error.
+3. Capped-search → `UNKNOWN` reporting in bump chain search — **NOT DONE**,
+   not attempted this session. `coverage_optimizer.py` tracks
+   `alternatives_considered` but no cap/timeout path returns an explicit
+   incomplete/UNKNOWN status distinct from a proven-impossible failure.
+4. Leave lifecycle atomicity (single-request path) — confirmed **DONE**,
+   already correct: one transaction, commits once, rolls back on exception
+   (`tests/test_regressions.py::test_approve_not_committed_when_override_insert_fails`).
+5. Joint batch solving — confirmed **PARTIAL**: priority-ordered greedy
+   application, not a joint solve; shares the staleness gap from item 2.
+6. Optimistic concurrency / idempotent retries — **NOT VERIFIED, likely
+   missing.** No `row_version`/`ETag`/`ON CONFLICT` guard found in
+   `requests.py`. HANDOFF's prior claim ("already correct, tested" — see
+   "ALL TIER A CLOSED" item 8 below) is **not supported by any matching
+   test** — no `stale_preview`/`idempoten`/`outbox`-named test exists beyond
+   one unrelated Twilio-outbox test. Correcting the record here; don't cite
+   item 8 below as proof of concurrency safety without adding that test
+   first.
+
+**Next Phase 2 slice (not started):** either (a) thread a real `conn`
+parameter through `search_best_coverage_plans`/
+`get_generated_schedule_day_context` so batch approval can safely recompute
+mid-transaction (fixes item 2, unblocks the real correctness gap), or (b) add
+capped-search UNKNOWN reporting (item 3, no concurrency risk, purely additive
+status field) — (b) is the lower-risk starting point if picking up cold.
+
+Still uncommitted after this entry: nothing — working tree clean except
+untracked `toolguide.md` (intentional, reference doc not code).
+
 ## 2026-07-23 NEWEST — first real UI consumer of canonical_status/simulation_report
 
 - `gui/pages/simulator/page.py` (Find Best result summary, right after the
