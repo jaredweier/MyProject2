@@ -81,29 +81,29 @@ def min_occupancy_in_range(
     events = build_occupancy_events(assignments)
 
     current_occ = 0
-
-    # Compute occupancy exactly at range_start
-    for t, delta in events:
-        if t <= range_start:
-            current_occ += delta
-        else:
-            break
-
-    min_occ = current_occ
-    current_occ = 0
-
     i = 0
     n = len(events)
+    # Seed occupancy at range_start with shifts that began earlier. The old
+    # implementation calculated this correctly, then reset it to zero before
+    # sweeping the requested window, erasing overlapping shifts whose start
+    # time preceded the window.
+    while i < n and events[i][0] <= range_start:
+        t = events[i][0]
+        while i < n and events[i][0] == t:
+            current_occ += events[i][1]
+            i += 1
+    min_occ = current_occ
+
     while i < n:
         t = events[i][0]
+        if t >= range_end:
+            break
         # process all events at time t
         while i < n and events[i][0] == t:
             current_occ += events[i][1]
             i += 1
-
-        if t >= range_start and t < range_end:
-            if current_occ < min_occ:
-                min_occ = current_occ
+        if current_occ < min_occ:
+            min_occ = current_occ
 
     return min_occ
 

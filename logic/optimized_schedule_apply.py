@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import date, timedelta
 from typing import Any, Dict, List, Optional
 
 from logic.operations import get_department_setting, set_department_setting
@@ -290,6 +290,120 @@ def _unlock_base_if_needed(year: int, month: int) -> None:
         conn.commit()
 
 
+def verify_plan_for_implementation(result: Dict, config: Dict) -> Dict:
+    """Independently recalculate apply-time hard coverage and annual-hour claims."""
+    from logic.coverage_timeline import CoverageWindow, evaluate_day_coverage
+
+    failures: List[Dict] = []
+    unknown: List[str] = []
+    coverage = list(result.get("coverage_by_day") or [])
+    slots = list(result.get("officer_slots") or [])
+    starts = _normalize_half_hour_starts(
+        result.get("shift_starts")
+        or (result.get("simulation_config") or {}).get("shift_starts")
+        or config.get("shift_starts")
+        or []
+    )
+    min_per_shift = int(config.get("min_per_shift") or 0)
+
+    if min_per_shift > 0:
+        if not coverage:
+            unknown.append("daily coverage evidence missing")
+        for day in coverage:
+            counts = day.get("shift_counts") or {}
+            for start in starts:
+                actual = int(counts.get(start) or 0)
+                if actual < min_per_shift:
+                    failures.append(
+                        {
+                            "constraint": "minimum_shift_coverage",
+                            "date": day.get("date"),
+                            "interval": start,
+                            "required": min_per_shift,
+                            "actual": actual,
+                        }
+                    )
+
+    if bool(config.get("annual_hours_hard")):
+        target = float(config.get("annual_hours_target") or 0)
+        variance = float(config.get("annual_hours_variance") or 0)
+        if not slots:
+            unknown.append("officer annual-hours evidence missing")
+        for slot in slots:
+            hours = float((slot if isinstance(slot, dict) else slot.__dict__).get("projected_annual_hours") or 0)
+            if abs(hours - target) > variance + 1e-6:
+                failures.append(
+                    {
+                        "constraint": "annual_hours",
+                        "officer": (slot if isinstance(slot, dict) else slot.__dict__).get("slot_id"),
+                        "required": f"{target - variance:.1f}..{target + variance:.1f}",
+                        "actual": hours,
+                    }
+                )
+
+    min_247 = int(config.get("coverage_247") or 0)
+    raw_windows = list(config.get("extra_windows") or []) if config.get("use_extra_windows") else []
+    if min_247 > 0 or raw_windows:
+        assignment_rows = list(result.get("assignments") or [])
+        if not assignment_rows:
+            unknown.append("continuous coverage assignment evidence missing")
+        else:
+            assignments = [
+                (
+                    parse_date(str(row.get("work_date"))),
+                    str(row.get("shift_start")),
+                    str(row.get("shift_end")),
+                )
+                for row in assignment_rows
+            ]
+            windows: List[CoverageWindow] = []
+            from logic.coverage_windows_store import _parse_window_dict
+
+            for item in raw_windows:
+                if isinstance(item, dict) and item.get("enabled") is not False:
+                    window = _parse_window_dict(item)
+                    if window:
+                        windows.append(window)
+            days = sorted({parse_date(str(day.get("date"))) for day in coverage if day.get("date")})
+            for day_index, day in enumerate(days):
+                day_assignments = list(assignments)
+                if day_index == 0 and min_247 > 0:
+                    for work_date, shift_start, shift_end in assignments:
+                        if work_date != day:
+                            continue
+                        start_hour = int(shift_start.split(":")[0])
+                        if start_hour >= 18 or start_hour < 6:
+                            day_assignments.append((day - timedelta(days=1), shift_start, shift_end))
+                checked = evaluate_day_coverage(day_assignments, day, min_247=min_247, windows=windows)
+                for check in checked.get("checks") or []:
+                    if not check.get("ok"):
+                        failures.append({"constraint": "continuous_coverage", **check})
+
+    if failures:
+        return {
+            "ok": False,
+            "status": "INFEASIBLE",
+            "message": "Independent apply verification failed",
+            "failures": failures,
+            "unknown": unknown,
+        }
+    if unknown:
+        return {
+            "ok": False,
+            "status": "UNKNOWN",
+            "message": "Independent apply verification could not prove this plan",
+            "failures": [],
+            "unknown": unknown,
+        }
+    return {
+        "ok": True,
+        "status": "FEASIBLE",
+        "message": "Independent apply verification passed",
+        "failures": [],
+        "unknown": [],
+    }
+
+
 def preview_implement_plan(
     *,
     start_date: str = "",
@@ -302,6 +416,14 @@ def preview_implement_plan(
     cfg = config or plan.get("simulation_config") or {}
     if not plan.get("success"):
         return {"success": False, "message": "No successful plan to preview", "dry_run": True}
+    verification = verify_plan_for_implementation(plan, cfg)
+    if not verification.get("ok"):
+        return {
+            "success": False,
+            "message": verification.get("message"),
+            "dry_run": True,
+            "verification": verification,
+        }
     slots = plan.get("officer_slots") or []
     metrics = plan.get("metrics") or {}
     rec = recommend_implement_dates()
@@ -337,6 +459,7 @@ def preview_implement_plan(
         "slot_count": len(slots),
         "metrics": metrics,
         "config": cfg,
+        "verification": verification,
     }
 
 
@@ -363,6 +486,14 @@ def implement_optimized_plan(
 
     if not result.get("success"):
         return {"success": False, "message": "Plan is not a successful optimization result"}
+
+    verification = verify_plan_for_implementation(result, config)
+    if not verification.get("ok"):
+        return {
+            "success": False,
+            "message": verification.get("message"),
+            "verification": verification,
+        }
 
     try:
         start = parse_date(start_date)
@@ -507,6 +638,7 @@ def implement_optimized_plan(
         "officer_updates": officer_updates,
         "defaults": defaults,
         "recommended": recommend_implement_dates(start),
+        "verification": verification,
     }
 
 

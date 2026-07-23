@@ -1,6 +1,8 @@
 """Coverage optimizer — multi-plan bump search and staffing scenario sweep."""
 
 import unittest
+from datetime import timedelta
+from unittest.mock import patch
 
 from tests.helpers import test_database, working_date_for_squad
 from validators import officer_uses_command_staff_schedule
@@ -152,6 +154,189 @@ class CoverageOptimizerTests(unittest.TestCase):
             rid = created["request_id"]
             result = process_day_off_request(rid, action="approve", preferred_chain=list(plan.chain))
             self.assertTrue(result.success, result.message)
+
+    def test_preferred_chain_rejects_unverified_existing_officer_pair(self):
+        from logic import (
+            create_day_off_request,
+            get_officers_by_seniority,
+            process_day_off_request,
+        )
+
+        with test_database():
+            requester = next(
+                o
+                for o in get_officers_by_seniority()
+                if o["squad"] == "A"
+                and o.get("shift_start") == "06:00"
+                and not officer_uses_command_staff_schedule(o)
+                and o.get("active") == 1
+            )
+            day = working_date_for_squad("A").strftime("%Y-%m-%d")
+            created = create_day_off_request(requester["id"], day, "Vacation", "forged plan test")
+            self.assertTrue(created.get("success"), created)
+
+            result = process_day_off_request(
+                created["request_id"],
+                action="approve",
+                preferred_chain=[(requester["id"], requester["id"])],
+            )
+            self.assertFalse(result.success, result.message)
+            self.assertIn("stale or failed", result.message)
+
+    def test_approval_rolls_back_when_live_schedule_rebuild_fails(self):
+        from logic import (
+            create_day_off_request,
+            get_day_off_requests,
+            get_officers_by_seniority,
+            process_day_off_request,
+        )
+
+        with test_database():
+            requester = next(
+                o
+                for o in get_officers_by_seniority()
+                if o["squad"] == "A"
+                and o.get("shift_start") == "06:00"
+                and not officer_uses_command_staff_schedule(o)
+                and o.get("active") == 1
+            )
+            day = working_date_for_squad("A").strftime("%Y-%m-%d")
+            created = create_day_off_request(requester["id"], day, "Vacation", "atomic failure test")
+            self.assertTrue(created.get("success"), created)
+
+            with patch(
+                "logic.snapshots.apply_live_schedule_for_date_in_transaction",
+                return_value={"success": False, "message": "injected rebuild failure"},
+            ):
+                result = process_day_off_request(created["request_id"], action="approve")
+
+            self.assertFalse(result.success, result.message)
+            request = next(r for r in get_day_off_requests() if r["id"] == created["request_id"])
+            self.assertNotEqual(request["status"], "Approved")
+
+    def test_approval_rolls_back_every_effect_when_outbox_insert_fails(self):
+        from database import connection
+        from logic import (
+            create_day_off_request,
+            get_day_off_requests,
+            get_officers_by_seniority,
+            process_day_off_request,
+        )
+
+        with test_database():
+            requester = next(
+                o
+                for o in get_officers_by_seniority()
+                if o["squad"] == "A"
+                and o.get("shift_start") == "06:00"
+                and not officer_uses_command_staff_schedule(o)
+                and o.get("active") == 1
+            )
+            day = working_date_for_squad("A").strftime("%Y-%m-%d")
+            created = create_day_off_request(requester["id"], day, "Vacation", "outbox failure test")
+            self.assertTrue(created.get("success"), created)
+
+            with patch(
+                "logic.requests._queue_leave_approval_notifications_in_transaction",
+                side_effect=RuntimeError("injected outbox failure"),
+            ):
+                result = process_day_off_request(created["request_id"], action="approve")
+
+            self.assertFalse(result.success)
+            request = next(r for r in get_day_off_requests() if r["id"] == created["request_id"])
+            self.assertNotEqual(request["status"], "Approved")
+            with connection() as conn:
+                override_count = conn.execute(
+                    "SELECT COUNT(*) FROM schedule_overrides WHERE override_date = ?",
+                    (day,),
+                ).fetchone()[0]
+                ledger_exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'leave_accrual_ledger'"
+                ).fetchone()
+                ledger_count = (
+                    conn.execute(
+                        "SELECT COUNT(*) FROM leave_accrual_ledger WHERE request_id = ?",
+                        (created["request_id"],),
+                    ).fetchone()[0]
+                    if ledger_exists
+                    else 0
+                )
+                outbox_count = conn.execute(
+                    "SELECT COUNT(*) FROM notify_outbox WHERE template_key IN ('leave_approved', 'leave_cover')"
+                ).fetchone()[0]
+                audit_count = conn.execute(
+                    "SELECT COUNT(*) FROM audit_log WHERE action = 'day_off.approve' AND entity_id = ?",
+                    (created["request_id"],),
+                ).fetchone()[0]
+            self.assertEqual(override_count, 0)
+            self.assertEqual(ledger_count, 0)
+            self.assertEqual(outbox_count, 0)
+            self.assertEqual(audit_count, 0)
+
+    def test_bulk_approval_rolls_back_every_request_when_second_outbox_fails(self):
+        from database import connection
+        from logic import (
+            bulk_approve_auto_ok_requests,
+            create_day_off_request,
+            get_day_off_requests,
+            get_officers_by_seniority,
+        )
+        from logic.requests import _queue_leave_approval_notifications_in_transaction
+
+        with test_database():
+            requester = next(
+                o
+                for o in get_officers_by_seniority()
+                if o["squad"] == "A"
+                and o.get("shift_start") == "06:00"
+                and not officer_uses_command_staff_schedule(o)
+                and o.get("active") == 1
+            )
+            first_day = working_date_for_squad("A")
+            request_ids = []
+            for day in (first_day, first_day + timedelta(days=14)):
+                created = create_day_off_request(
+                    requester["id"], day.strftime("%Y-%m-%d"), "Vacation", "atomic batch test"
+                )
+                self.assertTrue(created.get("success"), created)
+                request_ids.append(created["request_id"])
+
+            calls = 0
+
+            def fail_second_outbox(*args, **kwargs):
+                nonlocal calls
+                calls += 1
+                if calls == 2:
+                    raise RuntimeError("injected second outbox failure")
+                return _queue_leave_approval_notifications_in_transaction(*args, **kwargs)
+
+            with patch(
+                "logic.requests._queue_leave_approval_notifications_in_transaction",
+                side_effect=fail_second_outbox,
+            ):
+                result = bulk_approve_auto_ok_requests()
+
+            self.assertFalse(result["success"], result)
+            self.assertEqual(result["approved"], 0)
+            self.assertEqual(calls, 2)
+            requests = {r["id"]: r for r in get_day_off_requests()}
+            self.assertTrue(all(requests[rid]["status"] != "Approved" for rid in request_ids))
+            with connection() as conn:
+                for request_id in request_ids:
+                    self.assertEqual(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM leave_accrual_ledger WHERE request_id = ?",
+                            (request_id,),
+                        ).fetchone()[0],
+                        0,
+                    )
+                    self.assertEqual(
+                        conn.execute(
+                            "SELECT COUNT(*) FROM audit_log WHERE action = 'day_off.approve' AND entity_id = ?",
+                            (request_id,),
+                        ).fetchone()[0],
+                        0,
+                    )
 
     def test_plan_messages_omit_scores_and_chain_unique(self):
         from logic import get_officers_by_seniority

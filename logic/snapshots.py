@@ -31,6 +31,7 @@ def _insert_override_record(
     replacement_officer_id,
     reason,
     covered_shift_start: Optional[str] = None,
+    relaxation: Optional[Dict] = None,
 ) -> None:
     if covered_shift_start is None:
         original = get_officer_by_id(original_officer_id)
@@ -38,10 +39,31 @@ def _insert_override_record(
     cursor.execute(
         """
         INSERT INTO schedule_overrides
-        (override_date, original_officer_id, replacement_officer_id, reason, covered_shift_start)
-        VALUES (?, ?, ?, ?, ?)
+        (override_date, original_officer_id, replacement_officer_id, reason, covered_shift_start,
+         relaxed_constraint, override_authority_user_id, override_subject,
+         override_interval_start, override_interval_end, override_expires_at,
+         override_reason, override_evidence)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """,
-        (override_date, original_officer_id, replacement_officer_id, reason, covered_shift_start),
+        (
+            override_date,
+            original_officer_id,
+            replacement_officer_id,
+            reason,
+            covered_shift_start,
+            (relaxation or {}).get("constraint_code"),
+            (relaxation or {}).get("authority_user_id"),
+            (
+                f"{(relaxation or {}).get('subject_type')}:{(relaxation or {}).get('subject_id')}"
+                if relaxation
+                else None
+            ),
+            (relaxation or {}).get("interval_start"),
+            (relaxation or {}).get("interval_end"),
+            (relaxation or {}).get("expires_at"),
+            (relaxation or {}).get("reason"),
+            (relaxation or {}).get("evidence"),
+        ),
     )
 
 
@@ -65,7 +87,7 @@ def _insert_snapshot_rows(
     preserve_manual = preserve_manual or {}
 
     if use_overrides:
-        bumped, covering, swapped, bumped_status = _load_override_maps_for_range(start, end)
+        bumped, covering, swapped, bumped_status = _load_override_maps_for_range(start, end, cursor=cursor)
     else:
         bumped, covering, swapped, bumped_status = {}, {}, {}, {}
 
@@ -128,7 +150,11 @@ def _insert_snapshot_rows(
                 continue
 
             status = day_statuses[officer["id"]]
-            covered = covered_shift_for_officer_on_date(officer["id"], current) if status == "covering" else None
+            covered = (
+                covered_shift_for_officer_on_date(officer["id"], current, cursor=cursor)
+                if status == "covering"
+                else None
+            )
             shift_start, shift_end = resolve_assignment_shift(
                 officer,
                 status,
@@ -158,6 +184,100 @@ def _month_date_range(year: int, month: int) -> Tuple[date, date]:
 
     _, last_day = monthrange(year, month)
     return date(year, month, 1), date(year, month, last_day)
+
+
+def verify_snapshot_rows_for_publish(
+    rows: List[Dict],
+    year: int,
+    month: int,
+    schedule_type: str,
+) -> Dict:
+    """Independently verify persisted monthly rows before they become publishable."""
+    from logic.coverage_timeline import assignment_intervals, evaluate_day_coverage
+    from logic.coverage_windows_store import get_active_coverage_windows, get_coverage_247_minimum
+    from logic.shift_assignment import WORKING_ASSIGNMENT_STATUSES
+
+    start, end = _month_date_range(year, month)
+    officers = [o for o in get_officers_by_seniority() if o.get("active") == 1]
+    officer_ids = {int(o["id"]) for o in officers}
+    expected_days = (end - start).days + 1
+    seen = set()
+    assignments = []
+    conflicts = []
+
+    for row in rows:
+        try:
+            assignment_date = date.fromisoformat(str(row.get("assignment_date") or "")[:10])
+            officer_id = int(row.get("officer_id"))
+        except (TypeError, ValueError):
+            conflicts.append({"code": "INVALID_ROW_IDENTITY", "row": dict(row)})
+            continue
+        key = (assignment_date, officer_id)
+        if key in seen:
+            conflicts.append(
+                {"code": "DUPLICATE_OFFICER_DAY", "date": assignment_date.isoformat(), "officer_id": officer_id}
+            )
+            continue
+        seen.add(key)
+        if not (start <= assignment_date <= end) or officer_id not in officer_ids:
+            conflicts.append(
+                {"code": "OUT_OF_SCOPE_ROW", "date": assignment_date.isoformat(), "officer_id": officer_id}
+            )
+            continue
+        if row.get("status") not in SNAPSHOT_STATUSES:
+            conflicts.append(
+                {
+                    "code": "INVALID_STATUS",
+                    "date": assignment_date.isoformat(),
+                    "officer_id": officer_id,
+                    "status": row.get("status"),
+                }
+            )
+            continue
+        if row.get("status") in WORKING_ASSIGNMENT_STATUSES or row.get("status") == "covering":
+            shift_start = row.get("shift_start") or row.get("assigned_shift_start")
+            shift_end = row.get("shift_end") or row.get("assigned_shift_end")
+            try:
+                intervals = assignment_intervals(assignment_date, shift_start, shift_end)
+                if not intervals or sum((b - a).total_seconds() for a, b in intervals) <= 0:
+                    raise ValueError("empty shift")
+            except (TypeError, ValueError):
+                conflicts.append(
+                    {
+                        "code": "INVALID_WORK_SHIFT",
+                        "date": assignment_date.isoformat(),
+                        "officer_id": officer_id,
+                    }
+                )
+                continue
+            assignments.append((assignment_date, shift_start, shift_end))
+
+    expected_rows = len(officer_ids) * expected_days
+    if len(seen) != expected_rows:
+        conflicts.append({"code": "INCOMPLETE_MONTH", "expected_rows": expected_rows, "actual_rows": len(seen)})
+
+    min_247 = get_coverage_247_minimum()
+    windows = get_active_coverage_windows()
+    coverage_checks = []
+    current = start
+    while current <= end:
+        checked = evaluate_day_coverage(assignments, current, min_247=min_247, windows=windows)
+        coverage_checks.extend(checked["checks"])
+        for check in checked["checks"]:
+            if not check.get("ok"):
+                conflicts.append({"code": "HARD_COVERAGE_SHORTFALL", **check})
+        current += timedelta(days=1)
+
+    ok = not conflicts
+    return {
+        "ok": ok,
+        "status": "FEASIBLE" if ok else "INFEASIBLE",
+        "schedule_type": schedule_type,
+        "row_count": len(rows),
+        "coverage_checks": coverage_checks,
+        "conflicts": conflicts,
+        "message": "Independent publish verification passed" if ok else "Independent publish verification failed",
+    }
 
 
 def compare_base_updated_schedule(
@@ -588,6 +708,7 @@ def ensure_original_monthly_schedule(
 
     created = False
     snapshot_id: Optional[int] = None
+    verification: Optional[Dict] = None
     base_message = "Original monthly schedule already generated"
     with connection() as conn:
         cursor = conn.cursor()
@@ -604,6 +725,17 @@ def ensure_original_monthly_schedule(
                 snapshot_id = existing["id"]
                 created = False
                 base_message = "Original monthly schedule already generated"
+                cursor.execute("SELECT * FROM schedule_snapshot_rows WHERE snapshot_id = ?", (snapshot_id,))
+                verification = verify_snapshot_rows_for_publish(
+                    [dict(row) for row in cursor.fetchall()], year, month, "base"
+                )
+                if not verification["ok"]:
+                    return {
+                        "success": False,
+                        "status": verification["status"],
+                        "message": verification["message"],
+                        "verification": verification,
+                    }
             else:
                 if existing:
                     snapshot_id = existing["id"]
@@ -626,6 +758,18 @@ def ensure_original_monthly_schedule(
                     snapshot_id = cursor.lastrowid
 
                 _insert_snapshot_rows(cursor, snapshot_id, year, month, use_overrides=False)
+                cursor.execute("SELECT * FROM schedule_snapshot_rows WHERE snapshot_id = ?", (snapshot_id,))
+                verification = verify_snapshot_rows_for_publish(
+                    [dict(row) for row in cursor.fetchall()], year, month, "base"
+                )
+                if not verification["ok"]:
+                    conn.rollback()
+                    return {
+                        "success": False,
+                        "status": verification["status"],
+                        "message": verification["message"],
+                        "verification": verification,
+                    }
                 conn.commit()
                 created = True
                 base_message = "Original monthly schedule generated"
@@ -650,6 +794,7 @@ def ensure_original_monthly_schedule(
         "snapshot_id": snapshot_id,
         "live_snapshot_id": live_id,
         "created": created,
+        "verification": verification,
         "message": msg,
     }
 
@@ -706,11 +851,28 @@ def _sync_updated_schedule_only(
             preserve = {(r["assignment_date"], r["officer_id"]): dict(r) for r in cursor.fetchall()}
 
             _insert_snapshot_rows(cursor, snapshot_id, year, month, use_overrides=True, preserve_manual=preserve)
+            cursor.execute("SELECT * FROM schedule_snapshot_rows WHERE snapshot_id = ?", (snapshot_id,))
+            verification = verify_snapshot_rows_for_publish(
+                [dict(candidate) for candidate in cursor.fetchall()], year, month, "updated"
+            )
+            if not verification["ok"]:
+                conn.rollback()
+                return {
+                    "success": False,
+                    "status": verification["status"],
+                    "message": verification["message"],
+                    "verification": verification,
+                }
             conn.commit()
             if notify:
                 _notify_schedule_published(year, month, snapshot_id)
             message = "Live schedule published and staff notified" if notify else "Live schedule updated"
-            return {"success": True, "snapshot_id": snapshot_id, "message": message}
+            return {
+                "success": True,
+                "snapshot_id": snapshot_id,
+                "verification": verification,
+                "message": message,
+            }
         except Exception as e:
             conn.rollback()
             return {"success": False, "message": str(e)}
@@ -816,6 +978,94 @@ def apply_live_schedule_for_date(override_date: str, user_id: Optional[int] = No
     except ValueError as exc:
         return {"success": False, "message": str(exc)}
     return sync_updated_schedule(target.year, target.month, user_id, notify=False)
+
+
+def apply_live_schedule_for_date_in_transaction(
+    conn,
+    override_date: str,
+    user_id: Optional[int] = None,
+) -> Dict:
+    """Rebuild live rows on the caller's transaction; never commits or notifies."""
+    from validators import parse_date
+
+    try:
+        target = parse_date(override_date)
+    except ValueError as exc:
+        return {"success": False, "message": str(exc)}
+
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT id FROM schedule_snapshots
+        WHERE year = ? AND month = ? AND schedule_type = 'base' AND locked = 1
+        """,
+        (target.year, target.month),
+    )
+    if not cursor.fetchone():
+        return {"success": False, "message": "Base schedule must be published before leave approval"}
+
+    cursor.execute(
+        """
+        SELECT id FROM schedule_snapshots
+        WHERE year = ? AND month = ? AND schedule_type = 'updated'
+        """,
+        (target.year, target.month),
+    )
+    existing = cursor.fetchone()
+    if existing:
+        snapshot_id = int(existing["id"])
+        cursor.execute(
+            """
+            UPDATE schedule_snapshots
+            SET generated_at = CURRENT_TIMESTAMP, generated_by_user_id = ?
+            WHERE id = ?
+            """,
+            (user_id, snapshot_id),
+        )
+    else:
+        cursor.execute(
+            """
+            INSERT INTO schedule_snapshots (year, month, schedule_type, generated_by_user_id)
+            VALUES (?, ?, 'updated', ?)
+            """,
+            (target.year, target.month, user_id),
+        )
+        snapshot_id = int(cursor.lastrowid)
+
+    cursor.execute(
+        """
+        SELECT assignment_date, officer_id, status, shift_start, shift_end, notes
+        FROM schedule_snapshot_rows
+        WHERE snapshot_id = ? AND is_manual = 1
+        """,
+        (snapshot_id,),
+    )
+    preserve = {(r["assignment_date"], r["officer_id"]): dict(r) for r in cursor.fetchall()}
+    _insert_snapshot_rows(
+        cursor,
+        snapshot_id,
+        target.year,
+        target.month,
+        use_overrides=True,
+        preserve_manual=preserve,
+    )
+    cursor.execute("SELECT * FROM schedule_snapshot_rows WHERE snapshot_id = ?", (snapshot_id,))
+    verification = verify_snapshot_rows_for_publish(
+        [dict(row) for row in cursor.fetchall()], target.year, target.month, "updated"
+    )
+    if not verification["ok"]:
+        return {
+            "success": False,
+            "status": verification["status"],
+            "message": verification["message"],
+            "verification": verification,
+        }
+    return {
+        "success": True,
+        "snapshot_id": snapshot_id,
+        "verification": verification,
+        "message": "Live schedule updated in approval transaction",
+    }
 
 
 def sync_updated_schedule(

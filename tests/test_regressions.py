@@ -103,9 +103,36 @@ class TestRegressions(unittest.TestCase):
                 self.assertFalse(first.success)
                 self.assertTrue(first.requires_manual)
                 self.assertIn("Minimum rest", first.message)
-                second = logic.process_day_off_request(create["request_id"], "approve")
+                supervisor = next(
+                    user for user in logic.list_login_users() if user["role"] in ("Supervisor", "Administration")
+                )
+                second = logic.process_day_off_request(
+                    create["request_id"],
+                    "approve",
+                    actor_user_id=supervisor["id"],
+                    admin_notes="Emergency minimum-rest exception",
+                )
                 self.assertTrue(second.success)
                 self.assertIn("minimum rest override", second.message.lower())
+                from database import connection
+
+                with connection() as conn:
+                    evidence = conn.execute(
+                        """
+                        SELECT relaxed_constraint, override_authority_user_id,
+                               override_interval_start, override_interval_end,
+                               override_reason, override_evidence
+                        FROM schedule_overrides
+                        WHERE original_officer_id = ?
+                        """,
+                        (original["id"],),
+                    ).fetchone()
+                self.assertEqual(evidence["relaxed_constraint"], "minimum_rest")
+                self.assertEqual(evidence["override_authority_user_id"], supervisor["id"])
+                self.assertTrue(evidence["override_interval_start"])
+                self.assertTrue(evidence["override_interval_end"])
+                self.assertEqual(evidence["override_reason"], "Emergency minimum-rest exception")
+                self.assertTrue(evidence["override_evidence"])
 
     def test_off_rotation_request_allowed(self):
         with test_database():
@@ -202,7 +229,15 @@ class TestRegressions(unittest.TestCase):
                 self.assertTrue(first.requires_manual)
                 self.assertEqual(first.status, "Pending Manual Review")
 
-                second = logic.process_day_off_request(cr["request_id"], "approve")
+                supervisor = next(
+                    user for user in logic.list_login_users() if user["role"] in ("Supervisor", "Administration")
+                )
+                second = logic.process_day_off_request(
+                    cr["request_id"],
+                    "approve",
+                    actor_user_id=supervisor["id"],
+                    admin_notes="Emergency minimum-rest exception",
+                )
                 self.assertTrue(second.success)
                 self.assertEqual(second.status, "Approved")
 

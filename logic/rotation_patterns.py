@@ -150,6 +150,54 @@ def parse_variation_set(
     return patterns
 
 
+def expand_block_permutations(
+    patterns: Sequence[RotationPattern],
+) -> List[RotationPattern]:
+    """Given a variation set, add all unique block-order permutations.
+
+    For a 2-block pattern like 6-2,5-3 this produces 6-2,5-3 / 5-3,6-2 /
+    6-3,5-2 / 5-2,6-3 — four distinct duty vectors from the same on/off
+    block pool.  Single-block patterns pass through unchanged.
+    """
+    from itertools import permutations as _perms
+
+    seen: set = set()
+    result: List[RotationPattern] = []
+    for p in patterns:
+        dv = tuple(p.duty_vector())
+        if dv not in seen:
+            seen.add(dv)
+            result.append(p)
+        if len(p.blocks) < 2:
+            continue
+        for perm in _perms(p.blocks):
+            blocks = list(perm)
+            candidate = RotationPattern(
+                style=p.style, blocks=blocks, label=",".join(f"{b.days_on}-{b.days_off}" for b in blocks)
+            )
+            cdv = tuple(candidate.duty_vector())
+            if cdv not in seen:
+                seen.add(cdv)
+                result.append(candidate)
+        swapped = [
+            OnOffBlock(days_on=b.days_on, days_off=other.days_off)
+            for b, other in zip(p.blocks, list(p.blocks)[1:] + [p.blocks[0]])
+        ]
+        for perm in _perms(swapped):
+            blocks = list(perm)
+            cl = sum(b.length for b in blocks)
+            if cl != p.cycle_length:
+                continue
+            candidate = RotationPattern(
+                style=p.style, blocks=blocks, label=",".join(f"{b.days_on}-{b.days_off}" for b in blocks)
+            )
+            cdv = tuple(candidate.duty_vector())
+            if cdv not in seen:
+                seen.add(cdv)
+                result.append(candidate)
+    return result
+
+
 def projected_annual_hours(
     pattern: RotationPattern,
     shift_length_hours: float,

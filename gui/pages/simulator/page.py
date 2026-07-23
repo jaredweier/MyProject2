@@ -26,6 +26,7 @@ from gui.pages.simulator.helpers import (
 from gui.pages.simulator.options_panel import render_options_panel
 from gui.pages.simulator.publish_panel import render_publish_panel
 from gui.pages.simulator.results_panel import render_results_panel_tools
+from gui.pages.simulator.search_flow import open_search_plan_dialog
 from gui.pages.simulator.state import SimulatorState
 from gui.pages.simulator.stepper_rail import render_stepper_rail
 from gui.pages.simulator.styles import apply_simulator_css
@@ -58,6 +59,7 @@ from logic.optimizer_features import (
     load_last_simulator_constraints,
     near_miss_deltas,
     save_form_snapshot,
+    shift_coverage_heatmap,
     weights_from_sliders,
     why_best_lines,
 )
@@ -74,8 +76,10 @@ from logic.scheduling_sim import (
 )
 from logic.staffing_insights import (
     detect_constraint_conflicts,
+    enrich_option_economics,
     export_staffing_memo,
 )
+from logic.staffing_optimizer import simulator_understood_lines
 
 
 def render_simulator() -> None:
@@ -191,7 +195,7 @@ def render_simulator() -> None:
                     # Given/Solve-for toggles already show state per row.
                     pass
 
-            with ui.element("div").classes("grid-2"):
+            with ui.expansion("Advanced requirements", icon="tune").classes("grid-2 sim-adv w-full"):
                 ui_elements = render_options_panel(
                     state,
                     _placeholder_rot,
@@ -230,8 +234,12 @@ def render_simulator() -> None:
                 use_fatigue = ui_elements["use_fatigue"]
                 min_rest = ui_elements["min_rest"]
                 max_consec = ui_elements["max_consec"]
+                use_start_span = ui_elements["use_start_span"]
+                max_start_span = ui_elements["max_start_span"]
+                prefer_unique_starts = ui_elements["prefer_unique_starts"]
                 use_flsa = ui_elements["use_flsa"]
                 flsa_days = ui_elements["flsa_days"]
+                ot_hourly_rate = ui_elements["ot_hourly_rate"]
                 use_windows = ui_elements["use_windows"]
                 _refresh_win_list = ui_elements["_refresh_win_list"]
                 hint_rotation = ui_elements["hint_rotation"]
@@ -572,6 +580,9 @@ def render_simulator() -> None:
                 "gaps": "Min per shift band",
                 "flsa": "FLSA OT avoid",
                 "annual": "Annual hours (year-average fairness)",
+                "start_changes": "Fewer disruptive start changes",
+                "duplicate_starts": "Fewer same-time starts",
+                "overcoverage": "Less unnecessary overcoverage",
                 "headcount": "Prefer fewer officers",
             }
             prio_col = ui.column().classes("w-full gap-1 q-mb-sm")
@@ -800,6 +811,27 @@ def render_simulator() -> None:
 
             # Decision table paints here after every search (primary output)
             decision_host = ui.element("div").classes("w-full q-mt-sm")
+            inline_heat_host = ui.element("div").classes("w-full q-mt-sm")
+
+            def _paint_inline_heatmap():
+                inline_heat_host.clear()
+                hm = shift_coverage_heatmap(state.get("result") or {})
+                if not hm.get("success"):
+                    return
+                matrix = hm.get("matrix") or []
+                days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+                with inline_heat_host:
+                    ui.label("Coverage heatmap (average officers, 2-hour blocks)").classes("sim-section-title")
+                    with ui.element("div").classes("sim-inline-heatmap"):
+                        for day_index, day in enumerate(days):
+                            row = matrix[day_index] if day_index < len(matrix) else []
+                            values = [
+                                round(sum(row[i : i + 4]) / max(1, len(row[i : i + 4])), 1) for i in range(0, 48, 4)
+                            ]
+                            ui.label(day).classes("sim-heat-day")
+                            for value in values:
+                                tone = "thin" if value < 1 else "ok" if value < 2 else "strong"
+                                ui.label(str(value)).classes(f"sim-heat-cell {tone}")
 
             # Splitter: ranked options | plan detail (NiceGUI layout primitive)
             with ui.splitter(value=52).classes("w-full sim-split q-mt-sm") as result_split:
@@ -843,6 +875,16 @@ def render_simulator() -> None:
                                     f"Min {row.get('min_per_shift')} per shift"
                                 )
                                 body = "\n".join(detail_lines[:8]) if detail_lines else summary
+                                try:
+                                    cost_rate = float((ot_hourly_rate.value or "35").strip() or 35)
+                                except ValueError:
+                                    cost_rate = 35.0
+                                economics = enrich_option_economics(row, hourly_rate=cost_rate).get("economics") or {}
+                                if economics.get("est_ot_cost_usd") is not None:
+                                    body += (
+                                        f"\nEstimated OT: ${float(economics['est_ot_cost_usd']):,.0f} "
+                                        f"({float(economics.get('est_ot_hours_total') or 0):.1f}h)"
+                                    )
                                 hard = row.get("hard_constraints_ok")
                                 if hard is None:
                                     hard = (row.get("human_metrics") or {}).get("hard_constraints_ok")
@@ -1560,6 +1602,64 @@ def render_simulator() -> None:
             if free_lengths:
                 length_opts = [8.0, 8.5, 9.0, 9.5, 10.0, 10.5, 11.0, 11.5, 12.0, 12.5]
             st = _parse_starts() if use_starts.value else None
+            hard_inputs = []
+            soft_inputs = []
+            open_inputs = []
+
+            def _item(key, label, *, value=None, domain=None):
+                item = {"key": key, "label": label}
+                if value is not None:
+                    item["value"] = value
+                if domain is not None:
+                    item["domain"] = domain
+                return item
+
+            if free_officers:
+                open_inputs.append(_item("officer_count", "Officer count", domain=off_counts))
+            else:
+                hard_inputs.append(_item("officer_count", f"Officer count = {int(n)}", value=int(n)))
+            if free_lengths:
+                open_inputs.append(_item("shift_length", "Shift length", domain=length_opts))
+            else:
+                hard_inputs.append(_item("shift_length", f"Shift length = {float(ln):g}h", value=float(ln)))
+            open_inputs.append(
+                _item(
+                    "shift_starts",
+                    "Shift starts from allowed domain" if st else "Shift starts",
+                    domain=st or "solver-generated",
+                )
+            )
+            if use_rotation.value:
+                hard_inputs.append(_item("rotation", f"Rotation = {rotation.value}", value=rotation.value))
+            else:
+                open_inputs.append(_item("rotation", "Rotation pattern", domain="available presets"))
+            if use_style.value and _var_sets():
+                open_inputs.append(_item("rotation_variation", "Pattern variation", domain=_var_sets()))
+            if use_annual.value and an is not None:
+                target_item = _item("annual_hours", f"Annual hours = {float(an):g} +/- {float(av or 0):g}", value=an)
+                (hard_inputs if require_hard_ok else soft_inputs).append(target_item)
+            if use_min_ps.value and mp is not None:
+                hard_inputs.append(_item("min_per_shift", f"Minimum per shift = {int(mp)}", value=int(mp)))
+            if use_247.value and c247 is not None:
+                hard_inputs.append(_item("coverage_247", f"24/7 minimum = {int(c247)}", value=int(c247)))
+            if use_windows.value and state["windows"]:
+                hard_inputs.append(_item("coverage_windows", f"Coverage windows ({len(state['windows'])})"))
+            if use_fatigue.value:
+                if (min_rest.value or "").strip():
+                    hard_inputs.append(_item("min_rest", f"Minimum rest = {min_rest.value}h"))
+                if (max_consec.value or "").strip():
+                    hard_inputs.append(_item("max_consecutive", f"Maximum consecutive days = {max_consec.value}"))
+            if use_start_span.value:
+                hard_inputs.append(_item("max_start_span", f"Maximum start span = {max_start_span.value}h"))
+            if prefer_unique_starts.value:
+                soft_inputs.append(_item("unique_daily_starts", "Fewer same-time starts"))
+            required_certs = (
+                [code.strip() for code in (cert_codes.value or "").replace(";", ",").split(",") if code.strip()]
+                if use_certs.value
+                else []
+            )
+            if required_certs:
+                hard_inputs.append(_item("certifications", "Required certifications: " + ", ".join(required_certs)))
             return {
                 "rotation_types": [rotation.value] if use_rotation.value else None,
                 "officer_counts": off_counts,
@@ -1593,6 +1693,17 @@ def render_simulator() -> None:
                 "max_consecutive_work_days": (
                     int(float((max_consec.value or "0").strip() or 0)) if use_fatigue.value else 0
                 ),
+                "max_start_variation_hours": (
+                    float((max_start_span.value or "").strip()) if use_start_span.value else None
+                ),
+                "prefer_unique_daily_starts": bool(prefer_unique_starts.value),
+                "input_roles": {
+                    "hard_constraints": hard_inputs,
+                    "soft_preferences": soft_inputs,
+                    "open_variables": open_inputs,
+                },
+                "warm_start": ((state.get("opt_result") or {}).get("best") or None),
+                "required_cert_codes": required_certs,
                 "constraint_priority": list(state.get("constraint_priority") or []),
                 "constraint_weights": dict(state.get("constraint_weights") or default_weight_map()),
                 # P0.3: every UI-launched search is time-boxed; best-so-far is
@@ -1716,6 +1827,7 @@ def render_simulator() -> None:
                 ui.notify(f"Stress test failed: {exc}", type="negative")
                 return
             _paint_decision_table()
+            _paint_inline_heatmap()
             ui.notify("Stress test done", type="positive")
 
         def _paint_decision_table():
@@ -1730,6 +1842,7 @@ def render_simulator() -> None:
                     on_load=_load_option,
                     annual_target=an,
                     flsa_period_days=int(fd or 28),
+                    hourly_rate=float((ot_hourly_rate.value or "35").strip() or 35),
                     on_stress_test=lambda: asyncio.create_task(_run_stress_test()),
                     stress_results=state.get("stress_results") or {},
                 )
@@ -1775,14 +1888,17 @@ def render_simulator() -> None:
             ph = row.get("phase_overrides")
             pm = row.get("pattern_slot_map")
             home_starts = row.get("officer_home_starts")
+            cycle_starts = row.get("officer_cycle_starts")
             full = run_schedule_simulation(
                 rotation_type=row.get("rotation_type") or base["rotation_type"],
                 num_officers=int(row.get("num_officers") or base["num_officers"] or 0),
                 shift_length_hours=float(row.get("shift_length_hours") or base["shift_length_hours"]),
                 annual_hours_target=float(row.get("annual_hours_target") or base["annual_hours_target"]),
                 shift_starts=list(row.get("shift_starts") or base["shift_starts"]),
-                min_per_shift=int(row.get("min_per_shift") or base["min_per_shift"]),
-                simulation_days=56,
+                min_per_shift=int(
+                    row["min_per_shift"] if row.get("min_per_shift") is not None else base["min_per_shift"]
+                ),
+                simulation_days=112 if cycle_starts else 56,
                 annual_hours_variance=float(base["annual_hours_variance"]),
                 annual_hours_hard=bool(base["annual_hours_hard"]),
                 coverage_247=int(base["coverage_247"]),
@@ -1799,15 +1915,19 @@ def render_simulator() -> None:
                 phase_overrides=list(ph) if isinstance(ph, (list, tuple)) else None,
                 pattern_slot_map=list(pm) if isinstance(pm, (list, tuple)) else None,
                 officer_home_starts=list(home_starts) if isinstance(home_starts, (list, tuple)) else None,
+                officer_cycle_starts=(
+                    [list(days) for days in cycle_starts] if isinstance(cycle_starts, (list, tuple)) else None
+                ),
                 # A full CP-SAT solve proved this exact per-officer start pins the
                 # windows/24-7 result — day-pool rebalancing (hops>0) would silently
                 # depart from the proven assignment, so force it off when replaying one.
-                nearby_start_hops=(0 if home_starts else int(base.get("nearby_start_hops") or 0)),
+                nearby_start_hops=(0 if (home_starts or cycle_starts) else int(base.get("nearby_start_hops") or 0)),
                 allow_offday_coverage=bool(base.get("allow_offday_coverage")),
             )
             if full.get("success"):
                 state["result"] = full
                 state["config"] = _current_config()
+                _paint_inline_heatmap()
                 uid = (session.current_user() or {}).get("id")
                 save_last_optimized_plan(full, state["config"], user_id=uid)
                 view = format_optimized_plan_view(full, state["config"])
@@ -2016,9 +2136,13 @@ def render_simulator() -> None:
                 "allow_offday": bool(allow_offday.value),
                 "use_flsa": bool(use_flsa.value),
                 "flsa_days": flsa_days.value,
+                "ot_hourly_rate": ot_hourly_rate.value,
                 "use_fatigue": bool(use_fatigue.value),
                 "min_rest": min_rest.value,
                 "max_consec": max_consec.value,
+                "use_start_span": bool(use_start_span.value),
+                "max_start_span": max_start_span.value,
+                "prefer_unique_starts": bool(prefer_unique_starts.value),
                 "use_certs": bool(use_certs.value),
                 "required_certs": (cert_codes.value if use_certs.value else ""),
             }
@@ -2479,6 +2603,8 @@ def render_simulator() -> None:
             )
             if result.get("space_note"):
                 lines.append(result["space_note"])
+            if result.get("solver_status"):
+                lines.append(f"Solver status: {result['solver_status'].replace('_', ' ')}")
             if result.get("budget_exhausted"):
                 lines.append(
                     "Time budget reached — best-so-far shown; a longer Deep search may still find better options."
@@ -2563,7 +2689,8 @@ def render_simulator() -> None:
                 options_ui.refresh()
             except Exception:
                 pass
-            set_summary("Searching entire constraint space…")
+            understood = "Simulator understood\n" + "\n".join(simulator_understood_lines(kw.get("input_roles")))
+            set_summary(f"{understood}\n\nSearching entire constraint space…")
             ui.notify("Searching entire constraint space…", type="info", position="top")
             await asyncio.sleep(0.05)
 
@@ -2708,45 +2835,18 @@ def render_simulator() -> None:
             kw.pop("error", None)
             est = _refresh_space_estimate()
             if not force and est and est.get("requires_confirm") and require_hard_ok:
-                state["pending_opt_kw"] = dict(kw)
-                state["pending_require_hard"] = require_hard_ok
-                with (
-                    ui.dialog() as cdlg,
-                    ui.card()
-                    .classes("q-pa-md")
-                    .style(
-                        "min-width:22rem;max-width:32rem;background:#0C1A2E;color:#E8EDF4;"
-                        "border:1px solid rgba(234,179,8,0.45)"
-                    ),
-                ):
-                    smart = bool(est.get("cpsat_eligible"))
-                    title = "Search Plan" if smart else "Large Search Space"
-                    title_color = "#93C5FD" if smart else "#FDE68A"
-                    ui.label(title).style(f"font-size:1.1rem;font-weight:700;color:{title_color}")
-                    ui.label(est.get("warning") or "").style(
-                        "color:#9AABC4;margin:12px 0;line-height:1.45;white-space:pre-wrap"
-                    )
 
-                    async def _go():
-                        # Capture before close — client continues on same page after dialog.
-                        job = dict(state.get("pending_opt_kw") or kw)
-                        hard = bool(state.get("pending_require_hard", require_hard_ok))
-                        cdlg.close()
-                        await asyncio.sleep(0.05)
-                        await _execute_opt(job, require_hard_ok=hard)
+                async def _run_from_plan(job, hard):
+                    await _execute_opt(job, require_hard_ok=hard)
 
-                    def _stop():
-                        cdlg.close()
-                        ui.notify(
-                            "Search cancelled — lock more constraints to shrink space",
-                            type="info",
-                        )
-
-                    run_label = "Run Smart Search (Recommended)" if smart else "Run Full Search Anyway"
-                    with ui.row().classes("gap-2 flex-wrap"):
-                        ui.button(run_label, on_click=_go).classes("btn-primary").props("no-caps unelevated")
-                        ui.button("Cancel", on_click=_stop).classes("btn-ghost").props("no-caps outline")
-                cdlg.open()
+                open_search_plan_dialog(
+                    ui,
+                    estimate=est,
+                    kwargs=kw,
+                    require_hard_ok=require_hard_ok,
+                    understood_lines=simulator_understood_lines(kw.get("input_roles")),
+                    on_run=_run_from_plan,
+                )
                 return
 
             await _execute_opt(kw, require_hard_ok=require_hard_ok)
@@ -3123,10 +3223,19 @@ def render_simulator() -> None:
                 nearby_hops.value = str(data["nearby_hops"])
             if data.get("allow_offday") is not None:
                 allow_offday.value = bool(data["allow_offday"])
+            if data.get("max_start_span") is not None:
+                max_start_span.value = str(data["max_start_span"])
+            if data.get("use_start_span") is not None:
+                use_start_span.value = bool(data["use_start_span"]) and bool(str(max_start_span.value or "").strip())
+                _set_enabled([max_start_span], bool(use_start_span.value))
+            if data.get("prefer_unique_starts") is not None:
+                prefer_unique_starts.value = bool(data["prefer_unique_starts"])
             if data.get("cov247") is not None:
                 cov247.value = str(data["cov247"])
             if data.get("flsa_days") is not None:
                 flsa_days.value = str(data["flsa_days"])
+            if data.get("ot_hourly_rate") is not None:
+                ot_hourly_rate.value = str(data["ot_hourly_rate"])
             if data.get("rot_style"):
                 try:
                     rot_style.value = data["rot_style"]

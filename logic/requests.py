@@ -2,6 +2,8 @@
 Day-off requests, shift swaps, and in-app notifications.
 """
 
+import json
+from contextlib import nullcontext
 from typing import Dict, List, Optional, Set, Tuple
 
 from config import REQUEST_STATUS, is_high_risk_night, logger
@@ -565,6 +567,199 @@ def _evaluate_post_bump_coverage(
     }
 
 
+def _ensure_leave_accrual_ledger(cursor) -> None:
+    cursor.execute(
+        """
+        CREATE TABLE IF NOT EXISTS leave_accrual_ledger (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            officer_id INTEGER NOT NULL,
+            request_id INTEGER,
+            request_type TEXT,
+            request_date TEXT,
+            bank_column TEXT,
+            hours REAL,
+            balance_after REAL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_by_user_id INTEGER
+        )
+        """
+    )
+
+
+def _apply_leave_accrual_in_transaction(cursor, request: Dict, actor_user_id: Optional[int]) -> Dict:
+    from logic.leave_accruals import SETTING_DEDUCT, TYPE_TO_BANK, _shift_hours_for_officer
+    from logic.payroll.banks import _ensure_officer_time_banks
+
+    cursor.execute("SELECT value FROM department_settings WHERE key = ?", (SETTING_DEDUCT,))
+    setting = cursor.fetchone()
+    enabled = str(setting["value"] if setting else "1").strip().lower() in ("1", "true", "yes", "on")
+    if not enabled:
+        return {"success": True, "skipped": True}
+
+    request_type = str(request.get("request_type") or "").strip()
+    bank_col = TYPE_TO_BANK.get(request_type)
+    if not bank_col:
+        lower = request_type.lower()
+        bank_col = "sick_hours" if lower in ("sick", "ill", "injury") else None
+        if lower in ("vacation", "annual", "pto"):
+            bank_col = "float_holiday_hours"
+    if not bank_col:
+        return {"success": True, "skipped": True}
+
+    request_date = parse_date(str(request["request_date"]))
+    hours = float(
+        request.get("_leave_hours")
+        if request.get("_leave_hours") is not None
+        else _shift_hours_for_officer(int(request["officer_id"]), str(request["request_date"]))
+    )
+    if hours <= 0:
+        return {"success": False, "message": "Leave accrual hours must be positive"}
+    banks = _ensure_officer_time_banks(cursor, int(request["officer_id"]), request_date)
+    new_balance = float(banks.get(bank_col) or 0) - hours
+    cursor.execute(
+        f"UPDATE officer_time_banks SET {bank_col} = ? WHERE officer_id = ?",
+        (new_balance, int(request["officer_id"])),
+    )
+    _ensure_leave_accrual_ledger(cursor)
+    cursor.execute(
+        """
+        INSERT INTO leave_accrual_ledger
+        (officer_id, request_id, request_type, request_date, bank_column, hours, balance_after,
+         created_by_user_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            int(request["officer_id"]),
+            int(request["id"]),
+            request_type,
+            storage_date(request_date),
+            bank_col,
+            -hours,
+            new_balance,
+            actor_user_id,
+        ),
+    )
+    return {"success": True, "bank": bank_col, "hours": hours, "balance_after": new_balance}
+
+
+def _move_call_list_in_transaction(cursor, officer_id: int) -> Dict:
+    cursor.execute("SELECT value FROM department_settings WHERE key = 'bump_call_list_json'")
+    row = cursor.fetchone()
+    try:
+        entries = json.loads(row["value"]) if row and row["value"] else []
+    except (TypeError, json.JSONDecodeError):
+        return {"success": False, "message": "Stored call list is invalid JSON"}
+    if not isinstance(entries, list):
+        return {"success": False, "message": "Stored call list is invalid"}
+    normalized = []
+    for item in entries:
+        if isinstance(item, int):
+            normalized.append({"officer_id": item})
+        elif isinstance(item, dict) and item.get("officer_id") is not None:
+            normalized.append(dict(item))
+    oid = int(officer_id)
+    moved = [entry for entry in normalized if int(entry["officer_id"]) == oid]
+    rest = [entry for entry in normalized if int(entry["officer_id"]) != oid]
+    if not moved:
+        moved = [{"officer_id": oid, "name": "", "note": "added after order-in"}]
+    updated = rest + moved
+    for index, entry in enumerate(updated):
+        entry["order"] = index
+    cursor.execute(
+        """
+        INSERT INTO department_settings (key, value, updated_at)
+        VALUES ('bump_call_list_json', ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = CURRENT_TIMESTAMP
+        """,
+        (json.dumps(updated),),
+    )
+
+    cursor.execute("SELECT officer_id FROM callback_rotation WHERE active = 1 ORDER BY sort_order ASC")
+    callback_ids = [int(item["officer_id"]) for item in cursor.fetchall()]
+    if callback_ids:
+        callback_ids = [item for item in callback_ids if item != oid] + [oid]
+        for index, callback_id in enumerate(callback_ids, start=1):
+            cursor.execute(
+                """
+                INSERT INTO callback_rotation (officer_id, sort_order, active)
+                VALUES (?, ?, 1)
+                ON CONFLICT(officer_id) DO UPDATE SET sort_order = excluded.sort_order, active = 1
+                """,
+                (callback_id, index),
+            )
+    return {"success": True}
+
+
+def _queue_leave_approval_notifications_in_transaction(
+    cursor,
+    request: Dict,
+    officer: Dict,
+    replacement_id: Optional[int],
+    replacement_name: Optional[str],
+    plan_text: str,
+    actor_user_id: Optional[int],
+) -> Dict:
+    display_date = format_date(request["request_date"])
+    suffix = f" Coverage: {plan_text}." if plan_text else ""
+    if replacement_name and not plan_text:
+        suffix = f" Covered by {replacement_name}."
+    notifications = [
+        (
+            int(officer["id"]),
+            "Request Approved",
+            f"Your time off request for {display_date} was approved.{suffix}",
+        )
+    ]
+    if replacement_id:
+        notifications.append(
+            (
+                int(replacement_id),
+                "Coverage Assignment",
+                f"You are covering {officer['name']}'s shift on {display_date}."
+                + (f" Plan: {plan_text}" if plan_text else ""),
+            )
+        )
+    for recipient_id, title, message in notifications:
+        cursor.execute(
+            """
+            INSERT INTO notifications
+            (recipient_officer_id, type, title, message, related_id, related_type)
+            VALUES (?, 'day_off', ?, ?, ?, 'day_off_request')
+            """,
+            (recipient_id, title, message, int(request["id"])),
+        )
+
+    outbox = [
+        (
+            "email",
+            "leave_approved",
+            f"Leave approved {display_date}",
+            f"Leave approved for {officer.get('name')} on {display_date}.{suffix}",
+            int(officer["id"]),
+        )
+    ]
+    if replacement_id:
+        outbox.append(
+            (
+                "sms",
+                "leave_cover",
+                "Coverage assignment",
+                f"You cover {officer.get('name')} on {display_date}.",
+                int(replacement_id),
+            )
+        )
+    for channel, template, subject, body, recipient_id in outbox:
+        cursor.execute(
+            """
+            INSERT INTO notify_outbox
+            (channel, template_key, subject, body, officer_id, status, meta_json, user_id)
+            VALUES (?, ?, ?, ?, ?, 'queued', '{}', ?)
+            """,
+            (channel, template, subject, body, recipient_id, actor_user_id),
+        )
+    return {"success": True}
+
+
 def process_day_off_request(
     request_id: int,
     action: str = "approve",
@@ -572,8 +767,15 @@ def process_day_off_request(
     actor_user_id: Optional[int] = None,
     *,
     preferred_chain: Optional[List[Tuple[int, int]]] = None,
+    _transaction_conn=None,
+    _base_schedule_ready: bool = False,
+    _verified_suggestion=None,
+    _batch_context: Optional[Dict] = None,
+    relaxation_authority: Optional[Dict] = None,
 ) -> ProcessRequestResult:
-    with connection() as conn:
+    owns_transaction = _transaction_conn is None
+    connection_scope = connection() if owns_transaction else nullcontext(_transaction_conn)
+    with connection_scope as conn:
         cursor = conn.cursor()
         try:
             cursor.execute(
@@ -590,7 +792,10 @@ def process_day_off_request(
                 return ProcessRequestResult(success=False, message="Request not found")
 
             request = dict(row)
-            officer = get_officer_by_id(request["officer_id"])
+            batch_context = _batch_context or {}
+            officer = batch_context.get("officer") or get_officer_by_id(request["officer_id"])
+            if batch_context.get("leave_hours") is not None:
+                request["_leave_hours"] = batch_context["leave_hours"]
             precheck = validate_process_day_off(request, officer, action)
             if not precheck.ok:
                 return ProcessRequestResult(success=False, message=precheck.message)
@@ -604,62 +809,87 @@ def process_day_off_request(
                 """,
                     (admin_notes, request_id),
                 )
-                conn.commit()
-                _notify_day_off_processed(request, officer, "Rejected")
+                if owns_transaction:
+                    conn.commit()
+                    _notify_day_off_processed(request, officer, "Rejected")
                 return ProcessRequestResult(success=True, status="Rejected", message="Request rejected.")
 
             if action != "approve":
                 return ProcessRequestResult(success=False, message=f"Unknown action: {action}")
 
+            from logic.snapshots import ensure_original_monthly_schedule
+
+            request_day = parse_date(request["request_date"])
+            if not _base_schedule_ready:
+                base_result = ensure_original_monthly_schedule(request_day.year, request_day.month, actor_user_id)
+                if not base_result.get("success"):
+                    return ProcessRequestResult(
+                        success=False,
+                        message=f"Approval not applied: base schedule unavailable: {base_result.get('message')}",
+                    )
+
             manual_override = request["status"] == REQUEST_STATUS["pending_manual"]
-            covered_start, _covered_end = resolve_officer_shift_band(
-                request["officer_id"],
-                parse_date(request["request_date"]),
-                home_shift_start=request.get("shift_start"),
-                home_shift_end=request.get("shift_end"),
-            )
+            covered_start = batch_context.get("covered_start")
+            if covered_start is None:
+                covered_start, _covered_end = resolve_officer_shift_band(
+                    request["officer_id"],
+                    parse_date(request["request_date"]),
+                    home_shift_start=request.get("shift_start"),
+                    home_shift_end=request.get("shift_end"),
+                )
             suggestion = None
             steps = []
-            if preferred_chain is not None:
-                # Supervisor-selected plan from multi-plan UI (list of (original_id, replacement_id)).
-                from models import BumpChainStep
+            if _verified_suggestion is not None:
+                suggestion = _verified_suggestion
+                steps = suggestion.steps or []
+            elif preferred_chain is not None:
+                # UI input is selection, not proof. Recompute against current
+                # schedule state and accept only an exact complete plan.
+                from logic.coverage_optimizer import search_best_coverage_plans
+                from logic.scheduling import get_generated_schedule_day_context
 
-                for i, pair in enumerate(preferred_chain):
-                    if not pair or len(pair) != 2:
-                        continue
-                    orig_id, repl_id = int(pair[0]), int(pair[1])
-                    orig = get_officer_by_id(orig_id)
-                    repl = get_officer_by_id(repl_id)
-                    if not orig or not repl:
-                        return ProcessRequestResult(
-                            success=False,
-                            message=f"Coverage plan references missing officer ({orig_id}→{repl_id})",
-                        )
-                    orig_shift = covered_start if i == 0 else (orig.get("shift_start") or covered_start)
-                    steps.append(
-                        BumpChainStep(
-                            step_number=i + 1,
-                            original_officer_id=orig_id,
-                            original_officer_name=orig["name"],
-                            original_shift=orig_shift,
-                            replacement_officer_id=repl_id,
-                            replacement_officer_name=repl["name"],
-                            replacement_shift=repl.get("shift_start") or "",
-                            replacement_on_duty=True,
-                        )
-                    )
-                suggestion = type(
-                    "S", (), {"success": True, "failure_reason": None, "message": "Selected coverage plan"}
-                )()
-            else:
-                from logic.coverage_optimizer import suggest_bump_chain
-
-                suggestion = suggest_bump_chain(
+                requested_chain = tuple(
+                    (int(pair[0]), int(pair[1])) for pair in preferred_chain if pair and len(pair) == 2
+                )
+                current_context = get_generated_schedule_day_context(parse_date(request["request_date"]))
+                current_plans = search_best_coverage_plans(
                     request["officer_id"],
                     request["request_date"],
                     request["squad"],
                     covered_start,
-                    supervisor_override=manual_override,
+                    current_context,
+                    required_first_replacement_id=(requested_chain[0][1] if requested_chain else None),
+                )
+                suggestion = next(
+                    (plan for plan in current_plans if plan.success and tuple(plan.chain or []) == requested_chain),
+                    None,
+                )
+                if suggestion is None:
+                    return ProcessRequestResult(
+                        success=False,
+                        message="Selected coverage plan is stale or failed current independent checks",
+                    )
+                steps = suggestion.steps or []
+            else:
+                from logic.coverage_optimizer import suggest_bump_chain
+
+                constraint_probe = suggest_bump_chain(
+                    request["officer_id"],
+                    request["request_date"],
+                    request["squad"],
+                    covered_start,
+                    supervisor_override=False,
+                )
+                suggestion = (
+                    suggest_bump_chain(
+                        request["officer_id"],
+                        request["request_date"],
+                        request["squad"],
+                        covered_start,
+                        supervisor_override=True,
+                    )
+                    if manual_override
+                    else constraint_probe
                 )
                 if not manual_override and (not suggestion.success or suggestion.requires_manual):
                     cursor.execute(
@@ -670,9 +900,10 @@ def process_day_off_request(
                     """,
                         (admin_notes or suggestion.message, request_id),
                     )
-                    conn.commit()
-                    request["status"] = REQUEST_STATUS["pending_manual"]
-                    _notify_day_off_processed(request, officer, "Pending Manual Review")
+                    if owns_transaction:
+                        conn.commit()
+                        request["status"] = REQUEST_STATUS["pending_manual"]
+                        _notify_day_off_processed(request, officer, "Pending Manual Review")
                     return ProcessRequestResult(
                         success=False,
                         status="Pending Manual Review",
@@ -681,8 +912,42 @@ def process_day_off_request(
                     )
                 steps = suggestion.steps or []
 
+            if manual_override:
+                if relaxation_authority is None:
+                    from logic.override_authority import build_relaxation_authority
+
+                    constraint_code = str(getattr(constraint_probe, "failure_reason", "") or "").strip().lower()
+                    try:
+                        relaxation_authority = build_relaxation_authority(
+                            constraint_code=constraint_code,
+                            actor_user_id=actor_user_id,
+                            subject_type="day_off_request",
+                            subject_id=request_id,
+                            interval_start=request["request_date"],
+                            reason=admin_notes or f"Supervisor approved {constraint_code.replace('_', ' ')} relaxation",
+                            evidence=getattr(constraint_probe, "message", "") or constraint_code,
+                        )
+                    except ValueError as exc:
+                        return ProcessRequestResult(
+                            success=False,
+                            status=request.get("status"),
+                            message=str(exc),
+                            requires_manual=True,
+                        )
+                else:
+                    from logic.override_authority import validate_relaxation_authority
+
+                    authority_error = validate_relaxation_authority(relaxation_authority)
+                    if authority_error:
+                        return ProcessRequestResult(
+                            success=False,
+                            status=request.get("status"),
+                            message=authority_error,
+                            requires_manual=True,
+                        )
+
             # Continuous coverage gate (24/7 + extra windows) after tentative bump chain
-            if not manual_override:
+            if not manual_override and not batch_context.get("coverage_verified"):
                 from logic.coverage_windows_store import get_active_coverage_windows, get_coverage_247_minimum
 
                 min_247 = get_coverage_247_minimum()
@@ -704,9 +969,10 @@ def process_day_off_request(
                         """,
                             (admin_notes or cov_check.get("message") or "Coverage window short", request_id),
                         )
-                        conn.commit()
-                        request["status"] = REQUEST_STATUS["pending_manual"]
-                        _notify_day_off_processed(request, officer, "Pending Manual Review")
+                        if owns_transaction:
+                            conn.commit()
+                            request["status"] = REQUEST_STATUS["pending_manual"]
+                            _notify_day_off_processed(request, officer, "Pending Manual Review")
                         return ProcessRequestResult(
                             success=False,
                             status="Pending Manual Review",
@@ -716,6 +982,7 @@ def process_day_off_request(
 
             replacement_id = None
             replacement_name = None
+            created_override_ids: List[int] = []
             for step in steps:
                 _insert_override_record(
                     cursor,
@@ -724,20 +991,18 @@ def process_day_off_request(
                     step.replacement_officer_id,
                     f"Day-off: {request['request_type']}",
                     step.original_shift,
+                    relaxation=relaxation_authority if manual_override else None,
                 )
+                created_override_ids.append(int(cursor.lastrowid))
                 if replacement_id is None:
                     replacement_id = step.replacement_officer_id
                     replacement_name = step.replacement_officer_name
 
             cascade_note = f" ({len(steps)} overrides)" if len(steps) > 1 else ""
             if manual_override:
-                override_reason = suggestion.failure_reason
-                if not override_reason:
-                    notes = (request.get("admin_notes") or "").lower()
-                    if "minimum rest" in notes:
-                        override_reason = "minimum_rest"
-                    elif "consecutive" in notes:
-                        override_reason = "consecutive_days"
+                override_reason = getattr(constraint_probe, "failure_reason", None) or (relaxation_authority or {}).get(
+                    "constraint_code"
+                )
                 message = f"Approved (supervisor override). Replacement: {replacement_name}{cascade_note}"
                 if override_reason == "minimum_rest":
                     message = f"Approved (minimum rest override). Replacement: {replacement_name}{cascade_note}"
@@ -750,34 +1015,50 @@ def process_day_off_request(
                 """
                 UPDATE day_off_requests
                 SET status = 'Approved', admin_notes = ?, processed_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status = ?
             """,
-                (admin_notes, request_id),
+                (admin_notes, request_id, request.get("status")),
             )
-            conn.commit()
-            from logic.snapshots import apply_live_schedule_for_date
+            if cursor.rowcount != 1:
+                conn.rollback()
+                return ProcessRequestResult(
+                    success=False,
+                    status=request.get("status"),
+                    message="Approval not applied: request changed after preview",
+                )
+            from logic.snapshots import apply_live_schedule_for_date_in_transaction
 
-            apply_live_schedule_for_date(request["request_date"], actor_user_id)
+            live_result = apply_live_schedule_for_date_in_transaction(conn, request["request_date"], actor_user_id)
+            if not live_result.get("success"):
+                conn.rollback()
+                return ProcessRequestResult(
+                    success=False,
+                    status=request.get("status"),
+                    message=f"Approval not applied: live schedule rebuild failed: {live_result.get('message')}",
+                )
             # Call list: ordered/off-duty cover moves officer to end (furthest from next call)
-            try:
-                from logic.ot_fill import move_officer_to_end_of_call_list
-
-                for step in steps:
-                    if not getattr(step, "replacement_on_duty", True):
-                        move_officer_to_end_of_call_list(
-                            int(step.replacement_officer_id),
-                            user_id=actor_user_id,
+            for step in steps:
+                if not getattr(step, "replacement_on_duty", True):
+                    call_list_result = _move_call_list_in_transaction(cursor, int(step.replacement_officer_id))
+                    if not call_list_result.get("success"):
+                        conn.rollback()
+                        return ProcessRequestResult(
+                            success=False,
+                            status=request.get("status"),
+                            message=(
+                                f"Approval not applied: call-list update failed: {call_list_result.get('message')}"
+                            ),
                         )
-                        break
-            except Exception:
-                pass
+                    break
             # Accrual debit (vacation/sick/comp) — non-blocking if bank short
-            try:
-                from logic.leave_accruals import maybe_deduct_on_day_off_approve
-
-                maybe_deduct_on_day_off_approve(request, user_id=actor_user_id)
-            except Exception:
-                pass
+            accrual_result = _apply_leave_accrual_in_transaction(cursor, request, actor_user_id)
+            if not accrual_result.get("success"):
+                conn.rollback()
+                return ProcessRequestResult(
+                    success=False,
+                    status=request.get("status"),
+                    message=f"Approval not applied: accrual update failed: {accrual_result.get('message')}",
+                )
             # Plan text for notifications (who covers whom)
             plan_text = ""
             if steps:
@@ -788,14 +1069,35 @@ def process_day_off_request(
                         f"{getattr(step, 'original_officer_name', '?')}"
                     )
                 plan_text = "; ".join(parts)
-            _notify_day_off_processed(
+            notify_result = _queue_leave_approval_notifications_in_transaction(
+                cursor,
                 request,
                 officer,
-                "Approved",
                 replacement_id,
                 replacement_name,
-                plan_text=plan_text,
+                plan_text,
+                actor_user_id,
             )
+            if not notify_result.get("success"):
+                conn.rollback()
+                return ProcessRequestResult(
+                    success=False,
+                    status=request.get("status"),
+                    message=f"Approval not applied: notification queue failed: {notify_result.get('message')}",
+                )
+            cursor.execute(
+                """
+                INSERT INTO audit_log (action, entity_type, entity_id, user_id, details)
+                VALUES ('day_off.approve', 'day_off_request', ?, ?, ?)
+                """,
+                (
+                    request_id,
+                    actor_user_id,
+                    f"replacement={replacement_id} overrides={len(created_override_ids)}",
+                ),
+            )
+            if owns_transaction:
+                conn.commit()
             return ProcessRequestResult(
                 success=True,
                 status="Approved",
@@ -826,11 +1128,11 @@ def _sort_for_vacation_granting(requests: List[Dict]) -> List[Dict]:
 
 
 def bulk_approve_auto_ok_requests() -> Dict:
-    """Approve pending requests where bump chain resolves automatically."""
-    pending = get_pending_day_off_requests()
-    approved = 0
+    """Atomically approve the priority-ordered set of currently auto-coverable requests."""
+    pending = _sort_for_vacation_granting(get_pending_day_off_requests())
     skipped_manual = 0
     failed: List[str] = []
+    candidates: List[Tuple[Dict, object, Dict]] = []
 
     for req in pending:
         if req["status"] != REQUEST_STATUS["pending"]:
@@ -853,13 +1155,102 @@ def bulk_approve_auto_ok_requests() -> Dict:
         if not suggestion.success:
             skipped_manual += 1
             continue
-        result = process_day_off_request(req["id"], action="approve")
-        if result.success:
-            approved += 1
-        elif result.requires_manual:
-            skipped_manual += 1
-        else:
-            failed.append(f"#{req['id']}: {result.message}")
+        steps = suggestion.steps or []
+        from logic.coverage_windows_store import get_active_coverage_windows, get_coverage_247_minimum
+
+        min_247 = get_coverage_247_minimum()
+        windows = get_active_coverage_windows()
+        if min_247 > 0 or windows:
+            cov_check = _evaluate_post_bump_coverage(
+                req["request_date"],
+                req["officer_id"],
+                steps,
+                min_247=min_247,
+                windows=windows,
+            )
+            if not cov_check.get("ok"):
+                skipped_manual += 1
+                continue
+        from logic.leave_accruals import _shift_hours_for_officer
+
+        batch_context = {
+            "officer": get_officer_by_id(req["officer_id"]),
+            "covered_start": covered_start,
+            "coverage_verified": True,
+            "leave_hours": float(_shift_hours_for_officer(req["officer_id"], req["request_date"])),
+        }
+        candidates.append((req, suggestion, batch_context))
+
+    if not candidates:
+        return {
+            "success": True,
+            "approved": 0,
+            "skipped_manual": skipped_manual,
+            "failed": [],
+            "message": f"Approved 0 request(s); {skipped_manual} need manual review",
+        }
+
+    # Base snapshots may create rows using their own connection. Prepare every
+    # required month before opening the batch write transaction.
+    from logic.snapshots import ensure_original_monthly_schedule
+
+    months = sorted(
+        {
+            (parse_date(req["request_date"]).year, parse_date(req["request_date"]).month)
+            for req, _suggestion, _context in candidates
+        }
+    )
+    for year, month in months:
+        base_result = ensure_original_monthly_schedule(year, month)
+        if not base_result.get("success"):
+            message = f"Base schedule unavailable for {year:04d}-{month:02d}: {base_result.get('message')}"
+            return {
+                "success": False,
+                "approved": 0,
+                "skipped_manual": skipped_manual,
+                "failed": [message],
+                "message": "Batch approval not applied",
+            }
+
+    # Avoid transactional schema changes after batch writes begin.
+    with connection() as schema_conn:
+        _ensure_leave_accrual_ledger(schema_conn.cursor())
+        schema_conn.commit()
+
+    approved = 0
+    with connection() as conn:
+        try:
+            for req, suggestion, batch_context in candidates:
+                result = process_day_off_request(
+                    req["id"],
+                    action="approve",
+                    _transaction_conn=conn,
+                    _base_schedule_ready=True,
+                    _verified_suggestion=suggestion,
+                    _batch_context=batch_context,
+                )
+                if not result.success:
+                    conn.rollback()
+                    failed.append(f"#{req['id']}: {result.message}")
+                    return {
+                        "success": False,
+                        "approved": 0,
+                        "skipped_manual": skipped_manual,
+                        "failed": failed,
+                        "message": "Batch approval rolled back; no request was approved",
+                    }
+                approved += 1
+            conn.commit()
+        except Exception as exc:
+            conn.rollback()
+            logger.error(f"bulk_approve_auto_ok_requests failed: {exc}")
+            return {
+                "success": False,
+                "approved": 0,
+                "skipped_manual": skipped_manual,
+                "failed": [str(exc)],
+                "message": "Batch approval rolled back; no request was approved",
+            }
 
     return {
         "success": True,

@@ -50,6 +50,7 @@ class StaffingSolution:
     available: bool
     feasible: bool
     message: str
+    status: str = "UNKNOWN"
     # officer_id -> day -> band or None
     assignment: Dict[int, Dict[str, Optional[str]]] = field(default_factory=dict)
     solver: str = "none"
@@ -67,6 +68,14 @@ def ortools_available() -> bool:
         return True
     except ImportError:
         return False
+
+
+def _canonical_cp_sat_status(status_name: str) -> str:
+    """Preserve proof strength when translating CP-SAT outcomes."""
+    name = str(status_name or "").upper()
+    if name in {"OPTIMAL", "FEASIBLE", "INFEASIBLE", "MODEL_INVALID"}:
+        return name
+    return "UNKNOWN"
 
 
 def minimize_officer_count(
@@ -98,6 +107,9 @@ def minimize_officer_count(
             best = sol
             best.message = f"Min officers feasible: {mid}"
             hi = mid - 1
+        elif sol.status in {"UNKNOWN", "MODEL_INVALID", "ENGINE_UNAVAILABLE", "ERROR", "CANCELLED"}:
+            sol.message = f"Headcount search stopped at {mid}: {sol.message}"
+            return sol
         else:
             lo = mid + 1
     if best is None:
@@ -105,6 +117,7 @@ def minimize_officer_count(
             available=ortools_available(),
             feasible=False,
             message=f"No feasible headcount ≤ {max_officers}",
+            status="INFEASIBLE" if ortools_available() else "ENGINE_UNAVAILABLE",
             solver="cp-sat-min" if ortools_available() else "unavailable",
         )
     best.solver = "cp-sat-min"
@@ -127,6 +140,7 @@ def solve_staffing_feasibility(
             available=False,
             feasible=False,
             message="ortools not installed — pip install ortools (optional math engine)",
+            status="ENGINE_UNAVAILABLE",
             solver="unavailable",
         )
 
@@ -141,6 +155,7 @@ def solve_staffing_feasibility(
             available=True,
             feasible=True,
             message="empty instance",
+            status="FEASIBLE",
             solver="cp-sat",
         )
 
@@ -187,6 +202,7 @@ def solve_staffing_feasibility(
                     available=True,
                     feasible=False,
                     message=f"no eligible officers for {d} {b}",
+                    status="INFEASIBLE",
                     solver="cp-sat",
                 )
             # Avoid MODEL_INVALID: need must not exceed domain upper bound
@@ -195,6 +211,7 @@ def solve_staffing_feasibility(
                     available=True,
                     feasible=False,
                     message=f"infeasible: need {need} on {d} {b} but only {len(cover)} eligible",
+                    status="INFEASIBLE",
                     solver="cp-sat",
                 )
             model.Add(sum(cover) >= need)
@@ -278,12 +295,14 @@ def solve_staffing_feasibility(
     solver = cp_model.CpSolver()
     solver.parameters.max_time_in_seconds = float(time_limit_sec)
     status = solver.Solve(model)
+    canonical_status = _canonical_cp_sat_status(solver.StatusName(status))
 
     if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
         return StaffingSolution(
             available=True,
             feasible=False,
-            message=f"infeasible or timeout (status={solver.StatusName(status)})",
+            message=f"CP-SAT ended without a candidate (status={solver.StatusName(status)})",
+            status=canonical_status,
             solver="cp-sat",
             wall_time_sec=solver.WallTime(),
         )
@@ -315,6 +334,7 @@ def solve_staffing_feasibility(
             if penalties
             else "feasible"
         ),
+        status=canonical_status,
         assignment=assignment,
         solver="cp-sat",
         wall_time_sec=solver.WallTime(),
@@ -400,7 +420,7 @@ def instance_from_department(
 
 def format_solution_report(sol: StaffingSolution) -> str:
     """Human what-if report (feasibility + load balance). Solver internals secondary."""
-    status = "FEASIBLE" if sol.feasible else ("UNAVAILABLE" if not sol.available else "INFEASIBLE")
+    status = sol.status
     lines = [
         f"CP-SAT what-if: {status} ({sol.solver})",
         f"  {sol.message}",

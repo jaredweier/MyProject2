@@ -52,6 +52,7 @@ def build_decision_table(
     on_load: Callable[[dict], None],
     annual_target: float | None = None,
     flsa_period_days: int = 28,
+    hourly_rate: float | None = None,
     on_stress_test: Callable[[], None] | None = None,
     stress_results: dict | None = None,
 ) -> None:
@@ -60,7 +61,7 @@ def build_decision_table(
     top = [dict(r) for r in (ranked or [])[:3]]
     if not top:
         return
-    rate = _avg_roster_hourly_rate()
+    rate = float(hourly_rate) if hourly_rate is not None else _avg_roster_hourly_rate()
     top = [enrich_option_economics(r, hourly_rate=rate, flsa_period_days=flsa_period_days) for r in top]
 
     def econ(r: dict, key: str) -> Any:

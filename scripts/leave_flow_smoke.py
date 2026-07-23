@@ -65,7 +65,13 @@ def run_leave_flow_smoke() -> int:
         elif getattr(result, "requires_manual", False):
             print(f"  [ok] approve → manual review (policy): {result.message}")
             # Supervisor override path still must work
-            ov = logic.process_day_off_request(rid, action="approve", admin_notes="smoke override")
+            actor = next(user for user in logic.list_login_users() if user["role"] in ("Supervisor", "Administration"))
+            ov = logic.process_day_off_request(
+                rid,
+                action="approve",
+                admin_notes="smoke override",
+                actor_user_id=actor["id"],
+            )
             if getattr(ov, "success", False) or getattr(ov, "requires_manual", False):
                 print(
                     f"  [ok] re-process: success={getattr(ov, 'success', None)} manual={getattr(ov, 'requires_manual', None)} msg={ov.message}"

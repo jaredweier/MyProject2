@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from config import (
     NIGHT_MINIMUM_OFFICERS,
@@ -73,6 +73,9 @@ class SimulatorConfig:
     # home assignment. Caller should also set nearby_start_hops=0 so the
     # daily rebalancer doesn't move officers off the proven assignment.
     officer_home_starts: Optional[List[str]] = None
+    # Optional CP-SAT-owned start for each officer on each cycle day.
+    # Empty string means OFF. All officers share the same cycle length.
+    officer_cycle_starts: Optional[List[List[str]]] = None
 
 
 @dataclass
@@ -102,6 +105,7 @@ class SimulatorResult:
     shift_templates: List[Tuple[str, str]] = field(default_factory=list)
     officer_slots: List[SimulatorOfficerSlot] = field(default_factory=list)
     coverage_by_day: List[Dict] = field(default_factory=list)
+    assignments: List[Dict] = field(default_factory=list)
     metrics: Dict = field(default_factory=dict)
     suggestions: List[SimulatorSuggestion] = field(default_factory=list)
 
@@ -1067,7 +1071,24 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
                 except (TypeError, ValueError):
                     pass
         nearby_hops = max(0, int(getattr(config, "nearby_start_hops", 1) or 0))
-        if getattr(config, "flexible_daily_starts", False) and working_officers:
+        if config.officer_cycle_starts and working_officers:
+            day_bands = []
+            cycle_start_day = day_offset % max(cycle_length, 1)
+            for slot_index in working_indices:
+                officer_days = (
+                    config.officer_cycle_starts[slot_index] if slot_index < len(config.officer_cycle_starts) else []
+                )
+                start = officer_days[cycle_start_day] if cycle_start_day < len(officer_days) else ""
+                if not start:
+                    start = slots[slot_index].shift_start
+                day_bands.append((start, _end_for_start(start, config.shift_length_hours)))
+        elif config.officer_home_starts and working_officers:
+            # A CP-SAT result already owns the per-officer start assignment.
+            # Rebalancing here invalidates the minute-level coverage proof even
+            # when nearby_start_hops=0, because the balancer first constructs a
+            # fresh seat distribution across every candidate band.
+            day_bands = [(slot.shift_start, slot.shift_end) for slot in working_officers]
+        elif getattr(config, "flexible_daily_starts", False) and working_officers:
             day_bands = _assign_flexible_day_starts(
                 len(working_officers),
                 config.shift_length_hours,
@@ -1265,6 +1286,7 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
     coverage_247_failures = 0
     extra_window_failures = 0
     extra_window_checks = 0
+    coverage_failure_evidence: List[Dict[str, Any]] = []
     window_objs = []
     if config.use_extra_windows and config.extra_windows:
         from logic.coverage_windows_store import _parse_window_dict
@@ -1300,7 +1322,10 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
 
         for day_offset in range(config.simulation_days):
             day = sim_start + timedelta(days=day_offset)
-            day_asg = [a for a in day_assignments if a[0] == day or a[0] == day - timedelta(days=1)]
+            # Prior-day starts can spill into this day; next-day starts can
+            # begin inside an overnight window anchored on this day (for
+            # example Friday 19:00 through Saturday 03:00).
+            day_asg = [a for a in day_assignments if a[0] in (day - timedelta(days=1), day, day + timedelta(days=1))]
             if day_offset == 0 and seed_prior:
                 day_asg = list(seed_prior) + day_asg
             result = evaluate_day_coverage(
@@ -1319,11 +1344,33 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
                     if not chk.get("ok", True):
                         extra_window_failures += 1
                         hard_ok = False
+                        coverage_failure_evidence.append(
+                            {
+                                "date": day.isoformat(),
+                                "interval_start": chk.get("range_start"),
+                                "interval_end": chk.get("range_end"),
+                                "requirement": chk.get("label") or "coverage window",
+                                "required_count": int(chk.get("required") or 0),
+                                "actual_count": int(chk.get("min_occupancy") or 0),
+                                "assumption": "required coverage window",
+                            }
+                        )
                 else:
                     if not chk.get("ok", True):
                         coverage_247_ok = False
                         coverage_247_failures += 1
                         hard_ok = False
+                        coverage_failure_evidence.append(
+                            {
+                                "date": day.isoformat(),
+                                "interval_start": f"{day.isoformat()} 00:00:00",
+                                "interval_end": f"{day.isoformat()} 24:00:00",
+                                "requirement": "24/7 continuous minimum",
+                                "required_count": int(chk.get("required") or 0),
+                                "actual_count": int(chk.get("min_occupancy") or 0),
+                                "assumption": "24/7 minimum coverage",
+                            }
+                        )
             if not result.get("ok", True) and not window_objs and config.coverage_247:
                 coverage_247_ok = False
                 hard_ok = False
@@ -1419,6 +1466,7 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
         "extra_window_failures": extra_window_failures,
         "extra_window_checks": extra_window_checks,
         "extra_windows_active": len(window_objs),
+        "coverage_failure_evidence": coverage_failure_evidence,
         "annual_band_outside": annual_band_outside,
         "annual_mean_outside": annual_mean_outside,
         "annual_unfair": annual_unfair,
@@ -1500,6 +1548,16 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
         shift_templates=shift_templates,
         officer_slots=slots,
         coverage_by_day=coverage_by_day,
+        assignments=[
+            {
+                "slot_id": slots[slot_index].slot_id,
+                "work_date": work_date.isoformat(),
+                "shift_start": shift_start,
+                "shift_end": shift_end,
+            }
+            for slot_index, rows in slot_assignments.items()
+            for work_date, shift_start, shift_end in rows
+        ],
         metrics=metrics,
         suggestions=suggestions,
     )

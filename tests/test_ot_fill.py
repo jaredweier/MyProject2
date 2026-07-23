@@ -122,8 +122,36 @@ class OtFillTests(unittest.TestCase):
             turned_down_ids=[],
         )
         self.assertTrue(result.get("success") or result.get("requires_manual"), result)
+        if result.get("requires_manual"):
+            self.assertEqual(result.get("status"), "Pending Manual Review", result)
+            request = next(r for r in logic.get_day_off_requests() if r["id"] == rid)
+            self.assertEqual(request["status"], "Pending Manual Review")
         stats = get_officer_ot_fill_year_stats(cover["id"], day.year)
         self.assertGreaterEqual(stats.get("ordered_in", 0), 1)
+
+    def test_apply_ot_fill_stops_when_order_in_limit_rejects_response(self):
+        import logic
+        from logic.officers import get_officers_by_seniority, update_officer
+        from logic.ot_fill import apply_ot_fill_selection, get_officer_ot_fill_year_stats
+        from logic.scheduling import officer_base_rotation_working
+
+        day = working_date_for_squad("A")
+        working = [
+            o
+            for o in get_officers_by_seniority()
+            if o.get("active") == 1 and o.get("squad") == "A" and officer_base_rotation_working(o, day)
+        ]
+        orig, cover = working[0], working[1]
+        update_officer(cover["id"], max_ordered_in_year=0, max_turn_downs_year=None)
+        created = logic.create_day_off_request(orig["id"], day.isoformat(), "Vacation", "limit test")
+        result = apply_ot_fill_selection(created["request_id"], cover["id"], response="ordered_in")
+
+        self.assertFalse(result.get("success"), result)
+        self.assertFalse(result.get("requires_manual"), result)
+        request = next(r for r in logic.get_day_off_requests() if r["id"] == created["request_id"])
+        self.assertEqual(request["status"], "Pending")
+        stats = get_officer_ot_fill_year_stats(cover["id"], day.year)
+        self.assertEqual(stats.get("ordered_in", 0), 0)
 
 
 if __name__ == "__main__":

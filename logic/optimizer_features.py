@@ -257,6 +257,15 @@ def why_best_lines(result: Optional[Dict[str, Any]] = None) -> List[str]:
     ranked = r.get("ranked") or []
     if len(ranked) > 1:
         lines.append(f"{len(ranked)} options kept — pick another if starts or N differ.")
+    evidence = (best.get("metrics") or {}).get("coverage_failure_evidence") or []
+    if evidence:
+        first = evidence[0]
+        lines.append(
+            "Failure evidence: "
+            f"{first.get('date')} {first.get('interval_start')} to {first.get('interval_end')} - "
+            f"{first.get('requirement')}: required {first.get('required_count')}, "
+            f"actual {first.get('actual_count')}."
+        )
     return lines
 
 
@@ -462,6 +471,40 @@ def find_min_officers_hard(
                 )
             except Exception:
                 pass
+        # CP-SAT fast-infeasibility proof: if the solver can prove N is
+        # impossible at the day level, skip the expensive full optimizer.
+        try:
+            from logic.rotation_patterns import parse_variation_set
+            from logic.staffing_cpsat import ortools_available as _ort_ok
+            from logic.staffing_cpsat import solve_phase_variant
+
+            if _ort_ok():
+                parsed = parse_variation_set(rotation_variations)
+                if parsed:
+                    pv = solve_phase_variant(
+                        parsed,
+                        n_officers=mid,
+                        shift_length_hours=float(shift_length_hours),
+                        coverage_247=int(coverage_247),
+                        annual_hours_target=float(annual_hours_target),
+                        annual_hours_variance=float(annual_hours_variance),
+                        annual_hours_hard=True,
+                        time_limit_sec=2.0,
+                    )
+                    if pv.get("status") == "infeasible":
+                        trials.append(
+                            {
+                                "num_officers": mid,
+                                "success": False,
+                                "message": f"CP-SAT proof: {pv.get('reason', 'infeasible')}",
+                                "best_starts": None,
+                            }
+                        )
+                        left = mid + 1
+                        continue
+        except Exception:
+            pass
+
         # B10 fix: resolve the configured rotation preset before falling back
         # to the hardcoded Dodgeville name (which fails on any other deployment).
         try:
@@ -1589,12 +1632,16 @@ def suggest_relaxations(
 
     m = (best_miss or {}).get("metrics") or {}
     hm = (best_miss or {}).get("human_metrics") or {}
+    evidence = m.get("coverage_failure_evidence") or []
 
     # --- Window violations ---
     win_fails = int(m.get("extra_window_failures") or hm.get("extra_window_failures") or 0)
     if win_fails > 0:
-        # Try to quantify: how short?
-        shortfall = win_fails  # slots short; 1 slot ~= 30 min window period
+        window_evidence = next((e for e in evidence if e.get("assumption") == "required coverage window"), {})
+        shortfall = max(
+            1,
+            int(window_evidence.get("required_count") or 0) - int(window_evidence.get("actual_count") or 0),
+        )
         cur_n = int((best_miss or {}).get("num_officers") or c.get("officers") or 0)
         suggestions.append(
             {
@@ -1602,10 +1649,11 @@ def suggest_relaxations(
                 "action": f"Raise officer count from {cur_n} to {cur_n + 1}",
                 "delta": "+1 officer",
                 "why": (
-                    f"Best near-miss missed {win_fails} window slot(s). "
+                    f"Exact minimum shortfall is {shortfall} officer(s) at "
+                    f"{window_evidence.get('interval_start') or 'a required window'}. "
                     f"One extra officer on the evening pack often covers Fri/Sat shortfalls."
                 ),
-                "estimated_unlock": win_fails <= 3,
+                "estimated_unlock": shortfall == 1,
             }
         )
         win_list = c.get("windows") or []

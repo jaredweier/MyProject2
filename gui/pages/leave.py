@@ -314,7 +314,12 @@ def _plan_summary_text(plan: dict) -> str:
 
 
 def _run_approve(req, preferred_chain=None, **_ignored) -> None:
-    result = process_day_off_request(req["id"], action="approve", preferred_chain=preferred_chain)
+    result = process_day_off_request(
+        req["id"],
+        action="approve",
+        preferred_chain=preferred_chain,
+        actor_user_id=(session.current_user() or {}).get("id"),
+    )
     if getattr(result, "success", False):
         ui.notify(result.message, type="positive")
     elif getattr(result, "requires_manual", False):

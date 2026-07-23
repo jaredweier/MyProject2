@@ -357,6 +357,18 @@ def _ensure_schema_migrations(cursor) -> None:
     override_cols = {row[1] for row in cursor.fetchall()}
     if "covered_shift_start" not in override_cols:
         cursor.execute("ALTER TABLE schedule_overrides ADD COLUMN covered_shift_start TEXT")
+    for col, ddl in [
+        ("relaxed_constraint", "ALTER TABLE schedule_overrides ADD COLUMN relaxed_constraint TEXT"),
+        ("override_authority_user_id", "ALTER TABLE schedule_overrides ADD COLUMN override_authority_user_id INTEGER"),
+        ("override_subject", "ALTER TABLE schedule_overrides ADD COLUMN override_subject TEXT"),
+        ("override_interval_start", "ALTER TABLE schedule_overrides ADD COLUMN override_interval_start TEXT"),
+        ("override_interval_end", "ALTER TABLE schedule_overrides ADD COLUMN override_interval_end TEXT"),
+        ("override_expires_at", "ALTER TABLE schedule_overrides ADD COLUMN override_expires_at TEXT"),
+        ("override_reason", "ALTER TABLE schedule_overrides ADD COLUMN override_reason TEXT"),
+        ("override_evidence", "ALTER TABLE schedule_overrides ADD COLUMN override_evidence TEXT"),
+    ]:
+        if col not in override_cols:
+            cursor.execute(ddl)
 
     for col, ddl in [
         ("start_date", "ALTER TABLE officers ADD COLUMN start_date DATE"),

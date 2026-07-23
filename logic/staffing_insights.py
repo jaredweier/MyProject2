@@ -422,7 +422,16 @@ def court_board_to_demand_windows(
     except Exception as exc:
         return {"success": False, "message": str(exc), "windows": []}
 
-    board = list_court_training_events(start=start, end=end, limit=500)
+    try:
+        board = list_court_training_events(start=start, end=end, limit=500)
+    except Exception as exc:
+        return {
+            "success": True,
+            "source_available": False,
+            "message": f"Court/training board unavailable: {exc}",
+            "event_days": 0,
+            "windows": [],
+        }
     if not board.get("success"):
         return {"success": False, "message": board.get("message"), "windows": []}
 

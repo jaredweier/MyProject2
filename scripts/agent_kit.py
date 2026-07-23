@@ -37,6 +37,20 @@ def _head(text: str, n: int = 20) -> str:
     return "\n".join(lines[:n]) + f"\n… ({len(lines) - n} more)"
 
 
+def _clip_utf8(text: str, max_bytes: int) -> str:
+    if len(text.encode("utf-8")) <= max_bytes:
+        return text
+    suffix = "\n... (trimmed)"
+    budget = max(0, max_bytes - len(suffix.encode("utf-8")))
+    clipped = text.encode("utf-8")[:budget]
+    while clipped:
+        try:
+            return clipped.decode("utf-8").rstrip() + suffix
+        except UnicodeDecodeError:
+            clipped = clipped[:-1]
+    return suffix.strip()
+
+
 def run_agent_kit(
     *,
     slice_id: str = "",
@@ -67,7 +81,7 @@ Generated: {ts}
 - No explore/plan subagents. No subagents for gates.
 - Chain: usage-brief → outline/symbol → edit → `verify --tier fast`
 - Ship: `verify --tier check` + honest_gate true
-- ONLY alter the Antigravity Chronos Command folder, NEVER MyProject.
+- ONLY alter `C:\\Users\\Windows\\Desktop\\Chronos Command GPT`.
 
 ## Free cmds
 | Need | Cmd |
@@ -79,12 +93,12 @@ Generated: {ts}
 
 ## Route
 ```
-{_head(route or "(pass --task for route)", 8)}
+{_clip_utf8(_head(route or "(pass --task for route)", 8), 800)}
 ```
 
 ## Brief ({sid})
 ```
-{_head(brief, 12)}
+{_clip_utf8(_head(brief, 12), 1600)}
 ```
 """
     LATEST.write_text(body, encoding="utf-8")

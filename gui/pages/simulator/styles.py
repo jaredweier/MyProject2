@@ -183,6 +183,15 @@ SIM_CSS = """
           .sim-decision-table thead th { font-weight: 700; }
           .sim-decision-table tbody th { font-weight: 500; color: var(--muted); white-space: nowrap; }
           .sim-win-cell { background: rgba(59,125,216,0.18); font-weight: 600; }
+          .sim-inline-heatmap {
+              display: grid; grid-template-columns: 3rem repeat(12, minmax(2rem, 1fr)); gap: 3px;
+              overflow-x: auto; align-items: center;
+          }
+          .sim-heat-day { color: var(--muted); font-size: 0.75rem; font-weight: 600; }
+          .sim-heat-cell { text-align: center; border-radius: 4px; padding: 4px 2px; font: 500 0.72rem var(--font-mono); }
+          .sim-heat-cell.thin { background: rgba(232,93,93,0.22); color: #FCA5A5; }
+          .sim-heat-cell.ok { background: rgba(240,180,41,0.18); color: #FDE68A; }
+          .sim-heat-cell.strong { background: rgba(45,212,160,0.18); color: #86EFAC; }
         </style>
         """
 

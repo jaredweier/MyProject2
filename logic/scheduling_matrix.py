@@ -125,7 +125,7 @@ def _get_monthly_rotation_base_only(year: int, month: int) -> List[Dict]:
 
 
 def _load_override_maps_for_range(
-    start_date: date, end_date: date
+    start_date: date, end_date: date, *, cursor=None
 ) -> Tuple[
     Dict[str, Set[int]],
     Dict[str, Set[int]],
@@ -139,9 +139,9 @@ def _load_override_maps_for_range(
     covering_by_date: Dict[str, Set[int]] = {}
     swapped_by_date: Dict[str, Set[int]] = {}
     bumped_status_by_date: Dict[str, Dict[int, str]] = {}
-    with connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
+
+    def load(active_cursor):
+        active_cursor.execute(
             """
             SELECT override_date, original_officer_id, replacement_officer_id, reason
             FROM schedule_overrides
@@ -149,7 +149,7 @@ def _load_override_maps_for_range(
         """,
             (start_str, end_str),
         )
-        for row in cursor.fetchall():
+        for row in active_cursor.fetchall():
             day_key = row["override_date"]
             original_id = row["original_officer_id"]
             replacement_id = row["replacement_officer_id"]
@@ -168,6 +168,12 @@ def _load_override_maps_for_range(
             )
             if replacement_id:
                 covering_by_date.setdefault(day_key, set()).add(replacement_id)
+
+    if cursor is None:
+        with connection() as conn:
+            load(conn.cursor())
+    else:
+        load(cursor)
     return bumped_by_date, covering_by_date, swapped_by_date, bumped_status_by_date
 
 

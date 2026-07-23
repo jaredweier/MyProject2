@@ -143,11 +143,23 @@ def run_audit() -> List[AuditFinding]:
             for o in logic.get_officers_by_seniority()
             if o["squad"] == "A" and o["shift_start"] == "06:00" and not officer_uses_command_staff_schedule(o)
         ]
-        manual_officer = officers_a6[0] if officers_a6 else get_any_officer("A", "06:00")
+        manual_officer = (
+            officers_a6[1]
+            if len(officers_a6) > 1
+            else (officers_a6[0] if officers_a6 else get_any_officer("A", "06:00"))
+        )
         manual_day = off_date_for_squad("A").strftime("%Y-%m-%d")
         cr_mr = logic.create_day_off_request(manual_officer["id"], manual_day, "Vacation")
         logic.process_day_off_request(cr_mr["request_id"], "approve")
-        forced = logic.process_day_off_request(cr_mr["request_id"], "approve")
+        override_actor = next(
+            user for user in logic.list_login_users() if user["role"] in ("Supervisor", "Administration")
+        )
+        forced = logic.process_day_off_request(
+            cr_mr["request_id"],
+            "approve",
+            actor_user_id=override_actor["id"],
+            admin_notes="Audit supervisor constraint exception",
+        )
         findings.append(
             AuditFinding(
                 "AUD-007-manual-review-approve",
@@ -171,7 +183,7 @@ def run_audit() -> List[AuditFinding]:
         )
 
         # AUD-009 / S-10: Off-rotation day routes to manual review (no on-duty replacement)
-        s10_officer = get_any_officer("A", "06:00")
+        s10_officer = get_any_officer("A", "19:00")
         s10_date = off_date_for_squad("A").strftime("%Y-%m-%d")
         cr_s10 = logic.create_day_off_request(s10_officer["id"], s10_date, "Vacation")
         pr_s10 = logic.process_day_off_request(cr_s10["request_id"], "approve")

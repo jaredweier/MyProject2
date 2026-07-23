@@ -150,6 +150,44 @@ class OptimizedScheduleApplyTests(unittest.TestCase):
         for s in starts:
             self.assertTrue(str(s).endswith(":00") or str(s).endswith(":30"), s)
 
+    def test_apply_rejects_plan_when_independent_coverage_check_fails(self):
+        from logic.optimized_schedule_apply import (
+            get_schedule_builder_defaults,
+            implement_optimized_plan,
+            preview_implement_plan,
+        )
+        from logic.scheduling_sim import run_schedule_simulation
+
+        sim = run_schedule_simulation(
+            rotation_type="2-2-3 (Dodgeville 14-day)",
+            num_officers=12,
+            shift_length_hours=11.0,
+            annual_hours_target=2080,
+            shift_starts=["06:00", "14:00", "22:00"],
+            apply_department_rules=False,
+            min_per_shift=1,
+            simulation_days=14,
+            auto_min_officers=False,
+        )
+        self.assertTrue(sim.get("success"), sim)
+        sim["metrics"]["hard_constraints_ok"] = True
+        sim["coverage_by_day"][0]["shift_counts"]["06:00"] = 0
+        cfg = dict(sim.get("simulation_config") or {})
+
+        preview = preview_implement_plan(start_date="2026-11-01", result=sim, config=cfg)
+        self.assertFalse(preview.get("success"), preview)
+        self.assertEqual((preview.get("verification") or {}).get("status"), "INFEASIBLE")
+
+        applied = implement_optimized_plan(
+            start_date="2026-11-01",
+            result=sim,
+            config=cfg,
+            apply_officer_assignments=False,
+        )
+        self.assertFalse(applied.get("success"), applied)
+        self.assertEqual((applied.get("verification") or {}).get("status"), "INFEASIBLE")
+        self.assertFalse(get_schedule_builder_defaults())
+
     def test_officer_rotation_pattern_duty(self):
         from datetime import timedelta
 

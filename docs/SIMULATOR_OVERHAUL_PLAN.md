@@ -169,47 +169,69 @@ the cure for F1/F2/F3/F5.
 
 ### Phase 1 — solver-first core (the real fix; F1/F2/F3 die here)
 
-- [ ] **P1.1 Objective function in CP-SAT** (`logic/staffing_cpsat.py`)
-  - Extend `solve_full_assignment` from feasibility-only to optimization: weighted objective
-    from the existing priority sliders (`_weights_from_priority` semantics) — coverage,
-    fairness/annual-band tightness, headcount. Soft constraints with penalties where the UI
-    marks a requirement non-hard.
-- [ ] **P1.2 Solution pool → ranked options** — surface multiple diverse solutions from the
-  solver (solution callback / repeated solves with exclusion cuts) so ranked options come
-  from CP-SAT directly; keep `diversify_ranked` semantics. Exhaustive enumeration becomes
-  fallback ONLY for shapes CP-SAT reports `unsupported` (e.g. specific-date windows).
-- [ ] **P1.3 Specific-date windows in CP-SAT** — model the dated window over the concrete
-  simulation horizon (it's an optimization over a fixed date range at that point, so
-  soundness of "infeasible" is definable; document the semantics).
-- [ ] **P1.4 Min-N + What-if on the solver** — binary search on N over `solve_phase_variant`
-  (its infeasible is a proof → sound lower bound) + `solve_full_assignment` for the witness.
-  Replaces the slow path in `find_min_officers_hard`. Same engine powers "What does +1 buy me"
-  and Compare 8/10/12h.
-- [ ] **P1.5 Live progress** — OR-Tools solution callback → `_progress` → UI best-so-far.
+- [x] **P1.1 Objective function in CP-SAT** (`logic/staffing_cpsat.py`)
+  - `solve_full_assignment` now minimizes total per-officer |projected annual hours - target|
+    (deci-hour precision). y-variables (variant aggregation) created unconditionally when
+    target is set. Pure feasibility when no target. Landed 2026-07-22.
+- [x] **P1.2 Solution pool → ranked options** — `solve_full_assignment` accepts
+  `max_solutions` / `pool_time_limit_sec`. Uses aggregate-profile exclusion cuts (count_vars
+  per choice key) so officer permutations don't count as new. `optimize_staffing_scenarios`
+  now passes `max_solutions=5` and iterates all returned solutions through
+  `simulate_schedule` verification. Landed 2026-07-22.
+- [x] **P1.3 Specific-date windows in CP-SAT** — `solve_full_assignment` now maps
+  `specific_date` / `date` windows to concrete day offsets within the horizon. Outside-horizon
+  dates are silently skipped. Weekday-periodic windows unchanged. Landed 2026-07-22.
+- [x] **P1.4 Min-N + What-if on the solver** — `find_min_officers_hard` now tries
+  `solve_phase_variant` before the full optimizer at each binary-search step. If CP-SAT
+  proves N infeasible, the step is skipped instantly (no full optimizer call). Landed 2026-07-22.
+- [x] **P1.5 Live progress** — `solve_full_assignment` accepts `progress_callback`, wired
+  through from `optimize_staffing_scenarios`. Uses `CpSolverSolutionCallback` to report
+  each improving solution found during search. Landed 2026-07-22.
 - **Proof for all of Phase 1:** every produced schedule re-verified through
   `logic/coverage_timeline.py`; reference scenario end-to-end in-browser: Find Best answers
   in seconds with ranked options; "Will 8 officers work?" answers in seconds; 28-day hard eval;
   28/28 `tests.test_simulator_constraints` + new solver tests; then `verify --tier check`.
+- **2026-07-22 six-officer open-search repair:** preset rotations were excluded from CP-SAT,
+  CP-SAT phase output used the opposite sign from simulator replay, fixed officer starts were
+  rebalanced after solving, every candidate start was treated as a required band, and an
+  unlocked per-band minimum silently defaulted to 1/2. Corrected all five. Exact open search
+  now returns 6 officers, 11h, 2-2-3, starts 05:00/16:00/18:00, 2008.9h average, with zero
+  24/7 or Fri/Sat 19:00-03:00 failures; 29/29 focused tests and `verify --tier fast` pass.
+- **2026-07-22 corrected hard 8-hour scenario:** the first repair found an 11h answer because
+  shift length had been left open. The real model also required starts to vary by officer and
+  cycle day, compatible same-length pattern variants/inverses, and overlap windows to count
+  shifts starting before the window or after midnight. Added cycle-day CP-SAT starts and exact
+  replay (`officer_cycle_starts`), fixed both coverage-window boundary bugs, and preserved the
+  expanded 16-day pattern map. Fully open rotation/start search now returns 6 officers, exactly
+  8h, `6-2,5-3`/`6-3,5-2` plus inverses, 2008.9h average, zero 24/7 failures, zero Fri/Sat
+  19:00-03:00 failures over the full 112-day cycle/weekday horizon. 31/31 focused tests pass.
 
 ### Phase 2 — UX rebuild
 
-- [ ] **P2.1 Question-first Requirements** — the three quick-start questions become the real
-  primary flow (they currently just open thin dialogs that fall into the same wall).
-  Full ~4,300px form becomes "Advanced". Suggestions inline under fields, not modal.
-- [ ] **P2.2 Results = decision surface** — per-option **$ OT cost estimate** (hours over
+- **2026-07-22 general-model cleanup:** removed the hidden eight-hour cycle-start span default.
+  The span is now an optional hard constraint in Chronos; duplicate-start minimization is an
+  explicit soft preference, off by default. Focused regression, static UI, fast verification,
+  and live `/simulator` control interaction passed.
+
+- [x] **P2.1 Question-first Requirements** — the three quick-start questions are now the real
+  primary flow. The full requirements form is collapsed under "Advanced requirements";
+  suggestions stay explicit instead of appearing as lock/focus modals.
+- [x] **P2.2 Results = decision surface** — per-option **$ OT cost estimate** (hours over
   target × configurable OT rate; the gap vs every commercial competitor), inline coverage
   heatmap (`shift_coverage_heatmap` exists), plain-language verdict lines (`why_best_lines`
   exists). Read `DESIGN.md` before any visual work; stop-slop for copy.
-- [ ] **P2.3 page.py stage-2 split** — do it WITH the P1 rewrite of `run_sim`/
-  `_apply_opt_result`/dialogs, using the `actions.py` callbacks-dict pattern. Re-read the
-  two hazards in `logs/NEXT_SESSION_BRIEF.md` §6 first.
+- [x] **P2.3 page.py stage-2 split** — Search Plan creation/execution moved to
+  `gui/pages/simulator/search_flow.py` with click-time callbacks; the old inline dialog was removed.
+  The interlocked execution/result closure remains at the approved split boundary.
 
 ### Phase 3 — market parity (prioritize with the user, not unilaterally)
 
-- [ ] Cert-aware staffing (UI gate exists, honestly disabled — wire real cert data from roster)
-- [ ] Court/training board deep integration (a "Load From Operations" window template exists)
-- [ ] Budget/OT cost reporting across options and published months
-- [ ] Shift-bidding link-up (Create Bid Draft button exists on publish step)
+- [x] Cert-aware staffing — required certification codes are checked against the active eligible roster before solve and reported as proven infeasible when capacity is short.
+- [x] Court/training board deep integration — operations windows load into hard demand and degrade honestly when the source table is unavailable.
+- [x] Budget/OT cost reporting across options and published months — configurable OT rate feeds option cards and the decision/publish surfaces.
+- [x] Shift-bidding link-up — published simulation results create a real shift-bid draft through the scheduling service.
+
+**Phase 2/3 completion proof (2026-07-22):** focused simulator/UI/insights suite passed 46 tests; live `/simulator` checks covered question-first navigation, collapsed Advanced requirements, certification and OT controls, Search Plan role summary, and result rendering. `verify --tier fast` passed after the stage-2 cleanup. Final `verify --tier check` and honest gate are recorded in `logs/last_verify.json`.
 
 ---
 

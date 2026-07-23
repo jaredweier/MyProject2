@@ -625,7 +625,7 @@ def apply_ot_fill_selection(
     mode = get_ot_fill_mode()
 
     for tid in turned_down_ids or []:
-        record_turned_down(
+        turned_down_result = record_turned_down(
             int(tid),
             event_date,
             request_id=request_id,
@@ -633,8 +633,31 @@ def apply_ot_fill_selection(
             fill_mode=mode,
             notes="Turned down OT / fill offer",
         )
+        if not turned_down_result.get("success"):
+            return {
+                "success": False,
+                "message": turned_down_result.get("message") or "Could not record turn-down",
+                "requires_manual": False,
+                "status": request.get("status") or "",
+                "cover_officer_id": cover_officer_id,
+                "response": response,
+            }
 
     resp = (response or EVENT_ORDERED_IN).strip()
+    if resp not in {
+        EVENT_ORDERED_IN,
+        EVENT_TURNED_DOWN,
+        EVENT_VOLUNTEERED,
+        EVENT_PARTIAL_COVER,
+    }:
+        return {
+            "success": False,
+            "message": f"Unknown OT fill response: {resp}",
+            "requires_manual": False,
+            "status": request.get("status") or "",
+            "cover_officer_id": cover_officer_id,
+            "response": resp,
+        }
     if resp == EVENT_TURNED_DOWN:
         return record_turned_down(
             cover_officer_id,
@@ -644,8 +667,10 @@ def apply_ot_fill_selection(
             fill_mode=mode,
         )
 
+    # The call-in response is an operational fact even when coverage must
+    # continue through manual review.
     if resp == EVENT_ORDERED_IN:
-        record_ordered_in(
+        response_result = record_ordered_in(
             cover_officer_id,
             event_date,
             request_id=request_id,
@@ -656,7 +681,7 @@ def apply_ot_fill_selection(
             fill_mode=mode,
         )
     elif resp == EVENT_VOLUNTEERED:
-        record_ot_fill_event(
+        response_result = record_ot_fill_event(
             cover_officer_id,
             event_date,
             EVENT_VOLUNTEERED,
@@ -669,7 +694,7 @@ def apply_ot_fill_selection(
             update_call_list=False,
         )
     elif resp == EVENT_PARTIAL_COVER:
-        record_ot_fill_event(
+        response_result = record_ot_fill_event(
             cover_officer_id,
             event_date,
             EVENT_PARTIAL_COVER,
@@ -682,14 +707,86 @@ def apply_ot_fill_selection(
             fill_mode=mode,
             update_call_list=False,
         )
+    if not response_result.get("success"):
+        return {
+            "success": False,
+            "message": response_result.get("message") or "Could not record OT fill response",
+            "requires_manual": False,
+            "status": request.get("status") or "",
+            "cover_officer_id": cover_officer_id,
+            "response": resp,
+            "year_stats": response_result.get("year_stats"),
+        }
 
-    chain = [(int(request["officer_id"]), int(cover_officer_id))]
+    from logic.coverage_optimizer import search_best_coverage_plans
+    from logic.scheduling import get_generated_schedule_day_context, resolve_officer_shift_band
+
+    request_day = parse_date(event_date)
+    covered_start, _covered_end = resolve_officer_shift_band(
+        int(request["officer_id"]),
+        request_day,
+        home_shift_start=request.get("shift_start"),
+        home_shift_end=request.get("shift_end"),
+    )
+    plans = search_best_coverage_plans(
+        int(request["officer_id"]),
+        event_date,
+        request.get("squad") or "",
+        covered_start,
+        get_generated_schedule_day_context(request_day),
+        required_first_replacement_id=int(cover_officer_id),
+    )
+    selected_plan = next((plan for plan in plans if plan.success), None)
+    if selected_plan is None:
+        manual_note = (
+            admin_notes
+            or f"OT fill response recorded for {cover.get('name')}; selected cover needs manual coverage review"
+        )
+        with connection() as conn:
+            cursor = conn.cursor()
+            cursor.execute(
+                """
+                UPDATE day_off_requests
+                SET status = 'Pending Manual Review', admin_notes = ?,
+                    processed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = 'Pending'
+                """,
+                (manual_note, request_id),
+            )
+            if cursor.rowcount == 0:
+                cursor.execute("SELECT status FROM day_off_requests WHERE id = ?", (request_id,))
+                current = cursor.fetchone()
+                if not current or current["status"] != "Pending Manual Review":
+                    conn.rollback()
+                    return {
+                        "success": False,
+                        "message": "Request changed before manual-review routing",
+                        "requires_manual": False,
+                        "status": current["status"] if current else "",
+                        "cover_officer_id": cover_officer_id,
+                        "response": resp,
+                        "year_stats": response_result.get("year_stats"),
+                    }
+            conn.commit()
+        return {
+            "success": False,
+            "message": (
+                "OT fill response recorded; selected officer cannot complete a verified "
+                "coverage plan without manual review"
+            ),
+            "requires_manual": True,
+            "status": "Pending Manual Review",
+            "cover_officer_id": cover_officer_id,
+            "response": resp,
+            "year_stats": response_result.get("year_stats"),
+        }
+
     result = process_day_off_request(
         request_id,
         action="approve",
         admin_notes=admin_notes or f"OT fill: {resp} by {cover.get('name')}",
         actor_user_id=actor_user_id,
-        preferred_chain=chain,
+        preferred_chain=list(selected_plan.chain or []),
     )
     return {
         "success": getattr(result, "success", False),

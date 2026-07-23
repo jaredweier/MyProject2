@@ -291,6 +291,45 @@ class TimecardScheduleTests(unittest.TestCase):
             updated = logic.get_schedule_snapshot(year, month, "updated")
             self.assertIsNotNone(updated)
 
+    def test_publish_base_rolls_back_when_independent_coverage_verification_fails(self):
+        with test_database():
+            import logic
+            from seed_data import seed_users_if_empty
+
+            seed_users_if_empty()
+            admin = next(u for u in logic.list_login_users() if u["role"] == "Administration")
+            year, month = date.today().year, date.today().month
+            logic.set_coverage_247_minimum(999)
+
+            result = logic.publish_base_schedule(year, month, admin["id"])
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["status"], "INFEASIBLE")
+            self.assertFalse(result["verification"]["ok"])
+            self.assertIsNone(logic.get_schedule_snapshot(year, month, "base"))
+            self.assertIsNone(logic.get_schedule_snapshot(year, month, "updated"))
+
+    def test_live_publish_rolls_back_when_independent_coverage_verification_fails(self):
+        with test_database():
+            import logic
+            from seed_data import seed_users_if_empty
+
+            seed_users_if_empty()
+            admin = next(u for u in logic.list_login_users() if u["role"] == "Administration")
+            year, month = date.today().year, date.today().month
+            published = logic.publish_base_schedule(year, month, admin["id"])
+            self.assertTrue(published["success"], published.get("message"))
+            before = logic.get_schedule_snapshot(year, month, "updated")
+            logic.set_coverage_247_minimum(999)
+
+            result = logic.sync_updated_schedule(year, month, admin["id"])
+
+            self.assertFalse(result["success"])
+            self.assertEqual(result["status"], "INFEASIBLE")
+            after = logic.get_schedule_snapshot(year, month, "updated")
+            self.assertEqual(before["generated_at"], after["generated_at"])
+            self.assertEqual(before["rows"], after["rows"])
+
     def test_base_summary_without_snapshot(self):
         with test_database():
             import logic

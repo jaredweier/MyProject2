@@ -45,12 +45,11 @@ def resolve_assignment_shift(
     return officer.get("shift_start") or "", officer.get("shift_end") or ""
 
 
-def covered_shift_for_officer_on_date(officer_id: int, target_date: date) -> Optional[str]:
+def covered_shift_for_officer_on_date(officer_id: int, target_date: date, *, cursor=None) -> Optional[str]:
     from database import connection
 
-    with connection() as conn:
-        cursor = conn.cursor()
-        cursor.execute(
+    def load(active_cursor):
+        active_cursor.execute(
             """
             SELECT covered_shift_start FROM schedule_overrides
             WHERE override_date = ? AND replacement_officer_id = ?
@@ -58,7 +57,13 @@ def covered_shift_for_officer_on_date(officer_id: int, target_date: date) -> Opt
         """,
             (target_date.isoformat(), officer_id),
         )
-        row = cursor.fetchone()
+        return active_cursor.fetchone()
+
+    if cursor is None:
+        with connection() as conn:
+            row = load(conn.cursor())
+    else:
+        row = load(cursor)
     if row and row["covered_shift_start"]:
         return row["covered_shift_start"]
     return None

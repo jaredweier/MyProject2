@@ -28,6 +28,9 @@ class SimulatorState:
             "gaps",
             "flsa",
             "annual",
+            "start_changes",
+            "duplicate_starts",
+            "overcoverage",
             "headcount",
         ]
     )

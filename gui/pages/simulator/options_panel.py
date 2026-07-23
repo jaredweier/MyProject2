@@ -265,6 +265,14 @@ def render_options_panel(
         use_flsa.on_value_change(lambda e: None)
         _set_enabled([flsa_days], False)
 
+        with _row():
+            ui.label("Preferred: OT Cost Assumption")
+            with ui.element("div"):
+                ot_hourly_rate = ui.input(
+                    label="Estimated Base Hourly Rate ($)", value="35", placeholder="e.g. 35"
+                ).classes("w-full")
+                ui.label("Used only to compare estimated overtime cost across options.").style(_HINT)
+
     # ── Fatigue & Flexibility — how a candidate schedule is built day-to-day ──
     with panel("Fatigue & Flexibility"):
         with _row():
@@ -287,6 +295,29 @@ def render_options_panel(
         _set_enabled([min_rest, max_consec], False)
 
         with _row():
+            use_start_span = ui.checkbox("Require: Maximum Start-Time Span", value=False)
+            with ui.element("div"):
+                max_start_span = ui.input(
+                    label="Maximum Hours Between Earliest and Latest Start",
+                    value="",
+                    placeholder="e.g. 8",
+                ).classes("w-full")
+                ui.label(
+                    "Optional hard limit using operational time: 06:00 to 14:00 is 8 hours; "
+                    "06:00 to 22:00 is 16 hours. Unchecked means unrestricted."
+                ).style(_HINT)
+        use_start_span.on_value_change(lambda e: _set_enabled([max_start_span], bool(e.value)))
+        _set_enabled([max_start_span], False)
+
+        with _row():
+            prefer_unique_starts = ui.checkbox("Prefer: Fewer Same-Time Starts", value=False)
+            with ui.element("div"):
+                ui.label(
+                    "Soft preference only. The solver may still assign officers the same start "
+                    "when required for coverage or another hard constraint."
+                ).style(_HINT)
+
+        with _row():
             use_nearby = ui.checkbox("Allow: Shift Flexibility (Work Days)", value=False)
             with ui.element("div"):
                 nearby_hops = ui.input(
@@ -306,21 +337,18 @@ def render_options_panel(
                 ui.label("Only when checked: multi-block OFF days may fill windows.").style(_HINT)
 
         with _row():
-            use_certs = ui.checkbox("Require: Cert Codes (Fill Gate)", value=False).disable()
+            use_certs = ui.checkbox("Require: Cert Codes (Fill Gate)", value=False)
             with ui.element("div"):
-                cert_codes = (
-                    ui.input(
-                        label="Cert Codes (Comma-Separated)",
-                        value="",
-                        placeholder="e.g. FTO, K9, EMT",
-                    )
-                    .classes("w-full")
-                    .disable()
-                )
+                cert_codes = ui.input(
+                    label="Cert Codes (Comma-Separated)",
+                    value="",
+                    placeholder="e.g. FTO, K9, EMT",
+                ).classes("w-full")
                 ui.label(
-                    "Not available yet — the simulator does not model individual officer certifications. "
-                    "This control has no effect on search results."
+                    "Hard roster gate: only active officers holding every listed, unexpired certification "
+                    "count toward the requested headcount."
                 ).style(_HINT)
+        use_certs.on_value_change(lambda e: _set_enabled([cert_codes], bool(e.value)))
         _set_enabled([cert_codes], False)
 
     with panel("Extra Minimum Staffing Windows"):
@@ -537,8 +565,12 @@ def render_options_panel(
         "use_fatigue": use_fatigue,
         "min_rest": min_rest,
         "max_consec": max_consec,
+        "use_start_span": use_start_span,
+        "max_start_span": max_start_span,
+        "prefer_unique_starts": prefer_unique_starts,
         "use_flsa": use_flsa,
         "flsa_days": flsa_days,
+        "ot_hourly_rate": ot_hourly_rate,
         "use_windows": use_windows,
         "_refresh_win_list": _refresh_win_list,
         "hint_rotation": hint_rotation,

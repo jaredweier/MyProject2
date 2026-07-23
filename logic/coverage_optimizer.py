@@ -389,8 +389,9 @@ def search_best_coverage_plans(
     policy: Optional[CoveragePolicy] = None,
     enforce_minimum_rest: bool = True,
     enforce_consecutive_work: bool = True,
+    required_first_replacement_id: Optional[int] = None,
 ) -> List[BumpChainSuggestion]:
-    """Beam-search complete bump chains; return best plans first."""
+    """Beam-search complete chains; optionally anchor the selected first replacement."""
     from logic.bump_optimizer import (
         _bump_assignment_counts_for_date,
         _chain_excluded_officer_ids,
@@ -456,8 +457,11 @@ def search_best_coverage_plans(
                 policy=policy,
                 enforce_minimum_rest=enforce_minimum_rest,
                 enforce_consecutive_work=enforce_consecutive_work,
-                limit=policy.beam_width,
+                limit=(10000 if not state.steps and required_first_replacement_id is not None else policy.beam_width),
             )
+            if not state.steps and required_first_replacement_id is not None:
+                required_id = int(required_first_replacement_id)
+                candidates = [item for item in candidates if int(item[1]["id"]) == required_id]
 
             if not candidates:
                 if not state.steps:

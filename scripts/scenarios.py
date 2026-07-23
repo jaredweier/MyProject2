@@ -101,7 +101,19 @@ def _run_all() -> List[ScenarioResult]:
         rest_day = off_date_for_squad("A").strftime("%Y-%m-%d")
         cr06 = logic.create_day_off_request(day_officer["id"], rest_day, "Vacation")
         pr06a = logic.process_day_off_request(cr06["request_id"], "approve")
-        pr06b = logic.process_day_off_request(cr06["request_id"], "approve") if pr06a.requires_manual else None
+        override_actor = next(
+            user for user in logic.list_login_users() if user["role"] in ("Supervisor", "Administration")
+        )
+        pr06b = (
+            logic.process_day_off_request(
+                cr06["request_id"],
+                "approve",
+                actor_user_id=override_actor["id"],
+                admin_notes="Scenario supervisor constraint exception",
+            )
+            if pr06a.requires_manual
+            else None
+        )
         s06_ok = (
             pr06a.requires_manual
             and pr06a.status == "Pending Manual Review"
@@ -178,14 +190,15 @@ def _run_all() -> List[ScenarioResult]:
         results.append(ScenarioResult("S-09", s09_ok, detail09))
 
         # S-10: Off-rotation day — no on-duty replacement → manual review
+        s10_officer = get_any_officer("A", "19:00")
         s10_date = off_date_for_squad("A").strftime("%Y-%m-%d")
-        cr10 = logic.create_day_off_request(day_officer["id"], s10_date, "Vacation")
+        cr10 = logic.create_day_off_request(s10_officer["id"], s10_date, "Vacation")
         pr10 = logic.process_day_off_request(cr10["request_id"], "approve")
         conn = get_connection()
         c = conn.cursor()
         c.execute(
             "SELECT COUNT(*) FROM schedule_overrides WHERE override_date = ? AND original_officer_id = ?",
-            (s10_date, day_officer["id"]),
+            (s10_date, s10_officer["id"]),
         )
         ov10 = c.fetchone()[0]
         conn.close()

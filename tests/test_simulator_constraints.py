@@ -146,6 +146,25 @@ class SimulatorConstraintsTests(unittest.TestCase):
         # Unrealistic min 8 with 6 officers → expect failures
         self.assertGreater(result.metrics.get("extra_window_failures", 0), 0)
 
+    def test_window_counts_shifts_that_started_before_window(self):
+        from datetime import date
+
+        from logic.coverage_timeline import CoverageWindow, check_coverage_window
+
+        friday = date(2026, 7, 24)
+        assignments = [
+            (friday, "15:00", "23:00"),
+            (friday, "19:00", "03:00"),
+            (friday, "23:00", "07:00"),
+            (date(2026, 7, 25), "00:00", "08:00"),
+        ]
+        window = CoverageWindow(min_officers=2, start_time="19:00", end_time="03:00", weekday=4)
+
+        result = check_coverage_window(assignments, window, friday)
+
+        self.assertTrue(result["ok"], result)
+        self.assertEqual(result["min_occupancy"], 2)
+
     def test_optimizer_respects_locked_min_per_shift(self):
         from logic.scheduling_sim import run_staffing_optimizer
 
@@ -711,6 +730,177 @@ class SimulatorConstraintsTests(unittest.TestCase):
         self.assertTrue(cancelled.get("cancelled"))
         self.assertFalse(cancelled.get("search_exhaustive"))
         self.assertTrue(phases)
+
+    def test_open_search_uses_preset_cpsat_for_six_officer_solution(self):
+        from logic.scheduling_sim import run_staffing_optimizer
+
+        result = run_staffing_optimizer(
+            rotation_types=["2-2-3 (14-day)"],
+            officer_counts=[6],
+            annual_hours_target=2008.0,
+            annual_hours_variance=20.0,
+            annual_hours_hard=True,
+            coverage_247=1,
+            use_extra_windows=True,
+            extra_windows=[
+                {"weekday": 4, "start_time": "19:00", "end_time": "03:00", "min_officers": 2},
+                {"weekday": 5, "start_time": "19:00", "end_time": "03:00", "min_officers": 2},
+            ],
+            require_hard_ok=True,
+            free_starts=True,
+            free_lengths=True,
+            free_variations=False,
+            simulation_days=28,
+            time_budget_seconds=30,
+        )
+
+        self.assertTrue(result.get("success"), result.get("message"))
+        best = result.get("best") or {}
+        self.assertEqual(best.get("num_officers"), 6)
+        self.assertEqual(best.get("shift_length_hours"), 11.0)
+        self.assertTrue(best.get("hard_constraints_ok"))
+        metrics = best.get("metrics") or {}
+        self.assertEqual(metrics.get("coverage_247_failures"), 0)
+        self.assertEqual(metrics.get("extra_window_failures"), 0)
+        self.assertEqual(metrics.get("annual_mean_outside"), 0)
+
+    def test_six_officer_eight_hour_variable_cycle_starts(self):
+        from logic.scheduling_sim import run_staffing_optimizer
+
+        result = run_staffing_optimizer(
+            rotation_types=["2-2-3 (14-day)"],
+            officer_counts=[6],
+            shift_length_hours=8.0,
+            shift_starts=["06:00", "11:00", "14:00", "19:00", "22:00"],
+            annual_hours_target=2008.0,
+            annual_hours_variance=20.0,
+            annual_hours_hard=True,
+            coverage_247=1,
+            use_extra_windows=True,
+            extra_windows=[
+                {"weekday": 4, "start_time": "19:00", "end_time": "03:00", "min_officers": 2},
+                {"weekday": 5, "start_time": "19:00", "end_time": "03:00", "min_officers": 2},
+            ],
+            require_hard_ok=True,
+            free_starts=True,
+            free_variations=True,
+            simulation_days=112,
+            time_budget_seconds=60,
+        )
+
+        self.assertTrue(result.get("success"), result.get("message"))
+        best = result.get("best") or {}
+        self.assertEqual(best.get("num_officers"), 6)
+        self.assertEqual(best.get("shift_length_hours"), 8.0)
+        self.assertTrue(best.get("officer_cycle_starts"))
+        metrics = best.get("metrics") or {}
+        self.assertTrue(metrics.get("hard_constraints_ok"))
+        self.assertEqual(metrics.get("coverage_247_failures"), 0)
+        self.assertEqual(metrics.get("extra_window_failures"), 0)
+        self.assertEqual(metrics.get("annual_mean_outside"), 0)
+
+    def test_cycle_day_start_span_is_unrestricted_unless_explicit(self):
+        from datetime import date, timedelta
+
+        from logic.rotation_patterns import build_pattern
+        from logic.staffing_cpsat import solve_cycle_day_starts
+
+        start = date(2026, 7, 20)
+        kwargs = {
+            "patterns": [build_pattern("2-1", style="fixed")],
+            "n_officers": 1,
+            "shift_length_hours": 1.0,
+            "candidate_starts": ["06:00", "22:00"],
+            "sim_start_date": start,
+            "extra_windows": [
+                {"specific_date": start, "start_time": "06:00", "end_time": "07:00", "min_officers": 1},
+                {
+                    "specific_date": start + timedelta(days=1),
+                    "start_time": "22:00",
+                    "end_time": "23:00",
+                    "min_officers": 1,
+                },
+            ],
+            "time_limit_sec": 5.0,
+        }
+
+        unrestricted = solve_cycle_day_starts(**kwargs)
+        limited = solve_cycle_day_starts(**kwargs, max_start_variation_hours=8.0)
+
+        self.assertEqual(unrestricted.get("status"), "feasible", unrestricted)
+        self.assertEqual(limited.get("status"), "infeasible", limited)
+        self.assertIn(unrestricted.get("solver_status"), {"proven_optimal", "feasible_time_limited"})
+        self.assertEqual(limited.get("solver_status"), "proven_infeasible")
+
+    def test_simulator_input_roles_are_typed_and_summarized(self):
+        from logic.staffing_optimizer import normalize_simulator_input_roles, simulator_understood_lines
+
+        roles = normalize_simulator_input_roles(
+            {
+                "hard_constraints": [{"key": "coverage", "label": "24/7 minimum", "role": "open_variable"}],
+                "soft_preferences": [{"key": "unique", "label": "Fewer same-time starts"}],
+                "open_variables": [{"key": "starts", "label": "Shift starts", "domain": ["06:00", "22:00"]}],
+            }
+        )
+
+        self.assertEqual(roles["hard_constraints"][0]["role"], "hard_constraint")
+        self.assertEqual(roles["soft_preferences"][0]["role"], "soft_preference")
+        self.assertEqual(roles["open_variables"][0]["role"], "open_variable")
+        lines = simulator_understood_lines(roles)
+        self.assertEqual(lines[0], "Required: 24/7 minimum")
+        self.assertEqual(lines[1], "Preferred: Fewer same-time starts")
+        self.assertEqual(lines[2], "Simulator decides: Shift starts")
+
+    def test_lexicographic_coefficients_guarantee_priority(self):
+        from logic.staffing_cpsat import lexicographic_coefficients
+
+        bounds = [("annual", 100), ("start_changes", 20), ("duplicates", 12)]
+        weights = lexicographic_coefficients(bounds)
+
+        self.assertGreater(weights["annual"], 20 * weights["start_changes"] + 12 * weights["duplicates"])
+        self.assertGreater(weights["start_changes"], 12 * weights["duplicates"])
+
+    def test_coverage_failure_evidence_is_exact_and_explainable(self):
+        from logic.optimizer_features import why_best_lines
+        from simulator import SimulatorConfig, simulate_schedule
+
+        result = simulate_schedule(
+            SimulatorConfig(
+                rotation_type="2-2-3 (14-day)",
+                num_officers=1,
+                shift_length_hours=8.0,
+                annual_hours_target=2080.0,
+                shift_starts=["06:00"],
+                coverage_247=1,
+                simulation_days=2,
+                apply_department_rules=False,
+                auto_min_officers=False,
+            )
+        )
+        evidence = result.metrics.get("coverage_failure_evidence") or []
+        self.assertTrue(evidence)
+        self.assertEqual(evidence[0]["required_count"], 1)
+        self.assertEqual(evidence[0]["actual_count"], 0)
+        lines = why_best_lines({"best": {"metrics": result.metrics, "hard_constraints_ok": False}})
+        self.assertTrue(any("required 1, actual 0" in line for line in lines))
+
+    def test_certification_gate_uses_live_roster_eligibility(self):
+        from logic.scheduling_sim import run_staffing_optimizer
+
+        result = run_staffing_optimizer(
+            rotation_types=["2-2-3 (14-day)"],
+            officer_counts=[1],
+            shift_length_hours=8.0,
+            shift_starts=["06:00", "14:00", "22:00"],
+            annual_hours_target=2080.0,
+            required_cert_codes=["CERT_THAT_NO_ACTIVE_OFFICER_HAS"],
+            require_hard_ok=True,
+            time_budget_seconds=5,
+        )
+
+        self.assertTrue(result.get("impossible"), result)
+        self.assertEqual(result.get("solver_status"), "proven_infeasible")
+        self.assertTrue(any("certification gate" in reason for reason in result.get("early_reasons") or []))
 
     def test_estimate_search_space_warns_when_unconstrained(self):
         from logic.scheduling_sim import estimate_staffing_search_space
