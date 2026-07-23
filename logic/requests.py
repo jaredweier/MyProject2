@@ -275,10 +275,17 @@ def process_shift_swap(swap_id: int, action: str = "approve", admin_notes: str =
                 """
                 UPDATE shift_swaps
                 SET status = 'Approved', admin_notes = ?, processed_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status = ?
             """,
-                (admin_notes, swap_id),
+                (admin_notes, swap_id, swap.get("status")),
             )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                return ProcessSwapResult(
+                    success=False,
+                    status=swap.get("status"),
+                    message="Approval not applied: swap changed after preview",
+                )
             conn.commit()
 
             from logic.snapshots import apply_live_schedule_for_date
