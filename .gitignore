@@ -22,6 +22,7 @@ env/
 logs/
 exports/
 backups/
+outputs/
 terminals/
 check_result.log
 
