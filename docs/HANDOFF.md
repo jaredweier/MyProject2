@@ -1,3 +1,25 @@
+## 2026-07-23 NEWEST — Phase 2 item 3 landed (capped search → honest incomplete, not silent failure)
+
+`ba6b10e`: `logic/coverage_optimizer.py::search_best_coverage_plans` has a
+hard `max_nodes = 400` cap (line ~423) in addition to beam width/depth
+limits. When that cap cut the search off before the beam ran empty, the
+returned "no complete plan" result was indistinguishable from a real proof —
+same message, same `failure_reason`. Added `BumpChainSuggestion.search_complete:
+Optional[bool]` (models.py, purely additive) — `False` when node-budget-capped
+with candidates still unexplored, `True` when the beam genuinely ran empty,
+`None` for untouched call sites. `failure_reason` intentionally kept as
+`"no_replacement"` in both cases (changing it would break
+`override_authority.py`'s `CONSTRAINT_ALIASES` mapping to
+`"coverage_minimum"`). 82 tests pass, `verify --tier fast` green. Nothing
+downstream reads `search_complete` yet — it's there for a future UI/decision
+report to surface, same "define first, wire consumer later" pattern as
+`logic/scheduling_contracts.py`.
+
+This is master plan §14 Phase 2 item 3 (of the 6 audited below). Items 1 and
+3 are now done this session; item 2 (batch bump-chain staleness) is
+confirmed-but-reverted (SQLite lock issue, high risk, skip until verified);
+items 4/5/6 status unchanged from the audit below.
+
 ## 2026-07-23 NEWEST — Master plan Phase 2 started (bumping/leave correctness)
 
 Committed the prior session's large uncommitted diff (was sitting across 3
