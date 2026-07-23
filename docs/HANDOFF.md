@@ -1,4 +1,38 @@
-## 2026-07-23 NEWEST — Phase 2 item 3 landed (capped search → honest incomplete, not silent failure)
+## 2026-07-23 NEWEST — Phase 2 item 6 landed (shift-swap CAS guard)
+
+`2a27b3e`: `logic/requests.py::process_shift_swap` approve path had no
+optimistic-concurrency guard on its `UPDATE shift_swaps` — unlike
+`process_day_off_request`'s approve path, which already does
+`WHERE id = ? AND status = ?` + rowcount check. A retry (crash mid-tx) or a
+genuine race (two approvals of the same swap) could re-run
+`_insert_override_record` twice and double-apply. Fixed by adding the same
+`AND status = ?` + `rowcount != 1` → rollback + "changed after preview"
+pattern used on the day-off path. Two new regression tests in
+`tests/test_notifications_swaps_exports.py`
+(`test_process_shift_swap_retry_does_not_double_apply`,
+`test_process_shift_swap_race_guarded_by_status_cas`) prove the double-apply
+is blocked. `verify --tier fast` green (23/23 in that test file, audit
+10/10, readiness 10/10).
+
+Master plan §14 Phase 2 status now: items 1, 3, 4, 6 done. Item 2 (batch
+bump-chain staleness) confirmed-but-reverted, high risk, skip until user
+verifies — do not re-attempt the conn-threading fix without user sign-off
+(known SQLite lock dead end, see entry below). Item 5 (joint batch solving)
+still PARTIAL, shares item 2's staleness gap — likely blocked on the same
+fix. Day-off/shift-swap **reject** paths still lack a CAS guard too, but
+rejection has no side effects beyond a possible duplicate notification —
+left alone as out of scope for item 6's "smallest safe fix."
+
+**Next Phase 2 slice (not started):** item 2/5 both need the `conn`-threading
+fix through `search_best_coverage_plans`/`get_generated_schedule_day_context`
+— that's the only remaining non-trivial item, and it's explicitly gated on
+user verification before re-attempting. Absent that, Phase 2's low-risk
+additive items are exhausted; next session should check master plan §14 for
+whether other sections have unstarted low-risk items, or get user sign-off
+to tackle item 2/5 properly (thread conn as an optional param, not a
+refactor of the call chain).
+
+## 2026-07-23 — Phase 2 item 3 landed (capped search → honest incomplete, not silent failure)
 
 `ba6b10e`: `logic/coverage_optimizer.py::search_best_coverage_plans` has a
 hard `max_nodes = 400` cap (line ~423) in addition to beam width/depth
