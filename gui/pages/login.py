@@ -9,7 +9,7 @@ from nicegui import ui
 from config import APP_NAME, APP_VERSION, COMPANY_NAME, PRODUCT_TAGLINE
 from gui import session
 from gui.shell import apply_theme
-from logic import authenticate_user
+from logic import authenticate_user, complete_mfa_login
 
 
 def render_login() -> None:
@@ -64,17 +64,9 @@ def render_login() -> None:
         pass
 
     error_label = {"el": None}
+    mfa_state = {"pending_user_id": None}
 
-    def submit() -> None:
-        el = error_label["el"]
-        if el is not None:
-            el.set_text("")
-        auth = authenticate_user((username.value or "").strip(), password.value or "")
-        if not auth.get("success"):
-            if el is not None:
-                el.set_text(auth.get("message") or "Invalid credentials")
-            return
-        user = dict(auth["user"])
+    def _complete_login(user: dict) -> None:
         if user.get("must_change_password"):
             ui.notify(
                 "Password change recommended (demo accounts may require CLI reset).",
@@ -96,6 +88,41 @@ def render_login() -> None:
         except Exception:
             pass
         ui.navigate.to("/")
+
+    def submit() -> None:
+        el = error_label["el"]
+        if el is not None:
+            el.set_text("")
+        auth = authenticate_user((username.value or "").strip(), password.value or "")
+        if auth.get("mfa_required"):
+            mfa_state["pending_user_id"] = auth.get("user_id")
+            username.set_visibility(False)
+            password.set_visibility(False)
+            sign_in_btn.set_visibility(False)
+            mfa_row.set_visibility(True)
+            mfa_code.run_method("focus")
+            if el is not None:
+                el.set_text(auth.get("message") or "Enter your authenticator code")
+            return
+        if not auth.get("success"):
+            if el is not None:
+                el.set_text(auth.get("message") or "Invalid credentials")
+            return
+        _complete_login(dict(auth["user"]))
+
+    def submit_mfa() -> None:
+        el = error_label["el"]
+        if el is not None:
+            el.set_text("")
+        user_id = mfa_state["pending_user_id"]
+        if not user_id:
+            return
+        result = complete_mfa_login(user_id, (mfa_code.value or "").strip())
+        if not result.get("success"):
+            if el is not None:
+                el.set_text(result.get("message") or "Invalid code")
+            return
+        _complete_login(dict(result["user"]))
 
     # Centered card on full viewport (not a split that looks "off to the side")
     with ui.element("div").classes("login-center-shell"):
@@ -166,6 +193,15 @@ def render_login() -> None:
             )
             error_label["el"] = ui.label("").classes("login-error").props('data-testid="login-error"')
             password.on("keydown.enter", submit)
+
+            with ui.row().classes("w-full q-mt-sm") as mfa_row:
+                mfa_code = (
+                    ui.input(label="Authenticator code", placeholder="6-digit code")
+                    .classes("w-full login-field")
+                    .props('outlined dense dark maxlength=6 data-testid="login-mfa-code"')
+                )
+            mfa_row.set_visibility(False)
+            mfa_code.on("keydown.enter", submit_mfa)
             if uat_on:
 
                 def enter_full() -> None:
@@ -188,9 +224,14 @@ def render_login() -> None:
                 ui.label("admin / admin · full left nav · every feature").classes("text-xs").style(
                     "opacity:0.75;margin:6px 0 8px"
                 )
-            ui.button("Sign In", on_click=submit).classes("btn-primary w-full login-submit").props(
-                'no-caps unelevated data-testid="login-submit"'
+            sign_in_btn = (
+                ui.button("Sign In", on_click=submit)
+                .classes("btn-primary w-full login-submit")
+                .props('no-caps unelevated data-testid="login-submit"')
             )
+            ui.button("Verify code", on_click=submit_mfa).classes("btn-primary w-full login-submit q-mt-sm").props(
+                'no-caps unelevated data-testid="login-mfa-submit"'
+            ).bind_visibility_from(mfa_row)
             if uat_on:
                 ui.html(
                     '<p class="login-form-sub" style="margin-top:10px;font-size:12px;opacity:0.8">'

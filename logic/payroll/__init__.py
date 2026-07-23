@@ -22,5 +22,6 @@ from logic.payroll.timecard import (  # noqa: F401
     _timecard_defaults_for_schedule_status,
     _upsert_timecard_approval,
 )
+from logic.payroll.withholding import *  # noqa: F403
 
 # Public API = star-imports above (former monolith surface).

@@ -351,7 +351,23 @@ def _ensure_schema_migrations(cursor) -> None:
     user_cols = {row[1] for row in cursor.fetchall()}
     if "must_change_password" not in user_cols:
         cursor.execute("ALTER TABLE app_users ADD COLUMN must_change_password INTEGER DEFAULT 1")
+    for col, ddl in [
+        ("mfa_secret", "ALTER TABLE app_users ADD COLUMN mfa_secret TEXT"),
+        ("mfa_enabled", "ALTER TABLE app_users ADD COLUMN mfa_enabled INTEGER DEFAULT 0"),
+        ("mfa_enrolled_at", "ALTER TABLE app_users ADD COLUMN mfa_enrolled_at TIMESTAMP"),
+    ]:
+        if col not in user_cols:
+            cursor.execute(ddl)
     _migrate_demo_password_policy(cursor)
+
+    cursor.execute("PRAGMA table_info(audit_log)")
+    audit_cols = {row[1] for row in cursor.fetchall()}
+    for col, ddl in [
+        ("prev_hash", "ALTER TABLE audit_log ADD COLUMN prev_hash TEXT"),
+        ("row_hash", "ALTER TABLE audit_log ADD COLUMN row_hash TEXT"),
+    ]:
+        if col not in audit_cols:
+            cursor.execute(ddl)
 
     cursor.execute("PRAGMA table_info(schedule_overrides)")
     override_cols = {row[1] for row in cursor.fetchall()}

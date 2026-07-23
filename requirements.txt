@@ -6,3 +6,11 @@ reportlab
 # Duty Console — modern web + native UI (primary)
 nicegui>=2.0
 pywebview>=5.0
+
+# CP-SAT scheduling core (logic/staffing_cpsat.py, logic/cp_sat_bridge.py)
+ortools>=9.10,<10.0
+
+# Security — MFA (logic/mfa_auth.py) and OIDC/SSO (logic/oidc_auth.py).
+# ldap3 stays optional (requirements-dev.txt) — it needs a directory server to matter.
+pyotp>=2.9
+authlib>=1.3

@@ -418,6 +418,192 @@ def render_security() -> None:
                     "no-caps unelevated dense"
                 )
 
+        # —— Multi-factor authentication (self-service) ——
+        with panel("Multi-Factor Authentication (Authenticator App)", glow=True):
+            from logic.mfa_auth import (
+                begin_mfa_enrollment,
+                confirm_mfa_enrollment,
+                disable_mfa,
+                mfa_available,
+                mfa_status,
+            )
+
+            user = session.current_user() or {}
+            uid = user.get("id")
+            if not uid:
+                ui.label("Sign in to manage MFA.").classes("text-xs").style("color: var(--dim)")
+            elif not mfa_available():
+                ui.html(
+                    '<div class="alert alert-warn">pyotp is not installed — MFA unavailable on this host.</div>',
+                    sanitize=False,
+                )
+            else:
+                status = mfa_status(uid)
+                enrollment = {"secret": None}
+                status_label = ui.label("").classes("text-sm q-mb-sm")
+                qr_area = ui.element("div")
+                code_input = (
+                    ui.input(label="Enter code from authenticator app", placeholder="6-digit code")
+                    .classes("w-full")
+                    .props("outlined dense maxlength=6")
+                )
+                code_input.set_visibility(False)
+
+                def refresh_mfa_status():
+                    s = mfa_status(uid)
+                    status_label.set_text("MFA: Enabled" if s.get("mfa_enabled") else "MFA: Not Enabled")
+
+                def start_enroll():
+                    result = begin_mfa_enrollment(uid)
+                    if not result.get("success"):
+                        ui.notify(result.get("message", "Enrollment failed"), type="negative")
+                        return
+                    enrollment["secret"] = result["secret"]
+                    qr_area.clear()
+                    with qr_area:
+                        ui.label(f"Secret (enter manually if not scanning): {result['secret']}").classes(
+                            "text-xs mono q-mb-xs"
+                        ).style("color: var(--muted)")
+                        ui.label(
+                            "Add this account in Google Authenticator / Authy / 1Password, then enter the "
+                            "6-digit code below to activate."
+                        ).classes("text-xs").style("color: var(--dim)")
+                    code_input.set_visibility(True)
+                    ui.notify("Scan/enter the secret, then confirm with a code", type="info")
+
+                def confirm_enroll():
+                    result = confirm_mfa_enrollment(uid, (code_input.value or "").strip())
+                    ui.notify(
+                        result.get("message", "Confirm"), type="positive" if result.get("success") else "negative"
+                    )
+                    if result.get("success"):
+                        code_input.set_visibility(False)
+                        qr_area.clear()
+                        refresh_mfa_status()
+
+                def turn_off():
+                    result = disable_mfa(uid, actor_user_id=uid)
+                    ui.notify(
+                        result.get("message", "Disable"), type="positive" if result.get("success") else "negative"
+                    )
+                    refresh_mfa_status()
+
+                refresh_mfa_status()
+                with ui.row().classes("gap-2 flex-wrap q-mt-sm"):
+                    if not status.get("mfa_enabled"):
+                        ui.button("Start enrollment", on_click=start_enroll).classes("btn-primary").props(
+                            "no-caps unelevated dense"
+                        )
+                        ui.button("Confirm code", on_click=confirm_enroll).classes("btn-ghost").props(
+                            "no-caps outline dense"
+                        )
+                    else:
+                        ui.button("Turn off MFA", on_click=turn_off).classes("btn-danger").props(
+                            "no-caps outline dense"
+                        )
+
+        # OIDC / SSO field trial — not production-validated
+        if session.can("security.manage_sso") or session.can("settings.manage") or session.can("admin.settings"):
+            with panel("OIDC / SSO field trial", glow=True):
+                from logic.oidc_auth import (
+                    get_oidc_field_trial_config,
+                    oidc_field_trial_checklist,
+                    oidc_health_check,
+                    save_oidc_field_trial_settings,
+                )
+
+                cfg = get_oidc_field_trial_config()
+                check = oidc_field_trial_checklist()
+                ui.label(
+                    "Optional OpenID Connect SSO. Links to existing Chronos accounts by username claim — "
+                    "does not auto-provision users. Production-ready stays false until IT sign-off."
+                ).classes("text-xs q-mb-sm").style("color: var(--dim)")
+                ui.label(check.get("message") or "").classes("text-xs q-mb-sm").style("color: var(--muted)")
+                for c in (check.get("checks") or [])[:10]:
+                    mark = "OK" if c.get("ok") else "—"
+                    ui.label(f"{mark} · {c.get('name')}: {c.get('detail')}").classes("text-xs")
+                oidc_en = ui.switch("Enable OIDC auth", value=bool(cfg.get("enabled")))
+                oidc_issuer = ui.input("Issuer URL", value=cfg.get("issuer") or "https://idp.example.com/").classes(
+                    "w-full"
+                )
+                oidc_client_id = ui.input("Client ID", value=cfg.get("client_id") or "").classes("w-full")
+                oidc_client_secret = ui.input("Client secret (leave blank to keep)", value="", password=True).classes(
+                    "w-full"
+                )
+                oidc_redirect = ui.input("Redirect URI", value=cfg.get("redirect_uri") or "").classes("w-full")
+                oidc_claim = ui.input(
+                    "Username claim", value=cfg.get("username_claim") or "preferred_username"
+                ).classes("w-full")
+                if cfg.get("production_signoff"):
+                    ui.label(f"IT sign-off on file · {cfg.get('signoff_by')} · {cfg.get('signoff_at')}").classes(
+                        "text-xs text-green-400 q-mb-xs"
+                    )
+
+                def save_oidc():
+                    uid = (session.current_user() or {}).get("id")
+                    payload = {
+                        "enabled": bool(oidc_en.value),
+                        "issuer": oidc_issuer.value or "",
+                        "client_id": oidc_client_id.value or "",
+                        "redirect_uri": oidc_redirect.value or "",
+                        "username_claim": oidc_claim.value or "",
+                    }
+                    if (oidc_client_secret.value or "").strip():
+                        payload["client_secret"] = oidc_client_secret.value.strip()
+                    r = save_oidc_field_trial_settings(payload, user_id=uid)
+                    ui.notify(r.get("message", "Saved"), type="positive" if r.get("success") else "negative")
+
+                def run_oidc_health():
+                    h = oidc_health_check()
+                    ui.notify(h.get("message", "Health"), type="positive" if h.get("success") else "warning")
+
+                def run_oidc_checklist():
+                    c = oidc_field_trial_checklist()
+                    ui.notify(c.get("message", "Checklist"), type="info", multi_line=True)
+
+                def record_oidc_signoff():
+                    uid = (session.current_user() or {}).get("id")
+                    name = session.display_name() or str(uid or "admin")
+                    r = save_oidc_field_trial_settings(
+                        {
+                            "production_signoff": True,
+                            "signoff_by": name,
+                            "enabled": bool(oidc_en.value),
+                            "issuer": oidc_issuer.value or "",
+                            "client_id": oidc_client_id.value or "",
+                            "redirect_uri": oidc_redirect.value or "",
+                        },
+                        user_id=uid,
+                    )
+                    c = oidc_field_trial_checklist()
+                    ui.notify(
+                        r.get("message", "Sign-off saved") + f" · production_ready={c.get('production_ready')}",
+                        type="positive" if r.get("success") else "negative",
+                        multi_line=True,
+                    )
+
+                def clear_oidc_signoff():
+                    uid = (session.current_user() or {}).get("id")
+                    r = save_oidc_field_trial_settings({"clear_production_signoff": True}, user_id=uid)
+                    ui.notify(r.get("message", "Sign-off cleared"), type="info")
+
+                with ui.row().classes("gap-2 flex-wrap q-mt-sm"):
+                    ui.button("Save OIDC trial settings", on_click=save_oidc).classes("btn-primary").props(
+                        "no-caps unelevated dense"
+                    )
+                    ui.button("Health check", on_click=run_oidc_health).classes("btn-ghost").props(
+                        "no-caps outline dense"
+                    )
+                    ui.button("Refresh checklist", on_click=run_oidc_checklist).classes("btn-ghost").props(
+                        "no-caps outline dense"
+                    )
+                    ui.button("Record IT production sign-off", on_click=record_oidc_signoff).classes("btn-ghost").props(
+                        "no-caps outline dense"
+                    )
+                    ui.button("Clear sign-off", on_click=clear_oidc_signoff).classes("btn-danger").props(
+                        "no-caps outline dense"
+                    )
+
         # LDAP field trial (residual #5) — not production-validated
         if session.can("settings.manage") or session.can("users.manage") or session.can("admin.settings"):
             with panel("LDAP / AD field trial", glow=True):
