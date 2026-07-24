@@ -39,7 +39,7 @@ any time to re-verify the infra layer for real.
 |---|---|---|
 | `strftime('...', col)` in SQL | ~~`logic/operations.py`~~ (fixed) | Re-audited 2026-07-24: the other 9 files listed here previously (`logic/callbacks.py`, `exports.py`, `extra_duty.py`, `labor_compliance.py`, `optimizer_features.py`, `ot_equity_ledger.py`, `product_impl_kit.py`, `snapshots.py`, `staffing_insights.py`) only use Python's `datetime.strftime()`/`time.strftime()` for filenames/timestamps — not SQL, dialect-agnostic, no rewrite needed. The one real SQL site, `logic/operations.py::get_holidays()`, replaced `strftime('%Y', holiday_date) = ?` with a portable `holiday_date >= ? AND holiday_date < ?` year-range predicate (string comparison on ISO `YYYY-MM-DD` text works identically on both backends) instead of a dialect-specific `to_char()` branch. |
 | `PRAGMA foreign_keys` / `PRAGMA journal_mode` | `logic/time_punch.py`, `database.py`, `seed_data.py` | N/A on Postgres — foreign keys are always enforced, WAL has no equivalent pragma; these calls need to become no-ops or removed on the postgres path |
-| `INSERT OR IGNORE` | `database.py` (schema/seed helpers only, not business logic) | `INSERT ... ON CONFLICT DO NOTHING` |
+| `INSERT OR IGNORE` | `database.py` (inside `init_database()`'s migration tree — already unreachable on postgres, see step 4) | n/a, no rewrite needed |
 
 Not found in this codebase (checked, none needed): `GROUP_CONCAT`,
 `INSERT OR REPLACE`.
@@ -82,7 +82,15 @@ via `alembic upgrade head` (not yet run against real Postgres — see
 3. ~~Rewrite the 10 files' `strftime()` calls to `to_char()`~~ — done, see
    status above (only 1 file had a real SQL `strftime()` call; rewritten
    to a portable range predicate instead of a dialect branch).
-4. Convert `database.py`'s 1 `INSERT OR IGNORE` (seed/schema path, not
-   hit by normal request traffic) to `ON CONFLICT DO NOTHING`.
-5. Full suite green with `SCHEDULER_DB_BACKEND=postgres` against a real
-   instance before calling the backend supported.
+4. ~~Convert `database.py`'s 1 `INSERT OR IGNORE`~~ — re-audited: it's
+   inside the same migration function as the PRAGMA sites from step 2,
+   called only from `init_database()`, which already raises before
+   reaching the postgres branch. Already unreachable on postgres, no
+   rewrite needed.
+5. **Not started.** Full suite green with `SCHEDULER_DB_BACKEND=postgres`
+   against a real instance before calling the backend supported. Steps
+   2-4 are done (2026-07-24) — remaining risk is the ~15
+   `cursor.lastrowid` call sites (listed above) and the ~41 sqlite3 call
+   sites overall each getting real per-site verification against
+   Postgres, not just the adapter-level infra check
+   `test_postgres_integration.py` already covers.
