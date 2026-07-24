@@ -12,7 +12,13 @@ from typing import List
 
 from fastapi import APIRouter, HTTPException
 
-from api.schemas import OfficerOut, SimulationJobOut, SimulationJobRequest
+from api.schemas import (
+    CoveragePlanPreviewOut,
+    CoveragePlanPreviewRequest,
+    OfficerOut,
+    SimulationJobOut,
+    SimulationJobRequest,
+)
 
 router = APIRouter(prefix="/api/v1", tags=["v1"])
 
@@ -50,3 +56,24 @@ def cancel_simulation_job(job_id: str) -> SimulationJobOut:
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     return SimulationJobOut(id=job["id"], status=job["status"], result=job["result"], error=job["error"])
+
+
+@router.post("/coverage/preview", response_model=CoveragePlanPreviewOut)
+def preview_coverage_plan(request: CoveragePlanPreviewRequest) -> CoveragePlanPreviewOut:
+    from logic.coverage_timeline import CoverageWindow, verify_schedule_candidate
+
+    assignments = [(a.day, a.start_time, a.end_time) for a in request.assignments]
+    windows = [CoverageWindow(**w.model_dump()) for w in (request.windows or [])]
+    report = verify_schedule_candidate(
+        assignments,
+        request.days,
+        min_247=request.min_247,
+        windows=windows,
+    )
+    return CoveragePlanPreviewOut(
+        verified=report.verified,
+        status=report.status.value,
+        violations=report.violations,
+        checked_constraints=report.checked_constraints,
+        notes=report.notes,
+    )

@@ -6,6 +6,7 @@ until auth/tenant scoping (master plan §9, §12) lands on this router.
 
 from __future__ import annotations
 
+from datetime import date
 from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict
@@ -57,3 +58,42 @@ class SimulationJobOut(BaseModel):
     status: Literal["queued", "running", "completed", "failed", "cancelled"]
     result: Optional[Dict[str, Any]] = None
     error: Optional[str] = None
+
+
+class CoverageAssignment(BaseModel):
+    """One officer-day duty interval: (day, start "HH:MM", end "HH:MM")."""
+
+    day: date
+    start_time: str
+    end_time: str
+
+
+class CoverageWindowIn(BaseModel):
+    min_officers: int
+    start_time: str
+    end_time: str
+    specific_date: Optional[date] = None
+    weekday: Optional[int] = None
+    label: str = ""
+
+
+class CoveragePlanPreviewRequest(BaseModel):
+    """Master plan §3 CoveragePlan preview — wraps the existing, previously
+    uncalled canonical independent verifier
+    (logic.coverage_timeline.verify_schedule_candidate) so schedule changes
+    can be checked before being applied, not just claimed."""
+
+    assignments: List[CoverageAssignment]
+    days: List[date]
+    min_247: int = 0
+    windows: Optional[List[CoverageWindowIn]] = None
+
+
+class CoveragePlanPreviewOut(BaseModel):
+    verified: bool
+    status: Literal[
+        "OPTIMAL", "FEASIBLE", "INFEASIBLE", "UNKNOWN", "MODEL_INVALID", "ENGINE_UNAVAILABLE", "CANCELLED", "ERROR"
+    ]
+    violations: List[str]
+    checked_constraints: List[str]
+    notes: str
