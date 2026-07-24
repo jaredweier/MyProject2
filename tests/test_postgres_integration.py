@@ -91,3 +91,35 @@ def test_unmodified_logic_officers_module_works_against_real_postgres(monkeypatc
         assert len(rows) == 1
         assert rows[0]["name"] == "Officer One"
         assert get_officer_by_id(rows[0]["id"])["name"] == "Officer One"
+
+
+@requires_postgres
+def test_unmodified_logic_requests_module_works_against_real_postgres(monkeypatch):
+    """A second unmodified business-logic file — logic/requests.py's
+    create_day_off_request, exercising a cursor.lastrowid site plus a
+    dependent SELECT-back in the same transaction, against real Postgres."""
+    with ephemeral_postgres() as dsn:
+        env = {**os.environ, "SCHEDULER_DB_BACKEND": "postgres", "SCHEDULER_PG_DSN": dsn}
+        subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"], env=env, check=True, capture_output=True)
+
+        monkeypatch.setenv("SCHEDULER_DB_BACKEND", "postgres")
+        monkeypatch.setenv("SCHEDULER_PG_DSN", dsn)
+
+        import database
+
+        conn = database.get_connection()
+        conn.execute(
+            "INSERT INTO officers (name, seniority_rank, squad, shift_start, shift_end) VALUES (?, ?, ?, ?, ?)",
+            ("Officer Requests", 1, "A", "07:00", "15:00"),
+        )
+        conn.commit()
+        officer_row = conn.execute("SELECT id FROM officers WHERE name = ?", ("Officer Requests",)).fetchone()
+        officer_id = officer_row["id"]
+        conn.close()
+
+        from logic.requests import create_day_off_request
+
+        result = create_day_off_request(officer_id, "2027-03-15", "Vacation", notes="pg integration test")
+        assert result["success"], result
+        assert result["request_id"] is not None
+        assert result["created_at"] is not None

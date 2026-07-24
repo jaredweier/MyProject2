@@ -87,10 +87,17 @@ via `alembic upgrade head` (not yet run against real Postgres — see
    called only from `init_database()`, which already raises before
    reaching the postgres branch. Already unreachable on postgres, no
    rewrite needed.
-5. **Not started.** Full suite green with `SCHEDULER_DB_BACKEND=postgres`
-   against a real instance before calling the backend supported. Steps
-   2-4 are done (2026-07-24) — remaining risk is the ~15
-   `cursor.lastrowid` call sites (listed above) and the ~41 sqlite3 call
-   sites overall each getting real per-site verification against
-   Postgres, not just the adapter-level infra check
-   `test_postgres_integration.py` already covers.
+5. **In progress, not the full suite.** Full suite green with
+   `SCHEDULER_DB_BACKEND=postgres` against a real instance before calling
+   the backend supported. Steps 2-4 done (2026-07-24). Started real
+   per-module verification against Postgres (not the full pytest suite —
+   `tests/helpers.py::test_database()` is SQLite-only, spinning up a real
+   ephemeral Postgres per existing test would need its own fixture
+   rewrite, separate scope): `tests/test_postgres_integration.py` now
+   covers `logic/officers.py` (read/write) and `logic/requests.py`'s
+   `create_day_off_request` (a `cursor.lastrowid` site plus a
+   same-transaction SELECT-back) via real unmodified business-logic
+   calls against a real ephemeral Postgres. 2 of ~15 lastrowid sites and
+   2 of ~41 call-site files covered this way so far; the rest of the
+   lastrowid sites listed above still need the same per-site real-Postgres
+   proof before the backend can be called supported.
