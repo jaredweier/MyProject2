@@ -1,4 +1,64 @@
-## 2026-07-23 NEWEST — Phase 2 item 6 landed (shift-swap CAS guard)
+## 2026-07-23 NEWEST — Phase 2 items 2 & 5 landed (batch bump-chain staleness fixed)
+
+User approved the thread-local conn-scoping approach (option 2) after the
+prior session's naive fix hit the SQLite lock dead end. Implemented:
+
+- `database.py`: added `threading.local()` (`_scoped_local`) + new
+  `scoped_write_connection()` context manager (reentrant/nestable — a
+  nested call on the same thread reuses the existing connection instead of
+  opening a second one). Modified `connection()` so that when a scoped
+  connection is active on the thread, nested `with connection() as conn:`
+  calls transparently reuse it instead of opening a fresh
+  `sqlite3.connect()` (and don't close it — only the outermost
+  `scoped_write_connection()` owns close). `connection()` outside any scope
+  is byte-for-byte unchanged (opens fresh, closes on exit).
+- `logic/requests.py::bulk_approve_auto_ok_requests` (~1231-1251): batch
+  transaction now opens via `scoped_write_connection()` instead of bare
+  `connection()`. Per-candidate loop no longer passes the stale
+  pre-transaction `_verified_suggestion`/`coverage_verified=True` shortcut —
+  it calls `process_day_off_request` the same way the single-request path
+  does with no suggestion override, so each candidate's bump chain is
+  computed fresh against current state (mutated by earlier candidates
+  already applied this batch) via `suggest_bump_chain` → `search_best_coverage_plans`
+  → `get_generated_schedule_day_context`, all of which now reuse the scoped
+  connection instead of deadlocking on the write lock. (Tried
+  `preferred_chain=` with exact-chain matching first — wrong: it requires
+  the recompute to reproduce the identical stale chain, so it fails closed
+  instead of picking a corrected one. Dropped in favor of a plain recompute,
+  matching the existing non-manual else-branch.)
+
+**Proof:**
+- New `tests/test_coverage_optimizer.py::test_bulk_approval_recomputes_chain_for_later_candidates`:
+  two officers (ids 3, 4) are the only two non-command staff on the 10:00
+  squad-A shift; their independent pre-batch `suggest_bump_chain` calls both
+  target the same replacement (officer 6) — the real staleness condition.
+  After batch approval, asserts both requests are approved with **different**
+  replacement officers (no double-booking) — PASS.
+- New `tests/test_database_backup.py::ScopedWriteConnectionTests` (4 tests):
+  nested `connection()` calls inside `scoped_write_connection()` return the
+  identical connection object (`id()` equal); nested `scoped_write_connection()`
+  calls also reuse the same connection; after the scoped block exits
+  (normally or via exception) the thread-local is cleared and a fresh
+  `connection()` call opens a genuinely new connection — all PASS.
+- `test_bulk_approval_rolls_back_every_request_when_second_outbox_fails`
+  (the test the naive fix broke last session) — still PASS, no
+  `database table is locked` error, rollback still atomic.
+- `python dev.py verify --tier fast` — ALL PASSED (imports, audit 10/10,
+  readiness 10/10).
+- Full `tests/test_coverage_optimizer.py`, `tests/test_logic.py`,
+  `tests/test_regressions.py`, `tests/test_notifications_swaps_exports.py`,
+  `tests/test_override_authority.py`, `tests/test_database_backup.py` — 32+28
+  tests, all green (repo has no `tests/test_requests*.py`; bulk-approval
+  coverage lives in `test_coverage_optimizer.py`/`test_logic.py`, both run).
+- Grepped `logic/*.py` for other `_transaction_conn`/manual `with
+  connection() as conn:` usage (38 files) — all use the plain pattern, none
+  conflict; `scoped_write_connection()` is currently only entered from
+  `bulk_approve_auto_ok_requests`, so behavior elsewhere is unchanged.
+
+Master plan §14 Phase 2 items 2 and 5 are now **DONE**. Phase 2 status:
+items 1, 2, 3, 4, 5, 6 all done — Phase 2 audit list is fully closed.
+
+## 2026-07-23 — Phase 2 item 6 landed (shift-swap CAS guard)
 
 `2a27b3e`: `logic/requests.py::process_shift_swap` approve path had no
 optimistic-concurrency guard on its `UPDATE shift_swaps` — unlike

@@ -126,5 +126,58 @@ class DatabaseBackupTests(unittest.TestCase):
                 database.restore_database(live)
 
 
+class ScopedWriteConnectionTests(unittest.TestCase):
+    """Phase 2 item 2/5 machinery: thread-local connection reuse."""
+
+    def test_nested_connection_calls_reuse_scoped_connection(self):
+        with file_test_database():
+            import database
+
+            with database.scoped_write_connection() as outer:
+                with database.connection() as inner1:
+                    self.assertIs(inner1, outer)
+                with database.connection() as inner2:
+                    self.assertIs(inner2, outer)
+                self.assertEqual(id(inner1), id(inner2))
+
+    def test_nested_scoped_write_connection_calls_reuse_same_connection(self):
+        with file_test_database():
+            import database
+
+            with database.scoped_write_connection() as outer:
+                with database.scoped_write_connection() as nested:
+                    self.assertIs(nested, outer)
+
+    def test_connection_outside_scope_opens_fresh_and_scope_clears_after_exit(self):
+        with file_test_database():
+            import database
+
+            with database.connection() as before:
+                before_id = id(before)
+
+            with database.scoped_write_connection() as scoped:
+                scoped_id = id(scoped)
+            self.assertNotEqual(before_id, scoped_id)
+
+            # Thread-local must be cleared after the scoped block exits — a
+            # fresh connection() call opens a genuinely new connection, not
+            # a leaked reference to the closed scoped one.
+            self.assertIsNone(getattr(database._scoped_local, "conn", None))
+            with database.connection() as after:
+                self.assertNotEqual(id(after), scoped_id)
+                after.execute("SELECT 1")  # would raise if the closed scoped conn leaked through
+
+    def test_exception_inside_scoped_block_clears_thread_local(self):
+        with file_test_database():
+            import database
+
+            with self.assertRaises(RuntimeError):
+                with database.scoped_write_connection():
+                    raise RuntimeError("boom")
+            self.assertIsNone(getattr(database._scoped_local, "conn", None))
+            with database.connection() as after:
+                after.execute("SELECT 1")
+
+
 if __name__ == "__main__":
     unittest.main()

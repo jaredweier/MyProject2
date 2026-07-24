@@ -1,6 +1,7 @@
 import os
 import shutil
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Iterator
@@ -8,6 +9,8 @@ from typing import Iterator
 from paths import data_path, ensure_data_dirs
 
 ensure_data_dirs()
+
+_scoped_local = threading.local()
 
 
 def _resolve_db_path() -> str:
@@ -29,11 +32,44 @@ DB_PATH = _resolve_db_path()
 
 @contextmanager
 def connection() -> Iterator[sqlite3.Connection]:
-    """Context-managed SQLite connection (always closed on exit)."""
+    """Context-managed SQLite connection (always closed on exit).
+
+    If a `scoped_write_connection()` block is active on this thread, reuses
+    that connection instead of opening a new one — the scoped block owns
+    commit/rollback/close, so this nested use is a no-op on exit.
+    """
+    scoped_conn = getattr(_scoped_local, "conn", None)
+    if scoped_conn is not None:
+        yield scoped_conn
+        return
     conn = get_connection()
     try:
         yield conn
     finally:
+        conn.close()
+
+
+@contextmanager
+def scoped_write_connection() -> Iterator[sqlite3.Connection]:
+    """Open (or reuse) a thread-local connection for a batch write scope.
+
+    Nested calls on the same thread — either directly or via nested
+    `connection()` calls inside the block — reuse the same underlying
+    connection instead of opening a second one (which would deadlock on
+    SQLite's single-writer lock). Only the outermost call owns opening and
+    closing the connection; the thread-local is restored to its previous
+    value (supporting nesting) on exit, never left dangling.
+    """
+    existing = getattr(_scoped_local, "conn", None)
+    if existing is not None:
+        yield existing
+        return
+    conn = get_connection()
+    _scoped_local.conn = conn
+    try:
+        yield conn
+    finally:
+        _scoped_local.conn = None
         conn.close()
 
 
