@@ -149,25 +149,29 @@ def seed_default_stations() -> bool:
     conn = get_connection()
     try:
         cursor = conn.cursor()
-        cursor.execute(
-            """
-            CREATE TABLE IF NOT EXISTS station_posts (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                code TEXT NOT NULL UNIQUE,
-                name TEXT NOT NULL,
-                min_staff INTEGER DEFAULT 1,
-                active INTEGER DEFAULT 1,
-                notes TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            )
-            """
-        )
-        # station column may be missing on very old DBs — best-effort.
-        # SQLite only: Postgres gets this via the baseline Alembic
-        # migration, and PRAGMA table_info has no Postgres equivalent.
+        # SQLite only: on Postgres this table + the officers.station column
+        # already exist via the baseline Alembic migration, and this
+        # CREATE TABLE's AUTOINCREMENT syntax is a Postgres parse error
+        # (parsed before IF NOT EXISTS is even checked).
         from db_compat import is_postgres_backend
 
-        if not is_postgres_backend():
+        is_pg = is_postgres_backend()
+        if not is_pg:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS station_posts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    code TEXT NOT NULL UNIQUE,
+                    name TEXT NOT NULL,
+                    min_staff INTEGER DEFAULT 1,
+                    active INTEGER DEFAULT 1,
+                    notes TEXT,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+                """
+            )
+        # station column may be missing on very old DBs — best-effort.
+        if not is_pg:
             try:
                 cursor.execute("PRAGMA table_info(officers)")
                 cols = {row[1] for row in cursor.fetchall()}

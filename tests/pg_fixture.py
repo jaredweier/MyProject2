@@ -72,7 +72,8 @@ def ephemeral_postgres() -> Iterator[str]:
                 "-l",
                 str(log_path),
                 "-o",
-                f"-p {port} -c listen_addresses=127.0.0.1",
+                f"-p {port} -c listen_addresses=127.0.0.1 -c max_connections=300 "
+                "-c fsync=off -c synchronous_commit=off -c full_page_writes=off",
                 "start",
             ],
             check=True,
@@ -86,7 +87,11 @@ def ephemeral_postgres() -> Iterator[str]:
 
         with psycopg.connect(f"postgresql://postgres@127.0.0.1:{port}/postgres", autocommit=True) as conn:
             conn.execute("CREATE DATABASE chronos_test")
-        yield f"postgresql://postgres@127.0.0.1:{port}/chronos_test"
+        # connect_timeout so a starved/overloaded server fails a connect fast
+        # (a few seconds) instead of hanging for the OS-level TCP default —
+        # that hang is what made an early test-mode run take 67 minutes for
+        # 22 tests instead of surfacing the real problem quickly.
+        yield f"postgresql://postgres@127.0.0.1:{port}/chronos_test?connect_timeout=5"
     finally:
         subprocess.run(
             [str(bin_dir / "pg_ctl.exe"), "-D", str(data_dir), "stop", "-m", "fast"],

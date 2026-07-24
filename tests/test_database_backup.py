@@ -10,6 +10,12 @@ from typing import Iterator
 
 from tests.helpers import test_database
 
+if os.environ.get("CHRONOS_PG_TEST_MODE") == "1":
+    raise unittest.SkipTest(
+        "test_database_backup.py manages SCHEDULER_DB_PATH/raw sqlite3 directly; "
+        "not meaningful under CHRONOS_PG_TEST_MODE=1"
+    )
+
 
 def _sqlite_backup(src_path: str, dest_path: str) -> None:
     src = sqlite3.connect(src_path)

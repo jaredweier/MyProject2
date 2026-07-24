@@ -575,6 +575,10 @@ def _evaluate_post_bump_coverage(
 
 
 def _ensure_leave_accrual_ledger(cursor) -> None:
+    import db_compat
+
+    if db_compat.is_postgres_backend():
+        return
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS leave_accrual_ledger (
