@@ -1,4 +1,52 @@
-## 2026-07-23 NEWEST — P1.2 pool: real outcome-based diversity check + max_solutions 5→15
+## 2026-07-23 NEWEST — Deterministic optimizer job cache (in-process)
+
+Master plan §4 "identical deterministic jobs use reproducible cache keys."
+Audit was right: prior caches (`_score_metrics`/etc micro-memoization) speed
+up search internals, not whole-job reuse.
+
+- `logic/scheduling_sim.py` (~9-45, new): `_OPT_CACHE` module dict + sha256
+  `_optimizer_cache_key()` over the canonicalized (sorted-keys JSON,
+  `default=str`) deterministic inputs. `clear_optimizer_cache()` test hook.
+- `run_staffing_optimizer()` (~118-...): builds `call_kwargs` (every
+  deterministic param — excludes `progress_callback`/`cancel_check`,
+  callables aren't part of a job's identity), hashes it, returns the cached
+  result on hit with zero solver work, else calls
+  `optimize_staffing_scenarios` and stores the result **only if
+  `result["search_exhaustive"]` is True**.
+- **In-process, not SQLite** — chosen deliberately: results embed nested
+  dict/list rows plus a `SimulationReport` dataclass; safe JSON/pickle
+  round-tripping of that is a separately-scoped effort. Worst case on a miss
+  is a cold re-solve, never a stale/malformed schedule. Not durable across
+  process restarts or across `run_staffing_optimizer_isolated`'s child
+  processes (each child gets its own empty cache) — acceptable for this
+  slice, flagged as a residual.
+- **Time-limit honesty (step 3 of the task):** `staffing_optimizer.py` already
+  computes `search_exhaustive = not cancelled and not budget_exhausted`
+  (~3127) — reused as-is rather than inventing a new flag. A budget-truncated
+  or cancelled "best so far" is solved fresh every call, never cached —
+  same spirit as `BumpChainSuggestion.search_complete`'s honest
+  incomplete-vs-complete tagging.
+- Confirmed no RNG in the search path (`grep random` in
+  `staffing_optimizer.py` — no hits), so a completed (`search_exhaustive`)
+  run really is reproducible for identical inputs.
+
+**Proof:** `tests/test_optimizer_cache.py` (6 new, mocks
+`staffing_optimizer.optimize_staffing_scenarios`): identical job → solver
+called once, second call is a cache hit (`assertIs` same object); changing
+`officer_counts` → solver called twice (miss); cache key changes when
+`shift_starts` changes; `budget_exhausted=True` result never cached (2 calls,
+2 solves); `cancelled=True` result never cached (2 calls, 2 solves);
+progress_callback/cancel_check don't affect the key (still a hit). All PASS.
+`tests/test_coverage_optimizer.py` + `test_staffing_config.py` +
+`test_staffing_insights.py` + `test_staffing_search_status.py` +
+`test_staffing_stress_fatigue.py` — 43 passed, no regression.
+`python dev.py verify --tier fast` — ALL PASSED.
+
+Not done (out of scope): no durable/SQLite persistence; no UI cache-hit
+indicator; `run_staffing_optimizer_isolated` child processes don't share the
+cache with the parent or each other.
+
+## 2026-07-23 — P1.2 pool: real outcome-based diversity check + max_solutions 5→15
 
 Master plan §4 stage 4 ("diverse alternatives... compare coverage, overtime,
 fairness, fatigue, preferences, stability"). Audit was right: the CP-SAT pool

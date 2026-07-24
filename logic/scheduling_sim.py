@@ -6,9 +6,34 @@ Prefer importing from this module (or ``logic.coverage_optimizer`` for bumps).
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional
+import hashlib
+import json
+from typing import Any, Dict, List, Optional
 
 from validators import parse_date
+
+# --- Deterministic-job cache (master plan §4) --------------------------------
+# In-process only (not durable across restarts/processes) — chosen over a
+# SQLite-backed cache because `optimize_staffing_scenarios` results embed
+# nested plain dict/list rows plus a `SimulationReport` dataclass
+# (`simulation_report`); round-tripping that through JSON/pickle safely is a
+# larger, separately-scoped effort. An in-process dict is smaller and safer
+# for this slice — worst case on a miss is a cold re-solve, never a stale or
+# malformed result. Keyed by a sha256 of the canonicalized deterministic
+# inputs (sorted keys, `default=str` for any odd non-JSON value so hashing
+# never raises). progress_callback/cancel_check are callables, not part of
+# a job's deterministic identity, so they're excluded from the key.
+_OPT_CACHE: Dict[str, Dict] = {}
+
+
+def _optimizer_cache_key(inputs: Dict[str, Any]) -> str:
+    payload = json.dumps(inputs, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def clear_optimizer_cache() -> None:
+    """Test/debug hook — drop all cached optimizer results."""
+    _OPT_CACHE.clear()
 
 
 def run_schedule_simulation(
@@ -160,10 +185,21 @@ def run_staffing_optimizer(
     time_budget_seconds=None,
     **_compat,
 ) -> Dict:
-    """Find best staffing plan via exhaustive constraint-space search (not bump logic)."""
+    """Find best staffing plan via exhaustive constraint-space search (not bump logic).
+
+    Identical deterministic inputs (everything below except progress_callback/
+    cancel_check) hit an in-process cache and skip re-solving — see
+    `_OPT_CACHE` / `_optimizer_cache_key` above. A cached job is only reused
+    if the original run was `search_exhaustive` (proved complete, not stopped
+    early by `time_budget_seconds` or cancellation) — a time-limited search's
+    "best so far" isn't a reproducible answer for the same config, so those
+    results are solved fresh every time rather than cached and silently
+    replayed as if they were definitive (master plan §4 honesty rule, same
+    spirit as `BumpChainSuggestion.search_complete`).
+    """
     from logic.staffing_optimizer import optimize_staffing_scenarios
 
-    return optimize_staffing_scenarios(
+    call_kwargs = dict(
         rotation_types=rotation_types,
         officer_counts=officer_counts,
         min_per_shift_options=min_per_shift_options,
@@ -202,10 +238,22 @@ def run_staffing_optimizer(
         input_roles=input_roles,
         warm_start=warm_start,
         required_cert_codes=list(required_cert_codes or []),
-        progress_callback=progress_callback,
-        cancel_check=cancel_check,
         time_budget_seconds=time_budget_seconds,
     )
+
+    cache_key = _optimizer_cache_key(call_kwargs)
+    cached = _OPT_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+
+    result = optimize_staffing_scenarios(
+        **call_kwargs,
+        progress_callback=progress_callback,
+        cancel_check=cancel_check,
+    )
+    if result.get("search_exhaustive"):
+        _OPT_CACHE[cache_key] = result
+    return result
 
 
 def estimate_staffing_search_space(**kwargs) -> Dict:
