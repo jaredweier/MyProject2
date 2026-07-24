@@ -37,7 +37,7 @@ any time to re-verify the infra layer for real.
 
 | Pattern | Files | Postgres equivalent |
 |---|---|---|
-| `strftime('...', col)` | `logic/callbacks.py`, `logic/exports.py`, `logic/extra_duty.py`, `logic/labor_compliance.py`, `logic/operations.py`, `logic/optimizer_features.py`, `logic/ot_equity_ledger.py`, `logic/product_impl_kit.py`, `logic/snapshots.py`, `logic/staffing_insights.py` | `to_char(col, 'format')` — format string syntax differs, each call site needs individual translation |
+| `strftime('...', col)` in SQL | ~~`logic/operations.py`~~ (fixed) | Re-audited 2026-07-24: the other 9 files listed here previously (`logic/callbacks.py`, `exports.py`, `extra_duty.py`, `labor_compliance.py`, `optimizer_features.py`, `ot_equity_ledger.py`, `product_impl_kit.py`, `snapshots.py`, `staffing_insights.py`) only use Python's `datetime.strftime()`/`time.strftime()` for filenames/timestamps — not SQL, dialect-agnostic, no rewrite needed. The one real SQL site, `logic/operations.py::get_holidays()`, replaced `strftime('%Y', holiday_date) = ?` with a portable `holiday_date >= ? AND holiday_date < ?` year-range predicate (string comparison on ISO `YYYY-MM-DD` text works identically on both backends) instead of a dialect-specific `to_char()` branch. |
 | `PRAGMA foreign_keys` / `PRAGMA journal_mode` | `logic/time_punch.py`, `database.py`, `seed_data.py` | N/A on Postgres — foreign keys are always enforced, WAL has no equivalent pragma; these calls need to become no-ops or removed on the postgres path |
 | `INSERT OR IGNORE` | `database.py` (schema/seed helpers only, not business logic) | `INSERT ... ON CONFLICT DO NOTHING` |
 
@@ -79,8 +79,9 @@ via `alembic upgrade head` (not yet run against real Postgres — see
    init_database and are now guarded with `is_postgres_backend()`.
    Not yet run against a real Postgres — covered by existing
    `test_postgres_integration.py` infra check only, not a dedicated case.
-3. Rewrite the 10 files' `strftime()` calls to `to_char()`, one file at a
-   time, each covered by its existing test file before moving on.
+3. ~~Rewrite the 10 files' `strftime()` calls to `to_char()`~~ — done, see
+   status above (only 1 file had a real SQL `strftime()` call; rewritten
+   to a portable range predicate instead of a dialect branch).
 4. Convert `database.py`'s 1 `INSERT OR IGNORE` (seed/schema path, not
    hit by normal request traffic) to `ON CONFLICT DO NOTHING`.
 5. Full suite green with `SCHEDULER_DB_BACKEND=postgres` against a real

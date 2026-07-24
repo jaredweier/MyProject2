@@ -612,10 +612,10 @@ def get_holidays(year: Optional[int] = None) -> List[Dict]:
             cursor.execute(
                 """
                 SELECT * FROM holidays
-                WHERE strftime('%Y', holiday_date) = ?
+                WHERE holiday_date >= ? AND holiday_date < ?
                 ORDER BY holiday_date
             """,
-                (str(year),),
+                (f"{year:04d}-01-01", f"{year + 1:04d}-01-01"),
             )
         else:
             cursor.execute("SELECT * FROM holidays ORDER BY holiday_date")
