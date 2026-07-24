@@ -16,6 +16,7 @@ from api.schemas import (
     CoveragePlanPreviewOut,
     CoveragePlanPreviewRequest,
     OfficerOut,
+    ShiftSwapPreviewOut,
     SimulationJobOut,
     SimulationJobRequest,
 )
@@ -76,4 +77,21 @@ def preview_coverage_plan(request: CoveragePlanPreviewRequest) -> CoveragePlanPr
         violations=report.violations,
         checked_constraints=report.checked_constraints,
         notes=report.notes,
+    )
+
+
+@router.get("/swaps/preview", response_model=ShiftSwapPreviewOut)
+def preview_shift_swap(officer1_id: int, officer2_id: int, swap_date: str) -> ShiftSwapPreviewOut:
+    from logic.requests import validate_swap_feasibility
+
+    result = validate_swap_feasibility(officer1_id, officer2_id, swap_date)
+    return ShiftSwapPreviewOut(
+        success=result.success,
+        officer1_id=result.officer1_id,
+        officer2_id=result.officer2_id,
+        swap_date=result.swap_date,
+        message=result.message,
+        requires_manual=result.requires_manual,
+        reason=result.reason,
+        can_proceed=result.can_proceed,
     )

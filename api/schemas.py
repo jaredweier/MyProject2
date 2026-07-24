@@ -97,3 +97,18 @@ class CoveragePlanPreviewOut(BaseModel):
     violations: List[str]
     checked_constraints: List[str]
     notes: str
+
+
+class ShiftSwapPreviewOut(BaseModel):
+    """Read-only wrap of logic.requests.validate_swap_feasibility — checks
+    eligibility without creating a swap request (master plan §6 "submission
+    preview" pattern, applied to swaps)."""
+
+    success: bool
+    officer1_id: int
+    officer2_id: int
+    swap_date: date
+    message: str
+    requires_manual: bool
+    reason: Optional[str] = None
+    can_proceed: bool
