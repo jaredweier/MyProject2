@@ -12,3 +12,10 @@ codespell>=2.3
 
 # Optional directory auth extra (not required for ship gate) — see logic/ldap_auth.py
 # ldap3>=2.9
+
+# Real (non-mocked) PostgreSQL integration tests — master plan §9 PostgreSQL
+# move (see docs/POSTGRES_PORT_INVENTORY.md). Bundles real Postgres server
+# binaries; no Docker/system install needed. Opt-in: only exercised when
+# CHRONOS_TEST_POSTGRES=1 (tests/pg_fixture.py), not part of the default
+# ship gate.
+postgresql-binaries>=18.0

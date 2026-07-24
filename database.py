@@ -74,6 +74,18 @@ def scoped_write_connection() -> Iterator[sqlite3.Connection]:
 
 
 def get_connection():
+    backend = (os.environ.get("SCHEDULER_DB_BACKEND") or "sqlite").strip().lower()
+    if backend == "postgres":
+        # Master plan §9 PostgreSQL move — infra only, unverified against a
+        # real Postgres (see docs/POSTGRES_PORT_INVENTORY.md). Existing
+        # call sites still use this connection exactly like sqlite3's.
+        from db_compat import connect_postgres
+
+        dsn = (os.environ.get("SCHEDULER_PG_DSN") or "").strip()
+        if not dsn:
+            raise RuntimeError("SCHEDULER_DB_BACKEND=postgres requires SCHEDULER_PG_DSN")
+        return connect_postgres(dsn)
+
     if DB_PATH.startswith("file:"):
         conn = sqlite3.connect(DB_PATH, uri=True)
     else:
@@ -86,6 +98,18 @@ def get_connection():
 
 
 def init_database():
+    backend = (os.environ.get("SCHEDULER_DB_BACKEND") or "sqlite").strip().lower()
+    if backend == "postgres":
+        # Master plan §9 PostgreSQL move — this function's DDL is SQLite
+        # dialect (AUTOINCREMENT, etc.) and would not run correctly against
+        # Postgres. Schema there is owned by `alembic upgrade head` against
+        # the baseline migration (migrations/versions/), not this function.
+        # Not yet verified end-to-end — see docs/POSTGRES_PORT_INVENTORY.md.
+        raise RuntimeError(
+            "init_database() does not support SCHEDULER_DB_BACKEND=postgres — "
+            "run `alembic upgrade head` against SCHEDULER_PG_DSN instead"
+        )
+
     conn = get_connection()
     cursor = conn.cursor()
 

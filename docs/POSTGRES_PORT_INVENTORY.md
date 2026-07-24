@@ -1,0 +1,78 @@
+# PostgreSQL port inventory (master plan §9)
+
+**Status: infra verified against a real Postgres, business logic not yet
+ported.** `database.py` + `db_compat.py` hand back a Postgres-backed
+connection object that supports the same
+`.execute()`/`.cursor()`/`.commit()`/`.lastrowid` interface the existing
+~41 sqlite3 call sites already use — no call site rewritten yet. This
+infra layer (adapter + baseline migration) has been run against a real,
+live Postgres server (`tests/test_postgres_integration.py`, ephemeral
+cluster via the `postgresql-binaries` pip package — no Docker needed):
+
+- the baseline migration creates all 36 tables cleanly on real Postgres
+  (matches the SQLite count exactly)
+- the connection adapter's `RETURNING id` → `.lastrowid` emulation and
+  name-based row access verified with a real INSERT/SELECT round-trip
+- `logic/officers.py` (a real, completely unmodified business-logic file)
+  reads and writes correctly against real Postgres through
+  `database.get_connection()`
+
+None of the dialect-specific rewrites below have been done or verified —
+that's the remaining, larger-risk work. Run
+`CHRONOS_TEST_POSTGRES=1 python -m pytest tests/test_postgres_integration.py`
+any time to re-verify the infra layer for real.
+
+## What the connection adapter already handles
+
+- `?` → `%s` placeholder translation (`db_compat.translate_placeholders`)
+- `cursor.lastrowid` after a bare `INSERT` (transparently appends
+  `RETURNING id` — assumes every table's primary key column is literally
+  `id`, true for all tables in `database.py`'s current schema; verify this
+  still holds before adding a table with a different PK name)
+- Row access by column name (psycopg `dict_row`, matches `sqlite3.Row`)
+
+## What still needs a real per-query rewrite (not mechanical)
+
+### SQL-dialect functions/syntax with no Postgres equivalent as written
+
+| Pattern | Files | Postgres equivalent |
+|---|---|---|
+| `strftime('...', col)` | `logic/callbacks.py`, `logic/exports.py`, `logic/extra_duty.py`, `logic/labor_compliance.py`, `logic/operations.py`, `logic/optimizer_features.py`, `logic/ot_equity_ledger.py`, `logic/product_impl_kit.py`, `logic/snapshots.py`, `logic/staffing_insights.py` | `to_char(col, 'format')` — format string syntax differs, each call site needs individual translation |
+| `PRAGMA foreign_keys` / `PRAGMA journal_mode` | `logic/time_punch.py`, `database.py`, `seed_data.py` | N/A on Postgres — foreign keys are always enforced, WAL has no equivalent pragma; these calls need to become no-ops or removed on the postgres path |
+| `INSERT OR IGNORE` | `database.py` (schema/seed helpers only, not business logic) | `INSERT ... ON CONFLICT DO NOTHING` |
+
+Not found in this codebase (checked, none needed): `GROUP_CONCAT`,
+`INSERT OR REPLACE`.
+
+### `cursor.lastrowid` call sites (should work transparently via the
+adapter's auto-`RETURNING id`, but each needs a real-Postgres check —
+listed so nothing gets missed)
+
+`logic/bidding.py`, `logic/callbacks.py`, `logic/geofence_clock.py`,
+`logic/leave_donation.py`, `logic/notify_queue.py`, `logic/officers.py`,
+`logic/operations.py`, `logic/ot_equity_ledger.py`, `logic/ot_fill.py`,
+`logic/requests.py`, `logic/simulator_store.py`, `logic/snapshots.py`,
+`logic/stations.py`, `logic/time_punch.py`, `logic/users.py`
+
+### Schema / DDL
+
+`database.py::init_database()` is pure SQLite DDL (`AUTOINCREMENT`, etc.)
+and now raises `RuntimeError` if called with
+`SCHEDULER_DB_BACKEND=postgres` rather than silently running wrong SQL.
+Postgres schema creation goes through
+`migrations/versions/8286dcadb953_baseline_reflect_existing_sqlite_schema.py`
+via `alembic upgrade head` (not yet run against real Postgres — see
+`migrations/env.py`'s reflection-based `target_metadata`).
+
+## Suggested order for the real rewrite (not started)
+
+1. ~~Verify the connection adapter (`db_compat.py`) against a real
+   Postgres instance with a handful of the simplest call sites~~ — done,
+   see status above.
+2. Rewrite the 3 `PRAGMA` sites to skip/no-op on postgres.
+3. Rewrite the 10 files' `strftime()` calls to `to_char()`, one file at a
+   time, each covered by its existing test file before moving on.
+4. Convert `database.py`'s 1 `INSERT OR IGNORE` (seed/schema path, not
+   hit by normal request traffic) to `ON CONFLICT DO NOTHING`.
+5. Full suite green with `SCHEDULER_DB_BACKEND=postgres` against a real
+   instance before calling the backend supported.

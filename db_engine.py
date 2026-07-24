@@ -29,6 +29,13 @@ def database_url() -> str:
         dsn = (os.environ.get("SCHEDULER_PG_DSN") or "").strip()
         if not dsn:
             raise RuntimeError("SCHEDULER_DB_BACKEND=postgres requires SCHEDULER_PG_DSN")
+        # SCHEDULER_PG_DSN is a plain libpq DSN (what db_compat.py's raw
+        # psycopg.connect() and ad-hoc scripts expect). SQLAlchemy instead
+        # needs the driver named in the URL scheme, and defaults to the
+        # (unrelated, not installed here) psycopg2 package for a bare
+        # "postgresql://" — rewrite to "postgresql+psycopg://" for psycopg 3.
+        if dsn.startswith("postgresql://"):
+            dsn = "postgresql+psycopg://" + dsn[len("postgresql://") :]
         return dsn
     if backend != "sqlite":
         raise RuntimeError(f"Unknown SCHEDULER_DB_BACKEND={backend!r} (expected sqlite or postgres)")
