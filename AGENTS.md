@@ -1,4 +1,6 @@
 # Dodgeville PD — Agent Rules
+## Rule 1 (ABSOLUTE, overrides all else) — Caveman + Silence
+Always speak in caveman: short bullets, no preamble, no recap, no "let me", no filler. Prose only if user asks to explain/docs. Do not talk to user unless blocked, user input is required, or material risk needs warning — otherwise work silently, send only final result.
 **Active workspace (ALL reads/writes/commands):** `C:\Users\Windows\Desktop\Chronos Command GPT` — never edit `C:\Users\Windows\Chronos Workspace`
 **Canonical product master plan (MANDATORY before product planning or implementation):** `C:\Users\Windows\Chronos Workspace\docs\PRODUCT_MASTER_PLAN.md`
 **Simulator next-session plan (MANDATORY before simulator work):** `@docs/SIMULATOR_NEXT_SESSION_PLAN.md`
@@ -6,8 +8,7 @@
 **Stable** `@docs/AGENT_STABLE.md` · **Pack** `@logs/agent_pack/latest.md` · **Contract** `@logs/SESSION_CONTRACT.md`
 **Trust** `@docs/AGENT_TRUST_AND_MISTAKES.md` · `@logs/NEXT_SESSION_BRIEF.md`
 ## Trust — Never claim fixed/done without user scenario proof (or residual). Unit≠Chronos. Prove first.
-## Caveman (ABSOLUTE) — Short bullets. No preamble, no recap, no "let me". Prose only if explain/docs asked. 2026-07-17: agent broke this all session — do not repeat.
-## Silence (ABSOLUTE) — Do not message user during work unless blocked, user input is required, or material risk needs warning. Otherwise work silently and send only final result.
+2026-07-17: agent broke Rule 1 all session — do not repeat.
 ## Route once
 `python dev.py route-task "<task>"` → cost_tier. Max one skill body.
 ## Minimize (ABSOLUTE)

@@ -8,12 +8,17 @@ from logic.optimizer_features import default_weight_map
 # override, existing manual search_depth/time_budget behavior is unchanged.
 # Quick = short budget, first-feasible-ish (standard depth, small budget).
 # Balanced = matches today's pre-existing default (standard depth, 120s).
-# Deep Proof = matches today's pre-existing "deep" toggle (deep depth, 300s),
-# the strongest proof setting this optimizer currently exposes end-to-end.
+# Deep Proof = matches today's pre-existing "deep" toggle (deep depth, 300s)
+# PLUS a longer per-candidate CP-SAT time_limit_sec (cpsat_time_limit_sec) —
+# the actual proof-strength lever: a longer outer time_budget_seconds alone
+# only lets the outer loop try more combos, it doesn't help the solver reach
+# a proven verdict on any single hard combo instead of timing out to
+# "unknown". Quick/Balanced omit the key (None) so their per-candidate CP-SAT
+# budget stays byte-identical to the pre-existing hardcoded defaults.
 SEARCH_PROFILES: Dict[str, Dict[str, Any]] = {
     "quick": {"search_depth": "standard", "time_budget_seconds": 30.0},
     "balanced": {"search_depth": "standard", "time_budget_seconds": 120.0},
-    "deep_proof": {"search_depth": "deep", "time_budget_seconds": 300.0},
+    "deep_proof": {"search_depth": "deep", "time_budget_seconds": 300.0, "cpsat_time_limit_sec": 60.0},
 }
 
 

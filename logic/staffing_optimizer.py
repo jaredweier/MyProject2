@@ -1621,9 +1621,18 @@ def _optimize_staffing_scenarios(
     progress_callback=None,
     cancel_check=None,
     time_budget_seconds: Optional[float] = None,
+    cpsat_time_limit_sec: Optional[float] = None,
 ) -> Dict:
     """
     Exhaustive sweep of the constraint-defined space (outer × phase × pattern).
+
+    cpsat_time_limit_sec — optional per-candidate CP-SAT proof budget override
+    (master plan §4 "Deep Proof" profile). None keeps the existing hardcoded
+    per-call defaults (30s cycle-day-starts / 20s full-assignment) unchanged;
+    a longer value gives the solver more time to reach a proven feasible/
+    infeasible verdict instead of timing out to "unknown" on hard combos —
+    this is what actually strengthens the proof, unlike time_budget_seconds
+    alone (which only bounds how many combos the outer loop gets to try).
 
     max_total_evals / search_depth / max_inner_trials are accepted for API
     compatibility but do not truncate the search.
@@ -2065,6 +2074,7 @@ def _optimize_staffing_scenarios(
                                     annual_hours_hard=bool(annual_hours_hard),
                                     max_consecutive_work_days=int(max_consecutive_work_days),
                                     min_rest_hours=float(min_rest_hours),
+                                    time_limit_sec=float(cpsat_time_limit_sec or 8.0),
                                 )
                             cpsat_pv = _cpsat_cache[ckey]
                             if cpsat_pv.get("status") == "infeasible" and cpsat_pv.get("reason"):
@@ -2082,6 +2092,13 @@ def _optimize_staffing_scenarios(
                                             "shift_length_hours": float(length),
                                             "categories": [cpsat_pv["reason"]],
                                             "proven_minimal": False,
+                                            # phase_variant's reason is already a
+                                            # complete sentence (unlike full_assignment's
+                                            # short category tokens) — callers must
+                                            # render it verbatim, not wrap it in a
+                                            # "no assignment satisfies X together"
+                                            # template, or the sentence duplicates.
+                                            "full_reason": True,
                                         }
                                     )
 
@@ -2210,7 +2227,7 @@ def _optimize_staffing_scenarios(
                                         prefer_unique_daily_starts=bool(prefer_unique_daily_starts),
                                         objective_order=constraint_priority,
                                         warm_start=warm_start,
-                                        time_limit_sec=30.0,
+                                        time_limit_sec=float(cpsat_time_limit_sec or 30.0),
                                     )
                                     if axes["free_starts"]
                                     else solve_full_assignment(
@@ -2230,6 +2247,7 @@ def _optimize_staffing_scenarios(
                                         pool_time_limit_sec=POOL_TIME_LIMIT_SEC,
                                         warm_start=warm_start,
                                         progress_callback=progress_callback,
+                                        time_limit_sec=float(cpsat_time_limit_sec or 20.0),
                                     )
                                 )
                             )

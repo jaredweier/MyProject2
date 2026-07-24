@@ -1,4 +1,83 @@
-## 2026-07-24 NEWEST — surface CP-SAT infeasibility proofs to the UI
+## 2026-07-24 NEWEST — live browser proof of CP-SAT dialog found a real rendering bug, fixed
+
+Master plan §2 "engine failures are never shown as normal no-results" — closing
+the one gap the 2026-07-24 infeasibility-conflicts landing left open ("the
+rendered dialog itself was not screenshot-verified this session").
+
+- Drove the actual `/simulator` UI end to end (10 officers, 8h shift, custom
+  `5-2` pattern, 24/7 min 5, annual 2008±20 hard) via `javascript_tool`
+  full pointer-event dispatch (`pointerdown/mousedown/pointerup/mouseup/click`
+  — plain `.click()` doesn't register on these Quasar buttons/checkboxes;
+  their state lives in `aria-pressed`/`aria-checked` on a wrapper element, not
+  the native input's `.checked`). Confirmed the "Simulator understood" plan
+  dialog, then the actual no-match result panel.
+- **Found a real bug live, not in a unit test:** the rendered proof sentence
+  read "no assignment satisfies CP-SAT proved no phase/variant assignment
+  satisfies 24/7 coverage + annual-hours band together **together**" — a
+  duplicated/garbled sentence. Root cause: `solve_phase_variant`'s conflict
+  entries store an already-complete sentence in `categories[0]` (the honest
+  reason string, see the 2026-07-24 conflicts-accumulator entry above), but
+  `gui/pages/simulator/page.py`'s renderer unconditionally wrapped every
+  entry's `categories` in a `"no assignment satisfies {...} together"`
+  template built for `solve_full_assignment`'s short category tokens
+  (`coverage_247`, `annual_hours_band`, etc.) — never designed for a
+  full-assignment vs. phase-variant distinction in the render layer.
+- Fix: `logic/staffing_optimizer.py` phase_variant conflict entries now carry
+  `"full_reason": True`; `page.py`'s renderer checks that flag and renders
+  `categories[0]` verbatim instead of wrapping it, leaving the
+  `solve_full_assignment` short-token path unchanged.
+- Verified the exact fixed string composition directly in Python for both
+  branches (full_reason=True and short-token) — both read cleanly. Full
+  re-navigation through the restarted dev server to re-screenshot the exact
+  dialog was abandoned after repeated NiceGUI nav-state flakiness (same class
+  of issue documented in the 2026-07-23 brief's "Browser automation notes");
+  the string-composition fix itself is pure formatting logic covered by the
+  direct verification, not something CP-SAT timing affects.
+- `python dev.py verify --tier fast` — ALL PASSED after the fix. Not
+  committed yet — ask before committing. Full `verify --tier check` not run.
+
+## 2026-07-24 — independent oracle corpus + Deep Proof strengthens CP-SAT itself
+
+Master plan §11 "Independent corpus" + §4 "Deep Proof: extended exact search
+and stronger proof."
+
+- `tests/test_cpsat_independent_oracle.py` (new): pure-Python brute-force
+  ground truth (no CP-SAT, no rust) comparing `solve_full_assignment` and
+  `solve_phase_variant` against independently computed feasibility for 24/7
+  coverage, weekday-anchored windows, annual-hours band, and
+  max-consecutive-work-days — 10 cases, zero false feasible/infeasible.
+  Annual-hours ground truth is computed directly from brute-forced
+  worked-day counts, not via the shared `projected_annual_hours` helper, so
+  an encoding bug shared between solver and oracle wouldn't cancel out.
+- Found the real gap behind "Deep Proof" (2026-07-23 profile-selector
+  entry's own "Not done" note): it only extended `time_budget_seconds` (the
+  outer search loop's wall-clock cap on how many combos get tried) — the
+  per-candidate CP-SAT `time_limit_sec` itself was still hardcoded
+  (30s/20s/8s) regardless of profile, so Deep Proof never actually gave the
+  solver more time to resolve a single hard combo to a proven verdict
+  instead of timing out to "unknown".
+- `logic/staffing_optimizer.py::optimize_staffing_scenarios`: new
+  `cpsat_time_limit_sec: Optional[float] = None` param threaded to all 3
+  per-candidate CP-SAT calls (`solve_phase_variant`, `solve_cycle_day_starts`,
+  `solve_full_assignment`); `None` preserves prior hardcoded defaults exactly.
+- `logic/scheduling_sim.py::run_staffing_optimizer`: threads it through
+  (auto-included in the existing cache key since it hashes `call_kwargs`).
+- `gui/pages/simulator/state.py`: `SEARCH_PROFILES["deep_proof"]` gains
+  `cpsat_time_limit_sec: 60.0`; quick/balanced omit it (byte-identical).
+- `gui/pages/simulator/page.py::_optimizer_kwargs`: passes the profile's
+  `cpsat_time_limit_sec` through; `estimate_search_space`'s `**_ignored`
+  catch-all absorbs it harmlessly for the pre-flight estimate call.
+
+**Proof:** `test_search_profiles.py` 6/6, `test_cpsat_conflict_explanation.py`
++ `test_cpsat_independent_oracle.py` 14/14, `verify --tier fast` ALL PASSED.
+One flaky failure seen in a long sequential run
+(`test_open_search_uses_preset_cpsat_for_six_officer_solution` missed its 60s
+budget) — reproduced passing in 8.3s isolated, confirming this is the
+already-documented 2026-07-23 CPU-load-variance flake, not a regression from
+this change. Not committed yet at time of writing; ask before committing.
+Full `verify --tier check` not run — no ship claim.
+
+## 2026-07-24 — surface CP-SAT infeasibility proofs to the UI
 
 Master plan §2 "Engine failures are never shown as normal no-results
 outcomes" / §4 "sound conflicts." Prior audit was right: `optimize_staffing_scenarios`

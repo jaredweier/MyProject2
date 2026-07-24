@@ -183,6 +183,7 @@ def run_staffing_optimizer(
     progress_callback=None,
     cancel_check=None,
     time_budget_seconds=None,
+    cpsat_time_limit_sec=None,
     **_compat,
 ) -> Dict:
     """Find best staffing plan via exhaustive constraint-space search (not bump logic).
@@ -239,6 +240,7 @@ def run_staffing_optimizer(
         warm_start=warm_start,
         required_cert_codes=list(required_cert_codes or []),
         time_budget_seconds=time_budget_seconds,
+        cpsat_time_limit_sec=(float(cpsat_time_limit_sec) if cpsat_time_limit_sec is not None else None),
     )
 
     cache_key = _optimizer_cache_key(call_kwargs)

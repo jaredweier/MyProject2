@@ -1757,6 +1757,13 @@ def render_simulator() -> None:
                     if state.get("search_profile") in SEARCH_PROFILES
                     else (300.0 if state.get("search_depth") == "deep" else 120.0)
                 ),
+                # Deep Proof only: strengthens the per-candidate CP-SAT proof
+                # budget itself, not just the outer search's wall-clock cap.
+                "cpsat_time_limit_sec": (
+                    SEARCH_PROFILES[state["search_profile"]].get("cpsat_time_limit_sec")
+                    if state.get("search_profile") in SEARCH_PROFILES
+                    else None
+                ),
             }
 
         def _refresh_space_estimate():
@@ -2587,11 +2594,14 @@ def render_simulator() -> None:
                 conflicts = result.get("infeasibility_conflicts") or []
                 if conflicts:
                     c0 = conflicts[0]
+                    claim = (
+                        c0["categories"][0]
+                        if c0.get("full_reason")
+                        else f"no assignment satisfies {', '.join(c0['categories'])} together"
+                    )
                     proof = (
                         f"CP-SAT proof ({c0['num_officers']} officers, {c0['shift_length_hours']}h shift): "
-                        f"no assignment satisfies {', '.join(c0['categories'])} together"
-                        + ("" if c0.get("proven_minimal") else " (sufficient, not proven minimal)")
-                        + "."
+                        f"{claim}" + ("" if c0.get("proven_minimal") else " (sufficient, not proven minimal)") + "."
                     )
                     note = (note + "\n" if note else "") + proof
                 evals = int(result.get("scenarios_evaluated") or 0)
