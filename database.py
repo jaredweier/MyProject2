@@ -882,6 +882,22 @@ def _migrate_tier2_bidding_extensions(cursor) -> None:
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_simulator_scenarios_created ON simulator_scenarios(created_at)")
 
+    # Phase 4 (master plan §9): durable async simulation-job registry backing
+    # the typed /api/v1/jobs/simulations endpoints. status is one of
+    # queued/running/completed/failed/cancelled.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS optimizer_jobs (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'queued',
+            params_json TEXT NOT NULL,
+            result_json TEXT,
+            error_text TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_optimizer_jobs_created ON optimizer_jobs(created_at)")
+
 
 def _backfill_payroll_pay_period_start(cursor) -> None:
     """Assign pay_period_start from shift start date (entry_date)."""
