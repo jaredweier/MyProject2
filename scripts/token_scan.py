@@ -57,6 +57,7 @@ ALLOWED_LARGE_SOURCE = {
     "gui/pages/self_service.py",
     "gui/pages/simulator/page.py",
     "logic/staffing_optimizer.py",
+    "logic/staffing_cpsat.py",
     "logic/optimizer_features.py",
     "logic/coverage_optimizer.py",
     "logic/bump_optimizer.py",

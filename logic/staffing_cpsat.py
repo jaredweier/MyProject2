@@ -265,6 +265,187 @@ def solve_full_assignment(*args, **kwargs) -> Dict:
     return result
 
 
+def _explain_full_assignment_infeasibility(
+    *,
+    patterns: Sequence[RotationPattern],
+    n_officers: int,
+    shift_length_hours: float,
+    candidate_starts: Sequence[str],
+    sim_start_date: date,
+    coverage_247: int,
+    windows: List[Dict],
+    annual_hours_target: Optional[float],
+    annual_hours_variance: float,
+    annual_hours_hard: bool,
+    max_consecutive_work_days: int,
+    horizon: int,
+    cycle_len: int,
+    explain_time_limit_sec: float = 5.0,
+) -> Optional[List[str]]:
+    """Phase 3 "exact feasibility and proof" — explain WHY the model at
+    `_solve_full_assignment` is infeasible via OR-Tools assumption literals.
+
+    Builds a SEPARATE model (never touches the caller's model/solver) where
+    each hard-constraint category is guarded by its own assumption BoolVar
+    fixed True via `AddAssumptions`. If that model is also infeasible,
+    `SufficientAssumptionsForInfeasibility()` returns a SUFFICIENT set of
+    those assumptions — i.e. relaxing every category in the returned set is
+    enough to restore feasibility. This is deliberately NOT claimed to be a
+    PROVEN MINIMAL conflict set: OR-Tools does not guarantee minimality here
+    (that would need QuickXplain-style iterative shrinking, out of scope).
+
+    Only runs after the caller's own solve already proved INFEASIBLE, so it
+    adds zero cost to the feasible fast path. Returns None (not an empty
+    list) if the explain solve itself times out or is inconclusive — callers
+    must not treat None as "no conflict".
+    """
+    from ortools.sat.python import cp_model
+
+    n_int = int(n_officers)
+    bins_per_day = 48
+    total_bins = horizon * bins_per_day
+    shift_bins = round(float(shift_length_hours) * 2)
+    starts = [s for s in candidate_starts if s]
+    start_bins = [round(_parse_hhmm(s) / 30) for s in starts]
+    duty_vectors = [p.duty_vector() for p in patterns]
+    variants_all = list(range(len(duty_vectors)))
+
+    model2 = cp_model.CpModel()
+    officers = range(n_int)
+    choice_keys = [(v, p, si) for v in variants_all for p in range(cycle_len) for si in range(len(starts))]
+    covers: Dict[tuple, List[int]] = {}
+    for v, p, si in choice_keys:
+        duty = duty_vectors[v]
+        sb = start_bins[si]
+        bins: List[int] = []
+        for day in range(horizon):
+            if not duty[(day - p) % cycle_len]:
+                continue
+            base = day * bins_per_day + sb
+            for k in range(shift_bins):
+                bins.append((base + k) % total_bins)
+        covers[(v, p, si)] = bins
+
+    x2: Dict[tuple, "cp_model.IntVar"] = {}
+    bin_contributors: List[List[tuple]] = [[] for _ in range(total_bins)]
+    for o in officers:
+        for key in choice_keys:
+            x2[(o, *key)] = model2.NewBoolVar(f"e_{o}_{key[0]}_{key[1]}_{key[2]}")
+        model2.Add(sum(x2[(o, *key)] for key in choice_keys) == 1)
+    for key in choice_keys:
+        for b in covers[key]:
+            bin_contributors[b].append(key)
+
+    assumptions: List["cp_model.IntVar"] = []
+    labels: Dict[int, str] = {}
+
+    def _add_assumption(name: str, label: str) -> "cp_model.IntVar":
+        v = model2.NewBoolVar(name)
+        assumptions.append(v)
+        labels[v.Index()] = label
+        return v
+
+    # Fatigue cap: variants whose max cyclic run exceeds the limit are
+    # forbidden unless this assumption is relaxed.
+    if max_consecutive_work_days and max_consecutive_work_days > 0:
+        bad_terms = [
+            x2[(o, *key)]
+            for o in officers
+            for key in choice_keys
+            if _max_cyclic_run(duty_vectors[key[0]]) > int(max_consecutive_work_days)
+        ]
+        if bad_terms:
+            a_consec = _add_assumption(
+                "a_max_consecutive_work_days",
+                f"max_consecutive_work_days={max_consecutive_work_days} (fatigue cap)",
+            )
+            model2.Add(sum(bad_terms) == 0).OnlyEnforceIf(a_consec)
+
+    # Coverage sources, kept SEPARATE (not merged via max()) so each can be
+    # individually relaxed — 24/7 floor and each extra window get their own
+    # assumption literal.
+    def _bins_for_source(mn_by_bin: Dict[int, int], label: str) -> None:
+        if not mn_by_bin:
+            return
+        a = _add_assumption(f"a_cov_{len(assumptions)}", label)
+        for b, mn in mn_by_bin.items():
+            terms = [x2[(o, *key)] for o in officers for key in bin_contributors[b]]
+            if terms:
+                model2.Add(sum(terms) >= mn).OnlyEnforceIf(a)
+
+    if coverage_247 and coverage_247 > 0:
+        _bins_for_source({b: int(coverage_247) for b in range(total_bins)}, f"coverage_247={coverage_247}")
+
+    for wi, w in enumerate(windows):
+        if not isinstance(w, dict) or not w.get("enabled", True):
+            continue
+        mn = int(w.get("min_officers") or w.get("min") or 0)
+        if mn <= 0:
+            continue
+        try:
+            w_start = round(_parse_hhmm(w.get("start_time") or w.get("start") or "0:00") / 30)
+            w_end = round(_parse_hhmm(w.get("end_time") or w.get("end") or "0:00") / 30)
+        except (ValueError, IndexError):
+            continue
+        span = (w_end - w_start) if w_end > w_start else (bins_per_day - w_start + w_end)
+        mn_by_bin: Dict[int, int] = {}
+        specific = w.get("specific_date") or w.get("date")
+        if specific:
+            if isinstance(specific, str):
+                try:
+                    specific = date.fromisoformat(specific)
+                except ValueError:
+                    continue
+            offset_days = (specific - sim_start_date).days
+            if 0 <= offset_days < horizon:
+                base = offset_days * bins_per_day + w_start
+                for k in range(span):
+                    mn_by_bin[(base + k) % total_bins] = mn
+        else:
+            wd = w.get("weekday")
+            if wd is None or wd == "":
+                continue
+            for day in range(horizon):
+                if (sim_start_date + timedelta(days=day)).weekday() != int(wd):
+                    continue
+                base = day * bins_per_day + w_start
+                for k in range(span):
+                    mn_by_bin[(base + k) % total_bins] = mn
+        label = f"extra_window[{wi}] weekday={w.get('weekday')} {w.get('start_time') or w.get('start')}-{w.get('end_time') or w.get('end')} min={mn}"
+        _bins_for_source(mn_by_bin, label)
+
+    if annual_hours_hard and annual_hours_target is not None:
+        annual10 = {vi: round(projected_annual_hours(patterns[vi], shift_length_hours) * 10) for vi in variants_all}
+        y2: Dict[tuple, "cp_model.IntVar"] = {}
+        for o in officers:
+            for v in variants_all:
+                yv = model2.NewIntVar(0, 1, f"e_y_{o}_{v}")
+                model2.Add(yv == sum(x2[(o, v, p, si)] for p in range(cycle_len) for si in range(len(starts))))
+                y2[(o, v)] = yv
+        total10 = sum(annual10[v] * y2[(o, v)] for o in officers for v in variants_all)
+        band = float(annual_hours_variance or 0.0)
+        target = float(annual_hours_target)
+        lo10 = math.ceil(n_int * (target - band) * 10 - 1e-6)
+        hi10 = math.floor(n_int * (target + band) * 10 + 1e-6)
+        if lo10 <= hi10:
+            a_annual = _add_assumption("a_annual_hours_band", f"annual_hours_target={target}+/-{band}")
+            model2.Add(total10 >= lo10).OnlyEnforceIf(a_annual)
+            model2.Add(total10 <= hi10).OnlyEnforceIf(a_annual)
+
+    if not assumptions:
+        return None
+
+    model2.AddAssumptions(assumptions)
+    solver2 = cp_model.CpSolver()
+    solver2.parameters.max_time_in_seconds = float(explain_time_limit_sec)
+    solver2.parameters.num_search_workers = 4
+    status2 = solver2.Solve(model2)
+    if status2 != cp_model.INFEASIBLE:
+        return None
+    conflict_indices = solver2.SufficientAssumptionsForInfeasibility()
+    return [labels[i] for i in conflict_indices if i in labels]
+
+
 def _solve_full_assignment(
     patterns: Sequence[RotationPattern],
     *,
@@ -546,6 +727,25 @@ def _solve_full_assignment(
         if status == cp_model.INFEASIBLE:
             if solutions:
                 break  # pool exhausted — NOT a proof about the problem
+            conflict_assumptions = None
+            try:
+                conflict_assumptions = _explain_full_assignment_infeasibility(
+                    patterns=patterns,
+                    n_officers=n_officers,
+                    shift_length_hours=shift_length_hours,
+                    candidate_starts=candidate_starts,
+                    sim_start_date=sim_start_date,
+                    coverage_247=coverage_247,
+                    windows=windows,
+                    annual_hours_target=annual_hours_target,
+                    annual_hours_variance=annual_hours_variance,
+                    annual_hours_hard=annual_hours_hard,
+                    max_consecutive_work_days=max_consecutive_work_days,
+                    horizon=horizon,
+                    cycle_len=cycle_len,
+                )
+            except Exception:
+                conflict_assumptions = None  # explain path is best-effort, never fatal
             return {
                 "status": "infeasible",
                 "solver_status": "proven_infeasible",
@@ -553,6 +753,11 @@ def _solve_full_assignment(
                     "CP-SAT proved no (variant, phase, start) assignment satisfies 24/7 + window "
                     "coverage + annual-hours band together, over a full LCM(cycle,7)-day horizon"
                 ),
+                # Sufficient (not proven minimal) conflict set via OR-Tools
+                # AddAssumptions/SufficientAssumptionsForInfeasibility — see
+                # _explain_full_assignment_infeasibility docstring. None means
+                # the explain solve was inconclusive, NOT "no conflict".
+                "conflict_assumptions": conflict_assumptions,
             }
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             if solutions:
@@ -720,6 +925,11 @@ def _cpsat_result_to_report(result: Dict, status, kwargs: Dict) -> SimulationRep
         input_hash=compute_input_hash({k: v for k, v in kwargs.items() if k != "patterns"}),
         policy_hash=compute_policy_hash(kwargs),
         warnings=[result["reason"]] if result.get("reason") else [],
+        conflicts=(
+            [{"category": c, "sufficient_not_minimal": True} for c in result["conflict_assumptions"]]
+            if result.get("conflict_assumptions")
+            else []
+        ),
     )
 
 

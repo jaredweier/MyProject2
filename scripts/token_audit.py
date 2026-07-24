@@ -302,6 +302,7 @@ def run_token_audit(*, strict: bool = False) -> int:
             "gui/pages/self_service.py",
             "gui/pages/simulator/page.py",
             "logic/staffing_optimizer.py",
+            "logic/staffing_cpsat.py",
             "logic/optimizer_features.py",
             "logic/coverage_optimizer.py",
             "logic/bump_optimizer.py",
