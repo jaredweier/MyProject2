@@ -69,7 +69,16 @@ via `alembic upgrade head` (not yet run against real Postgres — see
 1. ~~Verify the connection adapter (`db_compat.py`) against a real
    Postgres instance with a handful of the simplest call sites~~ — done,
    see status above.
-2. Rewrite the 3 `PRAGMA` sites to skip/no-op on postgres.
+2. ~~Rewrite the 3 `PRAGMA` sites to skip/no-op on postgres.~~ — done.
+   `db_compat.is_postgres_backend()` added; `database.py`'s
+   `PRAGMA foreign_keys`/`journal_mode` (get_connection) and all
+   `PRAGMA table_info`/DDL-migration sites (init_database call tree) were
+   already unreachable on postgres — `init_database()` raises before
+   reaching them. `logic/time_punch.py::ensure_punch_tables` and
+   `seed_data.py`'s station-column backfill were reachable independent of
+   init_database and are now guarded with `is_postgres_backend()`.
+   Not yet run against a real Postgres — covered by existing
+   `test_postgres_integration.py` infra check only, not a dedicated case.
 3. Rewrite the 10 files' `strftime()` calls to `to_char()`, one file at a
    time, each covered by its existing test file before moving on.
 4. Convert `database.py`'s 1 `INSERT OR IGNORE` (seed/schema path, not

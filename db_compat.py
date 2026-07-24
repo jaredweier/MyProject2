@@ -20,11 +20,20 @@ activates when SCHEDULER_DB_BACKEND=postgres.
 
 from __future__ import annotations
 
+import os
 import re
 from typing import Any, Optional, Sequence
 
 _INSERT_RE = re.compile(r"^\s*INSERT\b", re.IGNORECASE)
 _RETURNING_RE = re.compile(r"\bRETURNING\b", re.IGNORECASE)
+
+
+def is_postgres_backend() -> bool:
+    """True when SCHEDULER_DB_BACKEND=postgres. Used to skip SQLite-only
+    PRAGMA/introspection calls that have no Postgres equivalent — the
+    baseline Alembic migration already creates these columns, so the
+    add-column-if-missing check they guard is unneeded there."""
+    return (os.environ.get("SCHEDULER_DB_BACKEND") or "sqlite").strip().lower() == "postgres"
 
 
 def translate_placeholders(sql: str) -> str:

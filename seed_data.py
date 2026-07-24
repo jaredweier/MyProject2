@@ -162,14 +162,19 @@ def seed_default_stations() -> bool:
             )
             """
         )
-        # station column may be missing on very old DBs — best-effort
-        try:
-            cursor.execute("PRAGMA table_info(officers)")
-            cols = {row[1] for row in cursor.fetchall()}
-            if "station" not in cols:
-                cursor.execute("ALTER TABLE officers ADD COLUMN station TEXT")
-        except Exception:
-            pass
+        # station column may be missing on very old DBs — best-effort.
+        # SQLite only: Postgres gets this via the baseline Alembic
+        # migration, and PRAGMA table_info has no Postgres equivalent.
+        from db_compat import is_postgres_backend
+
+        if not is_postgres_backend():
+            try:
+                cursor.execute("PRAGMA table_info(officers)")
+                cols = {row[1] for row in cursor.fetchall()}
+                if "station" not in cols:
+                    cursor.execute("ALTER TABLE officers ADD COLUMN station TEXT")
+            except Exception:
+                pass
 
         cursor.execute("SELECT COUNT(*) FROM station_posts")
         n_posts = int(cursor.fetchone()[0] or 0)

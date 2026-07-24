@@ -23,12 +23,17 @@ def ensure_punch_tables() -> None:
 
     ensure_geofence_tables()
     with connection() as conn:
-        # Extra columns on punches for audit of applied edits
-        cols = {r[1] for r in conn.execute("PRAGMA table_info(geofence_punches)").fetchall()}
-        if "edited" not in cols:
-            conn.execute("ALTER TABLE geofence_punches ADD COLUMN edited INTEGER DEFAULT 0")
-        if "original_created_at" not in cols:
-            conn.execute("ALTER TABLE geofence_punches ADD COLUMN original_created_at TIMESTAMP")
+        # Extra columns on punches for audit of applied edits (SQLite only —
+        # Postgres gets these via the baseline Alembic migration, and
+        # PRAGMA table_info has no Postgres equivalent).
+        from db_compat import is_postgres_backend
+
+        if not is_postgres_backend():
+            cols = {r[1] for r in conn.execute("PRAGMA table_info(geofence_punches)").fetchall()}
+            if "edited" not in cols:
+                conn.execute("ALTER TABLE geofence_punches ADD COLUMN edited INTEGER DEFAULT 0")
+            if "original_created_at" not in cols:
+                conn.execute("ALTER TABLE geofence_punches ADD COLUMN original_created_at TIMESTAMP")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS punch_edit_requests (
