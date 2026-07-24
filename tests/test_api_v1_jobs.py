@@ -15,7 +15,7 @@ def _client() -> TestClient:
 
 
 def test_create_and_poll_simulation_job(monkeypatch):
-    def _fake_optimizer(**kwargs):
+    def _fake_optimizer(cancel_check=None, **kwargs):
         return {"status": "feasible", "coverage_247": kwargs.get("coverage_247")}
 
     monkeypatch.setattr("logic.scheduling_sim.run_staffing_optimizer", _fake_optimizer)
@@ -44,4 +44,38 @@ def test_get_unknown_job_returns_404():
     with test_database():
         client = _client()
         resp = client.get("/api/v1/jobs/simulations/does-not-exist")
+        assert resp.status_code == 404
+
+
+def test_cancel_endpoint_stops_a_running_job(monkeypatch):
+    def _slow_cancellable(cancel_check=None, **kwargs):
+        for _ in range(100):
+            if cancel_check and cancel_check():
+                return {"status": "unknown", "cancelled": True}
+            time.sleep(0.02)
+        return {"status": "feasible", "cancelled": False}
+
+    monkeypatch.setattr("logic.scheduling_sim.run_staffing_optimizer", _slow_cancellable)
+
+    with test_database():
+        client = _client()
+        job_id = client.post("/api/v1/jobs/simulations", json={}).json()["id"]
+        time.sleep(0.05)
+
+        cancel_resp = client.post(f"/api/v1/jobs/simulations/{job_id}/cancel")
+        assert cancel_resp.status_code == 200
+
+        final = None
+        for _ in range(100):
+            final = client.get(f"/api/v1/jobs/simulations/{job_id}").json()
+            if final["status"] == "cancelled":
+                break
+            time.sleep(0.05)
+        assert final["status"] == "cancelled"
+
+
+def test_cancel_unknown_job_returns_404():
+    with test_database():
+        client = _client()
+        resp = client.post("/api/v1/jobs/simulations/does-not-exist/cancel")
         assert resp.status_code == 404

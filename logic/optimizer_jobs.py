@@ -23,6 +23,12 @@ from database import connection
 
 _lock = threading.Lock()
 
+# In-process only (matches the module's "single-process, not durable across
+# restart" scope) — one cancellation Event per in-flight job, read by
+# run_staffing_optimizer's own cancel_check plumbing (master plan §4 perf
+# target: "cancellation observed within one second").
+_cancel_events: Dict[str, threading.Event] = {}
+
 
 def create_job(params: Dict[str, Any]) -> str:
     """Insert a queued job row and start it in a background thread. Returns the job id."""
@@ -34,9 +40,24 @@ def create_job(params: Dict[str, Any]) -> str:
         )
         conn.commit()
 
-    thread = threading.Thread(target=_run_job, args=(job_id, params), daemon=True)
+    cancel_event = threading.Event()
+    with _lock:
+        _cancel_events[job_id] = cancel_event
+
+    thread = threading.Thread(target=_run_job, args=(job_id, params, cancel_event), daemon=True)
     thread.start()
     return job_id
+
+
+def cancel_job(job_id: str) -> Optional[Dict[str, Any]]:
+    """Request cancellation. No-op (but not an error) if the job is already
+    finished or unknown — returns the job's current state either way, or
+    None if the job id doesn't exist."""
+    with _lock:
+        event = _cancel_events.get(job_id)
+    if event is not None:
+        event.set()
+    return get_job(job_id)
 
 
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
@@ -70,12 +91,16 @@ def _set_status(job_id: str, status: str, *, result: Optional[Dict] = None, erro
         conn.commit()
 
 
-def _run_job(job_id: str, params: Dict[str, Any]) -> None:
+def _run_job(job_id: str, params: Dict[str, Any], cancel_event: threading.Event) -> None:
     from logic.scheduling_sim import run_staffing_optimizer
 
     _set_status(job_id, "running")
     try:
-        result = run_staffing_optimizer(**params)
-        _set_status(job_id, "completed", result=result)
+        result = run_staffing_optimizer(cancel_check=cancel_event.is_set, **params)
+        final_status = "cancelled" if result.get("cancelled") else "completed"
+        _set_status(job_id, final_status, result=result)
     except Exception as exc:  # never let a job crash the thread silently unrecorded
         _set_status(job_id, "failed", error=str(exc))
+    finally:
+        with _lock:
+            _cancel_events.pop(job_id, None)

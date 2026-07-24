@@ -40,3 +40,13 @@ def get_simulation_job(job_id: str) -> SimulationJobOut:
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     return SimulationJobOut(id=job["id"], status=job["status"], result=job["result"], error=job["error"])
+
+
+@router.post("/jobs/simulations/{job_id}/cancel", response_model=SimulationJobOut)
+def cancel_simulation_job(job_id: str) -> SimulationJobOut:
+    from logic.optimizer_jobs import cancel_job
+
+    job = cancel_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return SimulationJobOut(id=job["id"], status=job["status"], result=job["result"], error=job["error"])
