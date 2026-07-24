@@ -48,12 +48,20 @@ log = logging.getLogger("chronos.gui")
 
 
 def _register_api_routes() -> None:
-    """Offline snapshot + CAD inbound (bidirectional residual)."""
+    """Offline snapshot + CAD inbound (bidirectional residual), plus the
+    typed v1 router (master plan §9)."""
     try:
         from starlette.requests import Request
         from starlette.responses import JSONResponse
     except Exception:
         return
+
+    try:
+        from api.routes_v1 import router as api_v1_router
+
+        app.include_router(api_v1_router)
+    except Exception:
+        log.exception("Failed to mount api/v1 router")
 
     @app.get("/api/offline/snapshot")
     async def api_offline_snapshot(request: Request):  # type: ignore[no-redef]
