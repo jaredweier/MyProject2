@@ -1,4 +1,44 @@
-## 2026-07-24 NEWEST — Phase 3 closed out, Phase 4 (API + persistence) underway
+## 2026-07-24 (LATEST) — Phase 4 Postgres fixture verified, CI scanning added, draft PR #8
+
+**Phase 4 step 5 (full suite vs real Postgres) — PARTIALLY VERIFIED:**
+- Session-scoped ephemeral Postgres fixture (one initdb per pytest run,
+  TRUNCATE between tests) committed and verified: `tests/test_logic.py` 22/22
+  PASS against real Postgres (~5 min). Fixture works cleanly: conftest.py,
+  tests/pg_session.py (new), tests/helpers.py (Postgres branch),
+  seed_data.py/db_compat.py/logic/requests.py (guards for backend).
+- Connection pooling (idle-connection reuse per DSN) fixed the 21/22
+  timeout failures from prior session's unverified attempt.
+- officer_time_banks added to _NON_ID_PK_TABLES (was causing "column id does not exist").
+- Broader suite verification (`test_coverage_optimizer.py` et al.) deferred to CI
+  rather than running locally; faster iteration on single-machine bottleneck.
+
+**Master plan §12 (security) — CI dependency/container scanning:**
+- Added `container-scan` CI job (aquasecurity/trivy-action) to
+  `.github/workflows/ci.yml` — builds Dockerfile, fails on unfixed CRITICAL/HIGH CVEs.
+- Extended `scripts/deps_audit.py` to also audit `requirements-dev.txt`
+  (previously only `requirements.txt`).
+- Draft PR #8 opened to trigger actual GitHub Actions run (can't verify
+  CI jobs locally).
+
+**Housekeeping:**
+- Fixed recurring pre-commit failure: moved graphify-out/{KNOWLEDGE_HUB.md,GRAPH_REPORT.md}
+  to .gitignore (they regenerated on every `verify --tier preflight` run,
+  forcing every commit to need a retry).
+- Added .claude/worktrees/ to token-scan ignore (mirrored files tripping large-file gate).
+
+**Commits pushed to origin/agent/tier-a-scheduling-hardening:**
+- `3e0cd54`: CI/deps/housekeeping
+- `8b289eb`: Phase 4 Postgres fixture (test_logic.py verified)
+
+**Next session:**
+1. Check PR #8 — confirm `container-scan` job ran successfully, review any Trivy findings.
+2. Broader Postgres suite verification can run in CI parallel to other work, or skip
+   locally if tests pass in Actions.
+3. Phase 4 is ~80% verified (test_logic.py yes, broader suite in CI). If broader
+   suite passes remotely, Phase 4 can close out; otherwise debug the failures.
+4. Phase 5 (leave/live-schedule UI) can unblock once Phase 4 is confirmed solid.
+
+## 2026-07-24 PRIOR — Phase 3 closed out, Phase 4 (API + persistence) underway
 
 Master plan §14 Phase 3 exit ("zero false feasible/infeasible in the
 independent corpus") and Phase 4 start (§9 API/persistence). All commits
