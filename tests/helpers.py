@@ -21,9 +21,9 @@ def test_database(seed: bool = True) -> Iterator[str]:
 
     Runs against SQLite by default. Set CHRONOS_PG_TEST_MODE=1 to run the
     same test body against a real, session-shared ephemeral Postgres
-    instead (master plan §9 port inventory step 5) — see tests/pg_session.py.
+    instead (master plan §9 port inventory step 5) — see pg_session.py.
     """
-    from tests.pg_session import pg_test_mode_enabled
+    from pg_session import pg_test_mode_enabled
 
     if pg_test_mode_enabled():
         with _test_database_postgres(seed) as path:
