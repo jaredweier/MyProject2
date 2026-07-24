@@ -1,4 +1,64 @@
-## 2026-07-23 NEWEST — Search profile selector (Quick/Balanced/Deep Proof/Custom)
+## 2026-07-23 NEWEST — P1.2 pool: real outcome-based diversity check + max_solutions 5→15
+
+Master plan §4 stage 4 ("diverse alternatives... compare coverage, overtime,
+fairness, fatigue, preferences, stability"). Audit was right: the CP-SAT pool
+loop in `staffing_cpsat.py` (~496-614, unchanged this session — see why below)
+only excludes on aggregate `(variant,phase,start)` profile counts, not actual
+outcome distance. Fix landed one layer up, at the pool's only call site:
+
+- **Why not inside staffing_cpsat.py:** the CP-SAT solve has no access to
+  coverage/overtime/fairness/fatigue numbers — those only exist after
+  `simulate_schedule()` replays each pool candidate, which happens in
+  `staffing_optimizer.py` (~2190 `full_sim = simulate_schedule(full_cfg)`).
+  So the real per-candidate metrics (`fm = full_sim.metrics`) are only
+  available at the `cpsat_sols` consumption loop, not inside the solver.
+- `logic/staffing_optimizer.py` (~986-1050, after `_score_metrics`): added
+  `_outcome_vector(m, ...)` (reuses the existing `_violation_vector`
+  coverage/windows/gaps/flsa/annual/annual_spread fields + the same
+  rest_failures/consecutive_work_failures fatigue fields `_score_metrics`
+  already reads — no new metrics invented), `_assignment_overlap_frac(a, b)`
+  (fraction of officer-day cells with identical assigned start between two
+  `officer_cycle_starts`), `_is_near_duplicate_candidate(...)` (reject only
+  if outcome-vector L1 distance ≤1.5 tolerance AND assignment overlap >90%
+  — both signals required, matches the task's minimal-bar spec).
+- Wired into the `cpsat_sols` loop (~2139-2247): each pool solution's
+  `(vec, officer_cycle_starts)` checked against a per-batch `_pool_kept`
+  list before `results.append(row)`; near-dup candidates are skipped (first
+  candidate in a batch is always kept, so `_full_solved` bookkeeping is
+  unaffected).
+- `max_solutions=5`/`pool_time_limit_sec=15.0` hardcoded at the one caller
+  → new module constants `POOL_MAX_SOLUTIONS = 15` /
+  `POOL_TIME_LIMIT_SEC = 30.0` (top of `staffing_optimizer.py`, ~159-166).
+  Not UI-plumbed (explicitly out of scope, same boundary as the prior
+  search-profile-selector entry below).
+
+**Timing evidence** (`solve_full_assignment` direct, 24 officers, 12h shifts,
+2-start pattern, coverage_247=2, 45s pool budget so no truncation):
+max_solutions=5 → 5.15s; =10 → 6.14s; =15 → 10.12s. 15 stays well under the
+new 30s `POOL_TIME_LIMIT_SEC` ceiling, so raising to 15 doesn't blow up
+search time on a representative scenario.
+
+**Proof:**
+- `tests/test_pool_diversity.py` (9 new tests): outcome-vector equality/
+  inequality, assignment-overlap (identical/disjoint/empty), and the core
+  claim — `test_old_profile_only_dedup_would_have_kept_this_but_new_check_rejects`
+  proves a candidate pair with >90% overlapping rosters + identical outcome
+  metrics (the exact case the old aggregate-count dedup would miss, since a
+  differently-permuted or nearly-identical roster can still land on a
+  different `(variant,phase,start)` count profile) is now rejected, while
+  same-roster-different-outcome and different-roster-same-outcome pairs are
+  both correctly kept as diverse. All PASS.
+- `tests/test_coverage_optimizer.py` full run — 17 passed, no regression.
+- `python dev.py verify --tier fast` — ALL PASSED.
+
+Not done (out of scope per task): no lexicographic/Pareto soft-goal objective
+layer (single scalar `Minimize(annual-hours deviation)` unchanged); no
+conflict-explanation/assumptions work; `POOL_MAX_SOLUTIONS`/
+`POOL_TIME_LIMIT_SEC` still not user-configurable from the UI (same reason
+as the search-profile entry below — nothing upstream threads it through
+`run_staffing_optimizer`).
+
+## 2026-07-23 — Search profile selector (Quick/Balanced/Deep Proof/Custom)
 
 Master plan §4 slice. Audit's assumption was wrong: `staffing_cpsat.py`'s
 `time_limit_sec`/`max_solutions`/`pool_time_limit_sec` are NOT reachable from

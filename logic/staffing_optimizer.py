@@ -156,6 +156,15 @@ MULTI_BLOCK_CATALOG: List[List[str]] = [
     ["5-3,6-2"],
 ]
 
+# P1.2 solution-pool sizing: master plan §4 stage 4 asks for "up to 15"
+# diverse alternatives. Measured wall-clock on a representative 24-officer,
+# 24/7-with-2-required-on-duty, 12h/2-start scenario (see docs/HANDOFF.md
+# P1.2 entry): max_solutions=5 ~5s, =10 ~6s, =15 ~10s — 15 is cheap enough to
+# use as the ceiling. pool_time_limit_sec raised alongside it so the deadline
+# doesn't truncate the pool before it reaches 15 on harder scenarios.
+POOL_MAX_SOLUTIONS = 15
+POOL_TIME_LIMIT_SEC = 30.0
+
 # Default soft priority when ranking near-misses (higher = more important to satisfy)
 DEFAULT_CONSTRAINT_WEIGHTS: Dict[str, float] = {
     "coverage_247": 100.0,
@@ -981,6 +990,72 @@ def _score_metrics(
     )
     penalty += rest_hits * 8.0 + consec * 6.0
     return 100_000 - penalty - (0 if hard_ok else 5_000)
+
+
+def _outcome_vector(m: Dict, *, annual: float, annual_variance: float) -> Tuple[float, ...]:
+    """Per-candidate outcome metrics already computed for scoring — coverage
+    gaps, overtime (flsa), fairness (annual spread), fatigue (rest/consecutive
+    failures) — reused here (not invented) as a diversity fingerprint for the
+    pool dedup (master plan §4 stage 4: diverse alternatives)."""
+    v = _violation_vector(m, annual=annual, annual_variance=annual_variance)
+    rest_hits = float(m.get("rest_failures") or m.get("rest_gap_violations") or m.get("min_rest_failures") or 0)
+    consec = float(
+        m.get("consecutive_work_failures")
+        or m.get("consecutive_work_violations")
+        or m.get("max_consecutive_failures")
+        or 0
+    )
+    return (
+        v.get("coverage_247", 0.0),
+        v.get("windows", 0.0),
+        v.get("gaps", 0.0),
+        v.get("flsa", 0.0),
+        v.get("annual", 0.0),
+        v.get("annual_spread", 0.0),
+        rest_hits,
+        consec,
+    )
+
+
+def _assignment_overlap_frac(cycle_a: Optional[List[List[str]]], cycle_b: Optional[List[List[str]]]) -> float:
+    """Fraction of officer-day cells with the identical assigned start (or
+    off) between two candidates' `officer_cycle_starts`. Officer indices are
+    comparable across pool solutions from the same solve because the CP-SAT
+    model canonicalizes officers via nondecreasing choice indices."""
+    if not cycle_a or not cycle_b:
+        return 0.0
+    n = min(len(cycle_a), len(cycle_b))
+    if n == 0:
+        return 0.0
+    total = 0
+    same = 0
+    for i in range(n):
+        da, db = cycle_a[i] or [], cycle_b[i] or []
+        d = min(len(da), len(db))
+        for k in range(d):
+            total += 1
+            if da[k] == db[k]:
+                same += 1
+    return (same / total) if total else 0.0
+
+
+def _is_near_duplicate_candidate(
+    vec_a: Tuple[float, ...],
+    vec_b: Tuple[float, ...],
+    cycle_a: Optional[List[List[str]]],
+    cycle_b: Optional[List[List[str]]],
+    *,
+    tol: float = 1.5,
+    overlap_thresh: float = 0.90,
+) -> bool:
+    """Reject as 'not diverse' only if the outcome-metric vector is within a
+    small tolerance AND the assignment set overlaps heavily — either signal
+    alone (e.g. same metrics via a structurally different roster, or similar
+    roster with a materially different outcome) still counts as diverse."""
+    dist = sum(abs(a - b) for a, b in zip(vec_a, vec_b))
+    if dist > tol:
+        return False
+    return _assignment_overlap_frac(cycle_a, cycle_b) > overlap_thresh
 
 
 def _constraint_fail(
@@ -2127,8 +2202,8 @@ def _optimize_staffing_scenarios(
                                         annual_hours_hard=bool(annual_hours_hard),
                                         max_consecutive_work_days=int(max_consecutive_work_days),
                                         min_rest_hours=float(min_rest_hours),
-                                        max_solutions=5,
-                                        pool_time_limit_sec=15.0,
+                                        max_solutions=POOL_MAX_SOLUTIONS,
+                                        pool_time_limit_sec=POOL_TIME_LIMIT_SEC,
                                         warm_start=warm_start,
                                         progress_callback=progress_callback,
                                     )
@@ -2136,6 +2211,7 @@ def _optimize_staffing_scenarios(
                             )
                             if full.get("status") == "feasible":
                                 cpsat_sols = full.get("solutions") or [full]
+                                _pool_kept: List[Tuple[Tuple[float, ...], Optional[List[List[str]]]]] = []
                                 for sol in cpsat_sols:
                                     sol_phase = sol.get("phase", full.get("phase"))
                                     sol_pm = sol.get("pattern_map", full.get("pattern_map"))
@@ -2219,8 +2295,29 @@ def _optimize_staffing_scenarios(
                                             min_rest_hours=float(min_rest_hours),
                                             max_consecutive_work_days=int(max_consecutive_work_days),
                                         ):
-                                            results.append(row)
-                                            _full_solved.add((n_off, float(length)))
+                                            # P1.2 real diversity check: reject only
+                                            # if both the outcome-metric vector
+                                            # (coverage/overtime/fairness/fatigue)
+                                            # is near-identical to an already-kept
+                                            # pool candidate AND the assignment set
+                                            # overlaps heavily — the CP-SAT pool
+                                            # loop itself only dedups on aggregate
+                                            # (variant,phase,start) counts, which
+                                            # misses same-profile/different-officer
+                                            # or different-profile/same-outcome
+                                            # near-duplicates.
+                                            vec = _outcome_vector(
+                                                fm, annual=annual, annual_variance=float(annual_hours_variance)
+                                            )
+                                            row_cycle_starts = row.get("officer_cycle_starts")
+                                            is_dup = any(
+                                                _is_near_duplicate_candidate(vec, kv, row_cycle_starts, kc)
+                                                for kv, kc in _pool_kept
+                                            )
+                                            if not is_dup:
+                                                _pool_kept.append((vec, row_cycle_starts))
+                                                results.append(row)
+                                                _full_solved.add((n_off, float(length)))
 
                         if (n_off, float(length)) in _full_solved and require_hard_ok:
                             # Already have a proven-exact hard-OK result for this
