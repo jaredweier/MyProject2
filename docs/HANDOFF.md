@@ -1,4 +1,68 @@
-## 2026-07-24 NEWEST — live browser proof of CP-SAT dialog found a real rendering bug, fixed
+## 2026-07-24 NEWEST — Phase 3 closed out, Phase 4 (API + persistence) underway
+
+Master plan §14 Phase 3 exit ("zero false feasible/infeasible in the
+independent corpus") and Phase 4 start (§9 API/persistence). All commits
+below are pushed to `origin/agent/tier-a-scheduling-hardening` and
+verified landed (local SHA == remote SHA checked after each push).
+
+**Phase 3 closed:**
+- Oracle corpus extended to `solve_cycle_day_starts` (the one solver path
+  not yet covered) — 12/12 passing. All three solver paths now have
+  brute-force ground-truth coverage.
+- Garbled infeasibility-dialog sentence fix (from the entry below) committed.
+- Alternatives pool dedup, cancellation, caching/replay were already built
+  in prior sessions — confirmed present, not re-done.
+
+**Phase 4 — typed API layer (additive, NiceGUI's `app` IS already a
+FastAPI instance, no new process):**
+- `GET /api/v1/officers`, `POST`/`GET /api/v1/jobs/simulations` +
+  `.../cancel`, `POST /api/v1/coverage/preview`, `GET /api/v1/swaps/preview`
+  — all typed Pydantic, all additive, all tested (`api/`, `logic/optimizer_jobs.py`).
+- Async job registry backed by a new `optimizer_jobs` SQLite table
+  (existing DB — see `database.py`). Single-process, in-memory cancel
+  events, not durable across restart (documented in `logic/optimizer_jobs.py`).
+
+**Phase 4 — PostgreSQL move (§9), infra layer only, verified against a
+real live Postgres, business SQL not yet ported:**
+- `db_engine.py` / `db_compat.py` / `database.py`: SQLAlchemy engine
+  resolution + a psycopg connection adapter that lets the existing ~41
+  sqlite3 call sites work unchanged against Postgres (`?`→`%s` translation,
+  transparent `RETURNING id`→`cursor.lastrowid`, dict-row access).
+  `SCHEDULER_DB_BACKEND=sqlite` (default, unchanged) | `postgres` (needs
+  `SCHEDULER_PG_DSN`); `init_database()` now fails loudly on postgres
+  instead of running wrong DDL.
+- Baseline Alembic migration (`migrations/versions/8286dcadb953_*.py`)
+  reflected directly off the live SQLite schema (not hand-typed — avoids
+  drift). **Verified for real**, not mocked: `tests/pg_fixture.py` spins
+  up an ephemeral Postgres via the `postgresql-binaries` pip package (real
+  server binary, no Docker/system install/admin — this was the answer to
+  "can't we just test it for real"). Confirmed live: migration creates all
+  36 tables, adapter lastrowid/row-access round-trips, and
+  `logic/officers.py` (unmodified) reads/writes correctly through
+  `database.get_connection()`.
+  - Run it yourself: `CHRONOS_TEST_POSTGRES=1 python -m pytest tests/test_postgres_integration.py`
+  - Gotcha hit and fixed: `pg_ctl start`'s child `postgres.exe` keeps
+    stdout/stderr open past `pg_ctl`'s own return on Windows —
+    `subprocess.run(capture_output=True)` hangs forever even though the
+    server already started; use `stdout=DEVNULL` instead. Also: bare
+    `postgresql://` DSNs make SQLAlchemy default to the (uninstalled)
+    `psycopg2` driver — `db_engine.database_url()` rewrites to
+    `postgresql+psycopg://` for SQLAlchemy specifically, while
+    `db_compat.py`'s raw `psycopg.connect()` keeps using the plain DSN.
+- **Not done, real work, not mechanical:** `docs/POSTGRES_PORT_INVENTORY.md`
+  lists every file still needing a dialect-specific rewrite before the
+  postgres backend is production-usable — 10 files' SQL `strftime()`
+  calls (→ `to_char()`), 3 `PRAGMA` sites (no-op on postgres), 1
+  `INSERT OR IGNORE` (→ `ON CONFLICT DO NOTHING`), plus real-Postgres
+  verification of the 15 `.lastrowid` call sites the adapter should cover
+  transparently. Suggested order is in that doc. SQLite remains the only
+  backend any live code path actually uses — nothing here is wired into
+  the running app yet.
+
+`python dev.py verify --tier fast` — ALL PASSED after every commit in
+this session. `verify --tier check` not run — no ship claim.
+
+## 2026-07-24 — live browser proof of CP-SAT dialog found a real rendering bug, fixed
 
 Master plan §2 "engine failures are never shown as normal no-results" — closing
 the one gap the 2026-07-24 infeasibility-conflicts landing left open ("the
@@ -33,8 +97,10 @@ rendered dialog itself was not screenshot-verified this session").
   of issue documented in the 2026-07-23 brief's "Browser automation notes");
   the string-composition fix itself is pure formatting logic covered by the
   direct verification, not something CP-SAT timing affects.
-- `python dev.py verify --tier fast` — ALL PASSED after the fix. Not
-  committed yet — ask before committing. Full `verify --tier check` not run.
+- `python dev.py verify --tier fast` — ALL PASSED after the fix.
+  **Committed and pushed** (see the entry above — this session got
+  explicit ask-before-commit confirmation). Full `verify --tier check`
+  not run.
 
 ## 2026-07-24 — independent oracle corpus + Deep Proof strengthens CP-SAT itself
 
