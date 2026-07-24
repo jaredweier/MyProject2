@@ -1018,6 +1018,14 @@ def search_history_path() -> Path:
 
 
 def append_search_history(entry: Dict[str, Any], *, limit: int = 20) -> None:
+    """Log a completed search. `entry["config_snapshot"]`, when present, is the
+    exact kwargs dict later passed to `run_staffing_optimizer(**snapshot)` —
+    same deterministic-input set `_optimizer_cache_key()`
+    (logic/scheduling_sim.py) canonicalizes for the job cache, so a replay of
+    this entry hits that cache when the original run was exhaustive-complete.
+    Stored as JSON via `default=str` (this module's existing convention, see
+    `export_form_config_json`) so odd non-JSON-native values never raise.
+    """
     path = search_history_path()
     rows: List[Dict] = []
     if path.is_file():
@@ -1027,24 +1035,28 @@ def append_search_history(entry: Dict[str, Any], *, limit: int = 20) -> None:
                 rows = []
         except Exception:
             rows = []
-    rows.insert(
-        0,
-        {
-            "at": time.strftime("%Y-%m-%d %H:%M:%S"),
-            **{
-                k: entry.get(k)
-                for k in (
-                    "success",
-                    "message",
-                    "num_officers",
-                    "wall_time_ms",
-                    "scenarios_evaluated",
-                    "hard_ok",
-                )
-            },
+    row = {
+        "at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        **{
+            k: entry.get(k)
+            for k in (
+                "success",
+                "message",
+                "num_officers",
+                "wall_time_ms",
+                "scenarios_evaluated",
+                "hard_ok",
+                "search_exhaustive",
+            )
         },
-    )
-    path.write_text(json.dumps(rows[:limit], indent=2), encoding="utf-8")
+    }
+    snapshot = entry.get("config_snapshot")
+    if isinstance(snapshot, dict):
+        # Round-trip through JSON now (not at replay time) so what's stored
+        # on disk is exactly what a later replay will read back — same
+        # canonicalization discipline as _optimizer_cache_key.
+        row["config_snapshot"] = json.loads(json.dumps(snapshot, default=str))
+    path.write_text(json.dumps(([row] + rows)[:limit], indent=2, default=str), encoding="utf-8")
 
 
 def list_search_history(*, limit: int = 10) -> List[Dict]:
@@ -1056,6 +1068,40 @@ def list_search_history(*, limit: int = 10) -> List[Dict]:
         return list(rows)[:limit] if isinstance(rows, list) else []
     except Exception:
         return []
+
+
+def replay_search_history(entry: Dict[str, Any]) -> Dict[str, Any]:
+    """Re-run a stored search-history entry's exact config snapshot.
+
+    Reuses `run_staffing_optimizer` (logic/scheduling_sim.py) as-is — this
+    naturally hits the deterministic job cache (commit aa5ac88) when the
+    snapshot matches a still-cached exhaustive-complete run, or genuinely
+    re-solves otherwise. Honest about which happened via
+    `replay_original_exhaustive` (was the *original* run proved complete —
+    same field the cache itself uses to decide reproducibility) rather than
+    claiming every replay is a guaranteed-identical reproduction.
+    """
+    snapshot = entry.get("config_snapshot")
+    if not isinstance(snapshot, dict):
+        return {
+            "success": False,
+            "message": "No config snapshot stored for this entry (older history row, predates replay).",
+            "replay_original_exhaustive": False,
+        }
+    from logic.scheduling_sim import run_staffing_optimizer
+
+    result = run_staffing_optimizer(**dict(snapshot))
+    result = dict(result)
+    result["replay_original_exhaustive"] = bool(entry.get("search_exhaustive"))
+    if result["replay_original_exhaustive"]:
+        result["replay_note"] = (
+            "Original run was exhaustive-complete — replay reused the deterministic cache if still warm, otherwise re-solved to the same identical result."
+        )
+    else:
+        result["replay_note"] = (
+            "Original run was time-budget-truncated or cancelled — this is a fresh re-solve, not a guaranteed-identical replay."
+        )
+    return result
 
 
 def weekend_night_heat_lines(result: Optional[Dict[str, Any]] = None) -> List[str]:

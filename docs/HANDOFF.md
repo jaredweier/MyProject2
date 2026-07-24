@@ -1,4 +1,56 @@
-## 2026-07-23 NEWEST — Deterministic optimizer job cache (in-process)
+## 2026-07-23 NEWEST — Search-history replay (Phase 3 "replay" slice)
+
+Master plan §14 Phase 3 "replay." Prior audit was right: `append_search_history`
+only logged 6 summary fields, no config snapshot, no re-run path.
+
+- `logic/optimizer_features.py` (~1013-1105): `append_search_history` now
+  also stores `entry["config_snapshot"]` (JSON round-tripped via
+  `default=str`, same convention as `export_form_config_json`) and
+  `search_exhaustive`. `search_history_path()` file is a flat JSON list
+  (`logs/optimizer_search_history.json`) — **not a DB table**, contrary to
+  the task brief's assumption; no schema/migration needed, this store never
+  went through `database.py`. New `replay_search_history(entry)`: pulls
+  `config_snapshot`, calls `run_staffing_optimizer(**snapshot)`
+  (logic/scheduling_sim.py, unchanged) — naturally hits the aa5ac88
+  deterministic cache when the snapshot matches a still-warm
+  exhaustive-complete run. Reports `replay_original_exhaustive` +
+  `replay_note` honestly (same spirit as `search_exhaustive`/
+  `search_complete`) rather than claiming every replay is guaranteed-identical.
+- `gui/pages/simulator/page.py` (~2846): `append_search_history` call now
+  passes `config_snapshot=job_kw` (the exact kwargs already sent to
+  `run_staffing_optimizer_isolated`) and `search_exhaustive=result.get(...)`.
+- `gui/pages/simulator/results_panel.py` `show_search_history()`: each row
+  gets a **Rerun** button — calls `replay_search_history(row)`, applies
+  `best` via existing `_apply_ranked_option`, closes dialog, notifies with
+  `replay_note`. Rows with no `config_snapshot` (pre-existing history from
+  before this change) notify a warning and leave the dialog open instead of
+  crashing.
+
+**Proof:** new `tests/test_search_history_replay.py` (4 tests): config
+snapshot round-trips through the JSON store; replay of a mocked
+exhaustive-complete original hits the cache (solver called once total, not
+twice) and reports `replay_original_exhaustive=True`; replay of a
+budget-truncated original is a real second solve
+(`replay_original_exhaustive=False`, note says "fresh re-solve"); replay with
+no stored snapshot fails honestly instead of guessing. All PASS.
+`tests/test_optimizer_cache.py` + related (11 total) — no regression.
+`python dev.py verify --tier fast` — ALL PASSED.
+
+**UI verified live** (chronos-web preview, logged-in admin session): ran a
+real Find Best search (hard-fail case, "No Perfect Schedule"), opened Search
+History, confirmed the new **Rerun** buttons render per row including old
+pre-change rows. Clicked Rerun on the just-created row — toast progressed
+"Rerunning search…" → "Rerun failed: No Schedule Meets The Selected Hard
+Constraints" (correctly honest — same outcome as the original, not a false
+"fixed" claim). Clicked Rerun on an old 2026-07-22 row lacking
+`config_snapshot` — no crash, dialog stayed open (graceful, as coded).
+Screenshot-verified, not just DOM-inspected.
+
+Not touched (per scope): solver search behavior/objective/pool logic, the
+cache mechanism itself beyond calling `run_staffing_optimizer`, performance
+p95 rollups, conflict-explanation work.
+
+## 2026-07-23 — Deterministic optimizer job cache (in-process)
 
 Master plan §4 "identical deterministic jobs use reproducible cache keys."
 Audit was right: prior caches (`_score_metrics`/etc micro-memoization) speed

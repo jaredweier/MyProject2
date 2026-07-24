@@ -2851,6 +2851,8 @@ def render_simulator() -> None:
                         "wall_time_ms": result.get("wall_time_ms"),
                         "scenarios_evaluated": result.get("scenarios_evaluated"),
                         "hard_ok": best.get("hard_constraints_ok"),
+                        "search_exhaustive": result.get("search_exhaustive"),
+                        "config_snapshot": job_kw,
                     }
                 )
             except Exception:
