@@ -8,7 +8,7 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass, field
 from datetime import date, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
 
 from config import (
     NIGHT_MINIMUM_OFFICERS,
@@ -17,6 +17,9 @@ from config import (
 )
 from validators import format_date
 from validators_rules import validate_minimum_rest_gap
+
+if TYPE_CHECKING:
+    from logic.scheduling_contracts import StaffingProblemSpec
 
 try:
     from logic import rust_bridge
@@ -78,6 +81,47 @@ class SimulatorConfig:
     officer_cycle_starts: Optional[List[List[str]]] = None
 
 
+def build_staffing_problem_spec(
+    config: "SimulatorConfig",
+    *,
+    tenant_id: str = "default",
+    organization: str = "",
+    time_zone: str = "UTC",
+) -> "StaffingProblemSpec":
+    """Build the canonical `StaffingProblemSpec` (master plan section 3) from
+    a real `SimulatorConfig`. Additive — no caller consumes this yet; it
+    exists so a scenario's inputs can eventually be described once, in the
+    shared typed model, instead of only as scattered `SimulatorConfig`
+    fields."""
+    from logic.scheduling_contracts import ConstraintProfile, SearchProfile, StaffingProblemSpec
+
+    horizon_start = config.sim_start_date or date.today()
+    horizon_end = horizon_start + timedelta(days=int(config.simulation_days))
+    coverage_intervals: List[Dict[str, Any]] = []
+    if config.coverage_247 > 0:
+        coverage_intervals.append({"type": "24/7", "min_officers": config.coverage_247})
+    if config.use_extra_windows:
+        coverage_intervals.extend(dict(w) for w in config.extra_windows or [])
+
+    return StaffingProblemSpec(
+        tenant_id=tenant_id,
+        organization=organization,
+        time_zone=time_zone,
+        horizon_start=horizon_start.isoformat(),
+        horizon_end=horizon_end.isoformat(),
+        coverage_intervals=coverage_intervals,
+        officers=list(range(max(int(config.num_officers), 0))),
+        rotations=[config.rotation_type, *list(config.rotation_variations or [])],
+        constraints=ConstraintProfile(
+            min_rest_hours=config.min_rest_hours or None,
+            max_consecutive_work_days=config.max_consecutive_work_days or None,
+            annual_hours_target=config.annual_hours_target,
+            annual_hours_variance=config.annual_hours_variance,
+        ),
+        search=SearchProfile(max_solutions=1),
+    )
+
+
 @dataclass
 class SimulatorSuggestion:
     severity: str
@@ -108,6 +152,8 @@ class SimulatorResult:
     assignments: List[Dict] = field(default_factory=list)
     metrics: Dict = field(default_factory=dict)
     suggestions: List[SimulatorSuggestion] = field(default_factory=list)
+    problem_spec: Optional[Dict[str, Any]] = None
+    input_hash: str = ""
 
 
 def _parse_time_minutes(value: str) -> int:
@@ -1008,6 +1054,11 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
             metrics["compute_backend"] = "rust"
             gap_counter: Dict = {}
             suggestions = _build_suggestions(config, metrics, shift_templates, gap_counter)
+            from dataclasses import asdict
+
+            from logic.scheduling_contracts import compute_input_hash
+
+            rust_problem_spec = asdict(build_staffing_problem_spec(config))
             return SimulatorResult(
                 success=True,
                 message=rust_out.get("message", "Simulation complete"),
@@ -1017,6 +1068,8 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
                 coverage_by_day=coverage,
                 metrics=metrics,
                 suggestions=suggestions,
+                problem_spec=rust_problem_spec,
+                input_hash=compute_input_hash(rust_problem_spec),
             )
 
     coverage_by_day: List[Dict] = []
@@ -1541,6 +1594,13 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
     elif config.coverage_247 and not coverage_247_ok:
         message = "Simulation complete — 24/7 minimum not fully met"
 
+    from dataclasses import asdict
+
+    from logic.scheduling_contracts import compute_input_hash
+
+    problem_spec = build_staffing_problem_spec(config)
+    problem_spec_dict = asdict(problem_spec)
+
     return SimulatorResult(
         success=True,
         message=message,
@@ -1560,6 +1620,8 @@ def _simulate_schedule_fixed_n(config: SimulatorConfig) -> SimulatorResult:
         ],
         metrics=metrics,
         suggestions=suggestions,
+        problem_spec=problem_spec_dict,
+        input_hash=compute_input_hash(problem_spec_dict),
     )
 
 

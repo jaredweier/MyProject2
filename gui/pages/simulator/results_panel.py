@@ -5,8 +5,10 @@ from logic.optimizer_features import (
     list_pinned_options,
     list_search_history,
     load_scenario_slots,
+    replay_search_history,
     shift_coverage_heatmap,
     unpin_option,
+    wall_time_p95,
     weekend_night_heat_lines,
 )
 
@@ -20,16 +22,39 @@ def render_results_panel_tools(state, _apply_ranked_option, _apply_form_payload,
             ui.card().classes("q-pa-md").style("min-width:22rem;max-width:40rem;background:#0C1A2E;color:#E8EDF4"),
         ):
             ui.label("Recent Optimizer Searches").style("font-weight:700;font-size:1.05rem;color:#F8FAFC")
+            perf = wall_time_p95(rows)
+            perf_text = f"p95: {perf['p95_s']}s (n={perf['n']})" if perf["ok"] else perf["message"]
+            ui.label(perf_text).style("color:#9AABC4;font-size:0.8rem")
             if not rows:
                 ui.label("No searches yet.").style("color:#9AABC4")
             for row in rows:
-                ui.label(
-                    f"{row.get('at')} · "
-                    f"{'OK' if row.get('success') else 'NO'} · "
-                    f"N={row.get('num_officers') or '—'} · "
-                    f"{row.get('wall_time_ms') or '—'}ms · "
-                    f"{(row.get('message') or '')[:60]}"
-                ).style("color:#D6E6FF;font-size:0.85rem;margin-top:6px;white-space:pre-wrap")
+                with ui.row().classes("gap-2 items-center flex-wrap q-mt-xs"):
+                    ui.label(
+                        f"{row.get('at')} · "
+                        f"{'OK' if row.get('success') else 'NO'} · "
+                        f"N={row.get('num_officers') or '—'} · "
+                        f"{row.get('wall_time_ms') or '—'}ms · "
+                        f"{(row.get('message') or '')[:60]}"
+                    ).style("color:#D6E6FF;font-size:0.85rem;white-space:pre-wrap")
+
+                    def _rerun(r=row):
+                        if not isinstance(r.get("config_snapshot"), dict):
+                            ui.notify("No config snapshot on this entry (older search) — can't rerun.", type="warning")
+                            return
+                        ui.notify("Rerunning search…", type="info")
+                        res = replay_search_history(r)
+                        if not res.get("success"):
+                            ui.notify(f"Rerun failed: {res.get('message')}", type="negative")
+                            return
+                        best = res.get("best") or {}
+                        state["result"] = res
+                        state["selected_row"] = best
+                        _apply_ranked_option(best)
+                        dlg.close()
+                        note = res.get("replay_note") or ""
+                        ui.notify(f"Rerun complete. {note}", type="positive")
+
+                    ui.button("Rerun", on_click=_rerun).classes("btn-ghost").props("no-caps outline dense")
             ui.button("Close", on_click=dlg.close).classes("btn-ghost q-mt-md").props("no-caps outline")
         dlg.open()
 

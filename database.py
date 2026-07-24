@@ -1,6 +1,7 @@
 import os
 import shutil
 import sqlite3
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from typing import Iterator
@@ -8,6 +9,8 @@ from typing import Iterator
 from paths import data_path, ensure_data_dirs
 
 ensure_data_dirs()
+
+_scoped_local = threading.local()
 
 
 def _resolve_db_path() -> str:
@@ -29,7 +32,16 @@ DB_PATH = _resolve_db_path()
 
 @contextmanager
 def connection() -> Iterator[sqlite3.Connection]:
-    """Context-managed SQLite connection (always closed on exit)."""
+    """Context-managed SQLite connection (always closed on exit).
+
+    If a `scoped_write_connection()` block is active on this thread, reuses
+    that connection instead of opening a new one — the scoped block owns
+    commit/rollback/close, so this nested use is a no-op on exit.
+    """
+    scoped_conn = getattr(_scoped_local, "conn", None)
+    if scoped_conn is not None:
+        yield scoped_conn
+        return
     conn = get_connection()
     try:
         yield conn
@@ -37,7 +49,43 @@ def connection() -> Iterator[sqlite3.Connection]:
         conn.close()
 
 
+@contextmanager
+def scoped_write_connection() -> Iterator[sqlite3.Connection]:
+    """Open (or reuse) a thread-local connection for a batch write scope.
+
+    Nested calls on the same thread — either directly or via nested
+    `connection()` calls inside the block — reuse the same underlying
+    connection instead of opening a second one (which would deadlock on
+    SQLite's single-writer lock). Only the outermost call owns opening and
+    closing the connection; the thread-local is restored to its previous
+    value (supporting nesting) on exit, never left dangling.
+    """
+    existing = getattr(_scoped_local, "conn", None)
+    if existing is not None:
+        yield existing
+        return
+    conn = get_connection()
+    _scoped_local.conn = conn
+    try:
+        yield conn
+    finally:
+        _scoped_local.conn = None
+        conn.close()
+
+
 def get_connection():
+    backend = (os.environ.get("SCHEDULER_DB_BACKEND") or "sqlite").strip().lower()
+    if backend == "postgres":
+        # Master plan §9 PostgreSQL move — infra only, unverified against a
+        # real Postgres (see docs/POSTGRES_PORT_INVENTORY.md). Existing
+        # call sites still use this connection exactly like sqlite3's.
+        from db_compat import connect_postgres
+
+        dsn = (os.environ.get("SCHEDULER_PG_DSN") or "").strip()
+        if not dsn:
+            raise RuntimeError("SCHEDULER_DB_BACKEND=postgres requires SCHEDULER_PG_DSN")
+        return connect_postgres(dsn)
+
     if DB_PATH.startswith("file:"):
         conn = sqlite3.connect(DB_PATH, uri=True)
     else:
@@ -50,6 +98,18 @@ def get_connection():
 
 
 def init_database():
+    backend = (os.environ.get("SCHEDULER_DB_BACKEND") or "sqlite").strip().lower()
+    if backend == "postgres":
+        # Master plan §9 PostgreSQL move — this function's DDL is SQLite
+        # dialect (AUTOINCREMENT, etc.) and would not run correctly against
+        # Postgres. Schema there is owned by `alembic upgrade head` against
+        # the baseline migration (migrations/versions/), not this function.
+        # Not yet verified end-to-end — see docs/POSTGRES_PORT_INVENTORY.md.
+        raise RuntimeError(
+            "init_database() does not support SCHEDULER_DB_BACKEND=postgres — "
+            "run `alembic upgrade head` against SCHEDULER_PG_DSN instead"
+        )
+
     conn = get_connection()
     cursor = conn.cursor()
 
@@ -351,7 +411,23 @@ def _ensure_schema_migrations(cursor) -> None:
     user_cols = {row[1] for row in cursor.fetchall()}
     if "must_change_password" not in user_cols:
         cursor.execute("ALTER TABLE app_users ADD COLUMN must_change_password INTEGER DEFAULT 1")
+    for col, ddl in [
+        ("mfa_secret", "ALTER TABLE app_users ADD COLUMN mfa_secret TEXT"),
+        ("mfa_enabled", "ALTER TABLE app_users ADD COLUMN mfa_enabled INTEGER DEFAULT 0"),
+        ("mfa_enrolled_at", "ALTER TABLE app_users ADD COLUMN mfa_enrolled_at TIMESTAMP"),
+    ]:
+        if col not in user_cols:
+            cursor.execute(ddl)
     _migrate_demo_password_policy(cursor)
+
+    cursor.execute("PRAGMA table_info(audit_log)")
+    audit_cols = {row[1] for row in cursor.fetchall()}
+    for col, ddl in [
+        ("prev_hash", "ALTER TABLE audit_log ADD COLUMN prev_hash TEXT"),
+        ("row_hash", "ALTER TABLE audit_log ADD COLUMN row_hash TEXT"),
+    ]:
+        if col not in audit_cols:
+            cursor.execute(ddl)
 
     cursor.execute("PRAGMA table_info(schedule_overrides)")
     override_cols = {row[1] for row in cursor.fetchall()}
@@ -829,6 +905,22 @@ def _migrate_tier2_bidding_extensions(cursor) -> None:
         )
     """)
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_simulator_scenarios_created ON simulator_scenarios(created_at)")
+
+    # Phase 4 (master plan §9): durable async simulation-job registry backing
+    # the typed /api/v1/jobs/simulations endpoints. status is one of
+    # queued/running/completed/failed/cancelled.
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS optimizer_jobs (
+            id TEXT PRIMARY KEY,
+            status TEXT NOT NULL DEFAULT 'queued',
+            params_json TEXT NOT NULL,
+            result_json TEXT,
+            error_text TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_optimizer_jobs_created ON optimizer_jobs(created_at)")
 
 
 def _backfill_payroll_pay_period_start(cursor) -> None:

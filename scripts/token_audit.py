@@ -270,44 +270,13 @@ def run_token_audit(*, strict: bool = False) -> int:
 
         if ROOT not in sys.path:
             sys.path.insert(0, ROOT)
-        from scripts.token_scan import scan_large_files
+        from scripts.token_scan import ALLOWED_LARGE_SOURCE, scan_large_files
 
         indexed, _ = scan_large_files(min_kb=50, limit=10)
-        # Known large editable sources — outline/symbol required; not index surprises
-        allowed_large = {
-            "logic/payroll/timecard.py",
-            "logic/payroll/period.py",
-            "logic/payroll/entries.py",
-            "logic/payroll/pay_codes.py",
-            "logic/scheduling.py",
-            "logic/scheduling_sim.py",
-            "logic/requests.py",
-            "logic/bidding.py",
-            "logic/analytics.py",
-            "cli.py",
-            "validators.py",
-            "validators_config.py",
-            "analytics.py",
-            "database.py",
-            # Chronos NiceGUI finance package + other pages — outline/symbol first
-            "gui/pages/finance/timecards.py",
-            "gui/pages/finance/payroll_page.py",
-            "gui/pages/finance/banks.py",
-            "gui/pages/finance/ledger.py",
-            "gui/pages/operations.py",
-            "gui/pages/leave.py",
-            "gui/pages/roster.py",
-            "gui/pages/dashboard.py",
-            "gui/pages/schedules.py",
-            "gui/pages/self_service.py",
-            "gui/pages/simulator/page.py",
-            "logic/staffing_optimizer.py",
-            "logic/optimizer_features.py",
-            "logic/coverage_optimizer.py",
-            "logic/bump_optimizer.py",
-            "simulator.py",
-        }
-        surprise = [e["path"] for e in indexed if e["path"] not in allowed_large]
+        # Single source of truth (was a duplicate literal here that drifted
+        # from token_scan.py's set, the one the actual pre-commit hook reads
+        # — see docs/HANDOFF.md 2026-07-23 token-scan allowlist fix).
+        surprise = [e["path"] for e in indexed if e["path"] not in ALLOWED_LARGE_SOURCE]
         checks.append(
             Check(
                 "token-scan clean at 50KB (no surprise index files)",

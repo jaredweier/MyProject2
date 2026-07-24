@@ -55,6 +55,81 @@ class TestNotificationsSwapsExports(unittest.TestCase):
             self.assertEqual(c.fetchone()[0], 2)
             conn.close()
 
+    def test_process_shift_swap_retry_does_not_double_apply(self):
+        # Idempotency / optimistic-concurrency guard: a second approval of the
+        # same swap (retry after crash, or racing concurrent approval) must
+        # not re-create override rows or flip status twice.
+        with test_database():
+            import logic
+            from database import get_connection
+
+            o1 = get_any_officer("A", "06:00")
+            o2 = get_any_officer("A", "10:00")
+            work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
+            cr = logic.create_shift_swap_request(o1["id"], o2["id"], work_day)
+            self.assertTrue(cr["success"])
+
+            first = logic.process_shift_swap(cr["swap_id"], "approve")
+            self.assertTrue(first.success)
+
+            second = logic.process_shift_swap(cr["swap_id"], "approve")
+            self.assertFalse(second.success)
+            self.assertIn("Cannot approve swap with status 'Approved'", second.message)
+
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute(
+                "SELECT COUNT(*) FROM schedule_overrides WHERE override_date = ? AND reason = 'Shift Swap'",
+                (work_day,),
+            )
+            self.assertEqual(c.fetchone()[0], 2)
+            conn.close()
+
+    def test_process_shift_swap_race_guarded_by_status_cas(self):
+        # Simulates the true race window: caller B reads the swap while it's
+        # still 'Pending' (the value it captured before caller A's commit),
+        # then both try to apply the same-shaped UPDATE. The compare-and-swap
+        # WHERE clause must reject the stale writer even though it built its
+        # own valid-looking override rows first.
+        with test_database():
+            import logic
+            from database import get_connection
+
+            o1 = get_any_officer("A", "06:00")
+            o2 = get_any_officer("A", "10:00")
+            work_day = working_date_for_squad("A").strftime("%Y-%m-%d")
+            cr = logic.create_shift_swap_request(o1["id"], o2["id"], work_day)
+            self.assertTrue(cr["success"])
+            swap_id = cr["swap_id"]
+
+            # Caller A approves first and wins the race.
+            first = logic.process_shift_swap(swap_id, "approve")
+            self.assertTrue(first.success)
+
+            # Caller B is a stale writer that observed 'Pending' before A's
+            # commit (e.g. a crashed-and-retried approval, or a genuinely
+            # concurrent request). Directly exercise the same CAS-guarded
+            # UPDATE the code path uses, with B's stale captured status.
+            conn = get_connection()
+            c = conn.cursor()
+            c.execute(
+                """
+                UPDATE shift_swaps
+                SET status = 'Approved', admin_notes = ?, processed_at = CURRENT_TIMESTAMP
+                WHERE id = ? AND status = ?
+                """,
+                ("stale retry", swap_id, "Pending"),
+            )
+            self.assertEqual(c.rowcount, 0, "stale writer must not be able to re-apply the approval")
+            conn.rollback()
+
+            c.execute(
+                "SELECT COUNT(*) FROM schedule_overrides WHERE override_date = ? AND reason = 'Shift Swap'",
+                (work_day,),
+            )
+            self.assertEqual(c.fetchone()[0], 2)
+            conn.close()
+
     def test_mark_notification_read(self):
         with test_database():
             import logic

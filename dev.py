@@ -598,6 +598,13 @@ def cmd_source_eval(args):
     return run_source_eval(argv)
 
 
+def cmd_perf_p95(_args):
+    from logic.optimizer_features import wall_time_p95_report
+
+    print(wall_time_p95_report())
+    return 0
+
+
 def cmd_le_benchmark(_args):
     from scripts.le_benchmark import run_le_benchmark
 
@@ -1146,6 +1153,10 @@ def main():
     )
     seval.add_argument("--json", action="store_true")
     sub.add_parser(
+        "perf-p95",
+        help="Optimizer wall-time p95 rollup from logs/optimizer_search_history.json (master plan §4)",
+    )
+    sub.add_parser(
         "le-benchmark",
         help="Honest LE commercial-feature checklist vs this product",
     )
@@ -1306,6 +1317,7 @@ def main():
         "parity-audit": cmd_parity_audit,
         "source-deep": cmd_source_deep,
         "source-eval": cmd_source_eval,
+        "perf-p95": cmd_perf_p95,
         "le-benchmark": cmd_le_benchmark,
         "fuzz-scheduling": cmd_fuzz_scheduling,
         "fr-domain": cmd_fr_domain,

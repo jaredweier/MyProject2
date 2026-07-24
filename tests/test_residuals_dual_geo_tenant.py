@@ -146,6 +146,25 @@ class TenantPathTests(unittest.TestCase):
             self.assertIn("tenants", p.replace("\\", "/"))
             self.assertIn("env-tenant-x", p.replace("\\", "/"))
 
+    def test_tenant_id_rejects_path_traversal(self):
+        from logic.tenant import tenant_data_root
+
+        root = tenant_data_root("../../../etc")
+        resolved = str(root.resolve())
+        self.assertNotIn("..", resolved)
+        # slug strips traversal/separator chars; result stays under tenants/
+        self.assertIn("tenants", resolved.replace("\\", "/"))
+
+    def test_tenant_id_slug_strips_dangerous_characters(self):
+        from logic.tenant import tenant_data_root
+
+        root = tenant_data_root("../../windows/system32")
+        parts = str(root).replace("\\", "/").split("/")
+        self.assertIn("tenants", parts)
+        # traversal/separators collapse into one safe slug segment, not nested escapes
+        self.assertEqual(len(parts) - parts.index("tenants"), 2)
+        self.assertNotIn("..", parts)
+
 
 if __name__ == "__main__":
     unittest.main()

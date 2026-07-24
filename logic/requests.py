@@ -7,7 +7,7 @@ from contextlib import nullcontext
 from typing import Dict, List, Optional, Set, Tuple
 
 from config import REQUEST_STATUS, is_high_risk_night, logger
-from database import connection
+from database import connection, scoped_write_connection
 from logic.officers import (
     describe_day_off_request,
     get_officer_by_id,
@@ -275,10 +275,17 @@ def process_shift_swap(swap_id: int, action: str = "approve", admin_notes: str =
                 """
                 UPDATE shift_swaps
                 SET status = 'Approved', admin_notes = ?, processed_at = CURRENT_TIMESTAMP
-                WHERE id = ?
+                WHERE id = ? AND status = ?
             """,
-                (admin_notes, swap_id),
+                (admin_notes, swap_id, swap.get("status")),
             )
+            if cursor.rowcount != 1:
+                conn.rollback()
+                return ProcessSwapResult(
+                    success=False,
+                    status=swap.get("status"),
+                    message="Approval not applied: swap changed after preview",
+                )
             conn.commit()
 
             from logic.snapshots import apply_live_schedule_for_date
@@ -568,6 +575,10 @@ def _evaluate_post_bump_coverage(
 
 
 def _ensure_leave_accrual_ledger(cursor) -> None:
+    import db_compat
+
+    if db_compat.is_postgres_backend():
+        return
     cursor.execute(
         """
         CREATE TABLE IF NOT EXISTS leave_accrual_ledger (
@@ -887,6 +898,10 @@ def process_day_off_request(
                         request["squad"],
                         covered_start,
                         supervisor_override=True,
+                        # Narrow the override to the one constraint that
+                        # actually failed above, instead of relaxing both
+                        # minimum-rest and consecutive-work blanket-style.
+                        relaxed_constraint=constraint_probe.failure_reason,
                     )
                     if manual_override
                     else constraint_probe
@@ -1218,15 +1233,23 @@ def bulk_approve_auto_ok_requests() -> Dict:
         schema_conn.commit()
 
     approved = 0
-    with connection() as conn:
+    with scoped_write_connection() as conn:
         try:
             for req, suggestion, batch_context in candidates:
+                # Recompute each candidate's bump chain against current
+                # schedule state (mutated by earlier candidates already
+                # applied in this same batch) instead of the stale
+                # pre-transaction suggestion. Safe now: all nested reads
+                # (search_best_coverage_plans etc.) reuse this thread's
+                # scoped connection via connection() instead of opening a
+                # fresh one, so there's no SQLite write-lock deadlock.
+                batch_context = dict(batch_context)
+                batch_context.pop("coverage_verified", None)
                 result = process_day_off_request(
                     req["id"],
                     action="approve",
                     _transaction_conn=conn,
                     _base_schedule_ready=True,
-                    _verified_suggestion=suggestion,
                     _batch_context=batch_context,
                 )
                 if not result.success:

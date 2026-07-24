@@ -22,6 +22,15 @@ from datetime import date, timedelta
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple, TypedDict
 
 import config
+from logic.scheduling_contracts import (
+    ScheduleCandidate,
+    ScheduleStatus,
+    SimulationReport,
+    VerificationReport,
+    compute_input_hash,
+    compute_policy_hash,
+    to_canonical_status,
+)
 
 InputRole = Literal["hard_constraint", "soft_preference", "open_variable"]
 
@@ -146,6 +155,15 @@ MULTI_BLOCK_CATALOG: List[List[str]] = [
     ["6-2,5-3"],
     ["5-3,6-2"],
 ]
+
+# P1.2 solution-pool sizing: master plan §4 stage 4 asks for "up to 15"
+# diverse alternatives. Measured wall-clock on a representative 24-officer,
+# 24/7-with-2-required-on-duty, 12h/2-start scenario (see docs/HANDOFF.md
+# P1.2 entry): max_solutions=5 ~5s, =10 ~6s, =15 ~10s — 15 is cheap enough to
+# use as the ceiling. pool_time_limit_sec raised alongside it so the deadline
+# doesn't truncate the pool before it reaches 15 on harder scenarios.
+POOL_MAX_SOLUTIONS = 15
+POOL_TIME_LIMIT_SEC = 30.0
 
 # Default soft priority when ranking near-misses (higher = more important to satisfy)
 DEFAULT_CONSTRAINT_WEIGHTS: Dict[str, float] = {
@@ -974,6 +992,72 @@ def _score_metrics(
     return 100_000 - penalty - (0 if hard_ok else 5_000)
 
 
+def _outcome_vector(m: Dict, *, annual: float, annual_variance: float) -> Tuple[float, ...]:
+    """Per-candidate outcome metrics already computed for scoring — coverage
+    gaps, overtime (flsa), fairness (annual spread), fatigue (rest/consecutive
+    failures) — reused here (not invented) as a diversity fingerprint for the
+    pool dedup (master plan §4 stage 4: diverse alternatives)."""
+    v = _violation_vector(m, annual=annual, annual_variance=annual_variance)
+    rest_hits = float(m.get("rest_failures") or m.get("rest_gap_violations") or m.get("min_rest_failures") or 0)
+    consec = float(
+        m.get("consecutive_work_failures")
+        or m.get("consecutive_work_violations")
+        or m.get("max_consecutive_failures")
+        or 0
+    )
+    return (
+        v.get("coverage_247", 0.0),
+        v.get("windows", 0.0),
+        v.get("gaps", 0.0),
+        v.get("flsa", 0.0),
+        v.get("annual", 0.0),
+        v.get("annual_spread", 0.0),
+        rest_hits,
+        consec,
+    )
+
+
+def _assignment_overlap_frac(cycle_a: Optional[List[List[str]]], cycle_b: Optional[List[List[str]]]) -> float:
+    """Fraction of officer-day cells with the identical assigned start (or
+    off) between two candidates' `officer_cycle_starts`. Officer indices are
+    comparable across pool solutions from the same solve because the CP-SAT
+    model canonicalizes officers via nondecreasing choice indices."""
+    if not cycle_a or not cycle_b:
+        return 0.0
+    n = min(len(cycle_a), len(cycle_b))
+    if n == 0:
+        return 0.0
+    total = 0
+    same = 0
+    for i in range(n):
+        da, db = cycle_a[i] or [], cycle_b[i] or []
+        d = min(len(da), len(db))
+        for k in range(d):
+            total += 1
+            if da[k] == db[k]:
+                same += 1
+    return (same / total) if total else 0.0
+
+
+def _is_near_duplicate_candidate(
+    vec_a: Tuple[float, ...],
+    vec_b: Tuple[float, ...],
+    cycle_a: Optional[List[List[str]]],
+    cycle_b: Optional[List[List[str]]],
+    *,
+    tol: float = 1.5,
+    overlap_thresh: float = 0.90,
+) -> bool:
+    """Reject as 'not diverse' only if the outcome-metric vector is within a
+    small tolerance AND the assignment set overlaps heavily — either signal
+    alone (e.g. same metrics via a structurally different roster, or similar
+    roster with a materially different outcome) still counts as diverse."""
+    dist = sum(abs(a - b) for a, b in zip(vec_a, vec_b))
+    if dist > tol:
+        return False
+    return _assignment_overlap_frac(cycle_a, cycle_b) > overlap_thresh
+
+
 def _constraint_fail(
     m: Dict,
     *,
@@ -1401,7 +1485,97 @@ def estimate_search_space(
     }
 
 
-def optimize_staffing_scenarios(
+def optimize_staffing_scenarios(*args, **kwargs) -> Dict:
+    """Public entry — see `_optimize_staffing_scenarios` for the search; this
+    wrapper attaches the canonical `ScheduleStatus` (master plan section 3)
+    additively from `solver_status`, never overwriting the legacy fields.
+    Also attaches `simulation_report`, a `SimulationReport` preview built
+    from the ranked scenario rows."""
+    result = _optimize_staffing_scenarios(*args, **kwargs)
+    status = to_canonical_status(result.get("solver_status", "unknown"))
+    result["canonical_status"] = status
+    result["simulation_report"] = _ranked_result_to_report(result, status, kwargs)
+    return result
+
+
+def _candidate_from_ranked_row(row: Dict) -> ScheduleCandidate:
+    n = int(row.get("num_officers") or 0)
+    home_starts = row.get("officer_home_starts") or []
+    cycle_starts = row.get("officer_cycle_starts") or []
+    assignments = [
+        {
+            "officer_id": o,
+            "home_start": home_starts[o] if o < len(home_starts) else None,
+            "cycle_starts": cycle_starts[o] if o < len(cycle_starts) else None,
+        }
+        for o in range(n)
+    ]
+    metrics = row.get("metrics") or {}
+    objective_values = {k: v for k, v in metrics.items() if isinstance(v, (int, float))}
+    return ScheduleCandidate(
+        assignments=assignments,
+        objective_values=objective_values,
+        applied_hard_constraints=[] if row.get("hard_constraints_ok") else list(row.get("failed_constraints") or []),
+        relaxations=list(row.get("failed_constraints") or []),
+    )
+
+
+def _ranked_result_to_report(result: Dict, status, kwargs: Dict) -> SimulationReport:
+    ranked = result.get("ranked") or []
+    candidates = [_candidate_from_ranked_row(row) for row in ranked]
+    return SimulationReport(
+        status=status,
+        candidates=candidates,
+        solver="staffing_optimizer",
+        verification=_verification_from_ranked_rows(ranked),
+        input_hash=compute_input_hash(kwargs),
+        policy_hash=compute_policy_hash(kwargs),
+        runtime_sec=float(result.get("wall_time_ms") or 0) / 1000.0,
+        search_statistics={
+            "scenarios_evaluated": result.get("scenarios_evaluated"),
+            "scenarios_kept": result.get("scenarios_kept"),
+            "search_exhaustive": result.get("search_exhaustive"),
+            "budget_exhausted": result.get("budget_exhausted"),
+        },
+        warnings=[result["message"]] if result.get("message") else [],
+    )
+
+
+def _verification_from_ranked_rows(ranked: List[Dict]):
+    """Adapt each row's already-computed `hard_constraints_ok`/`violations`
+    (from `simulate_schedule`'s own sweep-line check — see
+    `logic/staffing_cpsat.py` module docstring) into a typed
+    `VerificationReport`. Does not re-derive coverage from raw assignments —
+    ranked rows don't carry per-minute assignment data, only the sweep-line
+    check's already-computed verdict, so this wraps that verdict rather than
+    risking a second, possibly-inconsistent time model."""
+    if not ranked:
+        return None
+    violations: List[str] = []
+    checked: set = set()
+    verified = True
+    for row in ranked:
+        if not row.get("hard_constraints_ok"):
+            verified = False
+        # row["violations"] is the full checked-category vector (dict,
+        # category -> count, present whether or not that category actually
+        # failed) — row["failed_constraints"] is the already-filtered list
+        # of categories that actually failed. Use the latter for both, or
+        # every row would report every checked category as a "violation"
+        # regardless of its count.
+        failed = [str(c) for c in row.get("failed_constraints") or []]
+        violations.extend(failed)
+        checked.update(str(c) for c in (row.get("violations") or {}))
+    return VerificationReport(
+        verified=verified,
+        status=ScheduleStatus.FEASIBLE if verified else ScheduleStatus.INFEASIBLE,
+        violations=violations,
+        checked_constraints=sorted(checked),
+        notes="derived from simulate_schedule's own sweep-line check per ranked row",
+    )
+
+
+def _optimize_staffing_scenarios(
     *,
     rotation_types: Optional[List[str]] = None,
     officer_counts: Optional[List[int]] = None,
@@ -1447,9 +1621,18 @@ def optimize_staffing_scenarios(
     progress_callback=None,
     cancel_check=None,
     time_budget_seconds: Optional[float] = None,
+    cpsat_time_limit_sec: Optional[float] = None,
 ) -> Dict:
     """
     Exhaustive sweep of the constraint-defined space (outer × phase × pattern).
+
+    cpsat_time_limit_sec — optional per-candidate CP-SAT proof budget override
+    (master plan §4 "Deep Proof" profile). None keeps the existing hardcoded
+    per-call defaults (30s cycle-day-starts / 20s full-assignment) unchanged;
+    a longer value gives the solver more time to reach a proven feasible/
+    infeasible verdict instead of timing out to "unknown" on hard combos —
+    this is what actually strengthens the proof, unlike time_budget_seconds
+    alone (which only bounds how many combos the outer loop gets to try).
 
     max_total_evals / search_depth / max_inner_trials are accepted for API
     compatibility but do not truncate the search.
@@ -1701,6 +1884,7 @@ def optimize_staffing_scenarios(
             "budget_exhausted": False,
             "wall_time_ms": wall_ms,
             "failure_histogram": {"early_impossible": len(early_reasons)},
+            "infeasibility_conflicts": [],
             "space_estimate": space,
             "space_note": space.get("warning") or "",
             "constraint_weights": weights,
@@ -1728,6 +1912,12 @@ def optimize_staffing_scenarios(
     cheap_evals = 0
     full_sims = 0
     pruned_cheap = 0
+    # Phase 3 "sound conflicts": CP-SAT proofs of infeasibility per combo are
+    # otherwise discarded once the search moves to the next combo — keep the
+    # first few so a total search failure can explain WHY, not just that it
+    # failed. Dedup by category set so unrelated combos don't crowd it out.
+    infeasibility_conflicts: List[Dict] = []
+    _seen_conflict_keys: set = set()
     fail_hist: Dict[str, int] = {
         "hard_ok": 0,
         "flsa": 0,
@@ -1884,8 +2074,33 @@ def optimize_staffing_scenarios(
                                     annual_hours_hard=bool(annual_hours_hard),
                                     max_consecutive_work_days=int(max_consecutive_work_days),
                                     min_rest_hours=float(min_rest_hours),
+                                    time_limit_sec=float(cpsat_time_limit_sec or 8.0),
                                 )
                             cpsat_pv = _cpsat_cache[ckey]
+                            if cpsat_pv.get("status") == "infeasible" and cpsat_pv.get("reason"):
+                                # solve_phase_variant proves a NECESSARY condition
+                                # (phase+variant only, no free per-officer starts) —
+                                # sound but coarser than the full-assignment explain
+                                # model, so no assumption-level category breakdown
+                                # here, just its honest reason string.
+                                key = ("phase_variant", int(n_off), float(length), cpsat_pv["reason"])
+                                if key not in _seen_conflict_keys and len(infeasibility_conflicts) < 5:
+                                    _seen_conflict_keys.add(key)
+                                    infeasibility_conflicts.append(
+                                        {
+                                            "num_officers": int(n_off),
+                                            "shift_length_hours": float(length),
+                                            "categories": [cpsat_pv["reason"]],
+                                            "proven_minimal": False,
+                                            # phase_variant's reason is already a
+                                            # complete sentence (unlike full_assignment's
+                                            # short category tokens) — callers must
+                                            # render it verbatim, not wrap it in a
+                                            # "no assignment satisfies X together"
+                                            # template, or the sentence duplicates.
+                                            "full_reason": True,
+                                        }
+                                    )
 
                         if axes["locked_starts_opts"] is not None:
                             starts_opts = axes["locked_starts_opts"]
@@ -2012,7 +2227,7 @@ def optimize_staffing_scenarios(
                                         prefer_unique_daily_starts=bool(prefer_unique_daily_starts),
                                         objective_order=constraint_priority,
                                         warm_start=warm_start,
-                                        time_limit_sec=30.0,
+                                        time_limit_sec=float(cpsat_time_limit_sec or 30.0),
                                     )
                                     if axes["free_starts"]
                                     else solve_full_assignment(
@@ -2028,15 +2243,29 @@ def optimize_staffing_scenarios(
                                         annual_hours_hard=bool(annual_hours_hard),
                                         max_consecutive_work_days=int(max_consecutive_work_days),
                                         min_rest_hours=float(min_rest_hours),
-                                        max_solutions=5,
-                                        pool_time_limit_sec=15.0,
+                                        max_solutions=POOL_MAX_SOLUTIONS,
+                                        pool_time_limit_sec=POOL_TIME_LIMIT_SEC,
                                         warm_start=warm_start,
                                         progress_callback=progress_callback,
+                                        time_limit_sec=float(cpsat_time_limit_sec or 20.0),
                                     )
                                 )
                             )
+                            if full.get("status") == "infeasible" and full.get("conflict_assumptions"):
+                                cats = tuple(sorted(full["conflict_assumptions"]))
+                                if cats not in _seen_conflict_keys and len(infeasibility_conflicts) < 5:
+                                    _seen_conflict_keys.add(cats)
+                                    infeasibility_conflicts.append(
+                                        {
+                                            "num_officers": int(n_off),
+                                            "shift_length_hours": float(length),
+                                            "categories": list(cats),
+                                            "proven_minimal": bool(full.get("conflict_proven_minimal", False)),
+                                        }
+                                    )
                             if full.get("status") == "feasible":
                                 cpsat_sols = full.get("solutions") or [full]
+                                _pool_kept: List[Tuple[Tuple[float, ...], Optional[List[List[str]]]]] = []
                                 for sol in cpsat_sols:
                                     sol_phase = sol.get("phase", full.get("phase"))
                                     sol_pm = sol.get("pattern_map", full.get("pattern_map"))
@@ -2120,8 +2349,29 @@ def optimize_staffing_scenarios(
                                             min_rest_hours=float(min_rest_hours),
                                             max_consecutive_work_days=int(max_consecutive_work_days),
                                         ):
-                                            results.append(row)
-                                            _full_solved.add((n_off, float(length)))
+                                            # P1.2 real diversity check: reject only
+                                            # if both the outcome-metric vector
+                                            # (coverage/overtime/fairness/fatigue)
+                                            # is near-identical to an already-kept
+                                            # pool candidate AND the assignment set
+                                            # overlaps heavily — the CP-SAT pool
+                                            # loop itself only dedups on aggregate
+                                            # (variant,phase,start) counts, which
+                                            # misses same-profile/different-officer
+                                            # or different-profile/same-outcome
+                                            # near-duplicates.
+                                            vec = _outcome_vector(
+                                                fm, annual=annual, annual_variance=float(annual_hours_variance)
+                                            )
+                                            row_cycle_starts = row.get("officer_cycle_starts")
+                                            is_dup = any(
+                                                _is_near_duplicate_candidate(vec, kv, row_cycle_starts, kc)
+                                                for kv, kc in _pool_kept
+                                            )
+                                            if not is_dup:
+                                                _pool_kept.append((vec, row_cycle_starts))
+                                                results.append(row)
+                                                _full_solved.add((n_off, float(length)))
 
                         if (n_off, float(length)) in _full_solved and require_hard_ok:
                             # Already have a proven-exact hard-OK result for this
@@ -3016,6 +3266,7 @@ def optimize_staffing_scenarios(
         "budget_exhausted": budget_exhausted,
         "wall_time_ms": wall_ms,
         "failure_histogram": fail_hist,
+        "infeasibility_conflicts": infeasibility_conflicts,
         "space_estimate": space,
         "space_note": space.get("warning") or "",
         "constraint_weights": weights,

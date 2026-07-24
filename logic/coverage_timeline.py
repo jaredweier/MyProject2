@@ -12,6 +12,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
+from logic.scheduling_contracts import ScheduleStatus, VerificationReport
+
 
 @functools.lru_cache(maxsize=128)
 def _parse_hhmm(value: str) -> int:
@@ -215,3 +217,40 @@ def evaluate_day_coverage(
         results.append(r)
         all_ok = all_ok and r["ok"]
     return {"ok": all_ok, "checks": results, "day": day.isoformat()}
+
+
+def verify_schedule_candidate(
+    assignments: Sequence[Tuple[date, str, str]],
+    days: Sequence[date],
+    *,
+    min_247: int = 0,
+    windows: Optional[Iterable[CoverageWindow]] = None,
+    step_minutes: int = 15,
+) -> VerificationReport:
+    """Canonical independent verifier (master plan section 3): recalculates
+    occupancy from raw assignments over every day, rather than trusting a
+    solver's own claim. Additive entry point — no existing caller wired to
+    it yet; callers currently inline `evaluate_day_coverage` per day."""
+    checked_constraints: List[str] = []
+    violations: List[str] = []
+    windows = list(windows or [])
+    if min_247 > 0:
+        checked_constraints.append("coverage_247")
+    checked_constraints.extend(w.label or f"{w.start_time}-{w.end_time}" for w in windows)
+
+    for day in days:
+        day_result = evaluate_day_coverage(
+            assignments, day, min_247=min_247, windows=windows, step_minutes=step_minutes
+        )
+        for check in day_result["checks"]:
+            if not check["ok"]:
+                violations.append(check["message"])
+
+    verified = not violations
+    return VerificationReport(
+        verified=verified,
+        status=ScheduleStatus.FEASIBLE if verified else ScheduleStatus.INFEASIBLE,
+        violations=violations,
+        checked_constraints=checked_constraints,
+        notes=f"checked {len(days)} day(s)" if days else "no days to check",
+    )

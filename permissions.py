@@ -52,6 +52,8 @@ PERMISSIONS: Dict[str, Tuple[str, ...]] = {
     "holidays.manage": ("Administration",),
     "settings.manage": ("Administration",),
     "audit.view": ("Supervisor", "Administration"),
+    "security.manage_mfa": ("Administration",),
+    "security.manage_sso": ("Administration",),
 }
 
 

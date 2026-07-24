@@ -66,3 +66,5 @@ graphify-out/
 docs/archived_skills/
 
 gui/theme.py
+
+.claude/worktrees/

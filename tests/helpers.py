@@ -17,7 +17,19 @@ def reference_today() -> date:
 
 @contextmanager
 def test_database(seed: bool = True) -> Iterator[str]:
-    """Provide an isolated SQLite DB path; resets env and modules cleanly."""
+    """Provide an isolated DB; resets env and modules cleanly.
+
+    Runs against SQLite by default. Set CHRONOS_PG_TEST_MODE=1 to run the
+    same test body against a real, session-shared ephemeral Postgres
+    instead (master plan §9 port inventory step 5) — see pg_session.py.
+    """
+    from pg_session import pg_test_mode_enabled
+
+    if pg_test_mode_enabled():
+        with _test_database_postgres(seed) as path:
+            yield path
+        return
+
     path = f"file:dpd_test_{uuid.uuid4().hex}?mode=memory&cache=shared"
     prev = os.environ.get("SCHEDULER_DB_PATH")
     prev_seed = os.environ.get("ROSTER_SEED_PATH")
@@ -52,6 +64,50 @@ def test_database(seed: bool = True) -> Iterator[str]:
             os.environ["ROSTER_SEED_PATH"] = prev_seed
         if path and not path.startswith("file:") and os.path.exists(path):
             os.unlink(path)
+
+
+@contextmanager
+def _test_database_postgres(seed: bool) -> Iterator[str]:
+    from tests.pg_session import get_session_dsn, truncate_all_tables
+
+    dsn = get_session_dsn()
+    prev_backend = os.environ.get("SCHEDULER_DB_BACKEND")
+    prev_dsn = os.environ.get("SCHEDULER_PG_DSN")
+    prev_seed = os.environ.get("ROSTER_SEED_PATH")
+    os.environ["SCHEDULER_DB_BACKEND"] = "postgres"
+    os.environ["SCHEDULER_PG_DSN"] = dsn
+    if seed:
+        fixture = os.path.join(os.path.dirname(__file__), "fixtures", "roster_seed.json")
+        os.environ["ROSTER_SEED_PATH"] = fixture
+    else:
+        os.environ.pop("ROSTER_SEED_PATH", None)
+
+    truncate_all_tables(dsn)
+
+    import seed_data
+
+    if seed:
+        seed_data.seed_if_empty()
+        seed_data.seed_users_if_empty()
+        seed_data.seed_holidays_if_empty()
+        seed_data.seed_settings_if_empty()
+        seed_data.seed_default_stations()
+
+    try:
+        yield dsn
+    finally:
+        if prev_backend is None:
+            os.environ.pop("SCHEDULER_DB_BACKEND", None)
+        else:
+            os.environ["SCHEDULER_DB_BACKEND"] = prev_backend
+        if prev_dsn is None:
+            os.environ.pop("SCHEDULER_PG_DSN", None)
+        else:
+            os.environ["SCHEDULER_PG_DSN"] = prev_dsn
+        if prev_seed is None:
+            os.environ.pop("ROSTER_SEED_PATH", None)
+        else:
+            os.environ["ROSTER_SEED_PATH"] = prev_seed
 
 
 def get_any_officer(

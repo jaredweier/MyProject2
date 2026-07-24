@@ -338,6 +338,51 @@ class CoverageOptimizerTests(unittest.TestCase):
                         0,
                     )
 
+    def test_bulk_approval_recomputes_chain_for_later_candidates(self):
+        """Phase 2 item 2/5: batch approval must not apply candidate 2 using a
+        bump chain computed before candidate 1's override was applied. Both
+        officers here are one of only two non-command staff on the 10:00
+        squad-A shift, so a stale pre-batch suggestion picks the SAME
+        replacement (officer 6) for both — a double-booking. The fix must
+        recompute candidate 2 against post-candidate-1 state and land on a
+        different, valid replacement."""
+        from database import connection
+        from logic import bulk_approve_auto_ok_requests, create_day_off_request
+        from logic.coverage_optimizer import suggest_bump_chain
+
+        with test_database():
+            day = working_date_for_squad("A")
+            day_s = day.strftime("%Y-%m-%d")
+
+            # Both requesters' pre-batch suggestions independently target the
+            # same replacement — proves the staleness condition is real here.
+            stale_1 = suggest_bump_chain(3, day_s, "A", "10:00")
+            stale_2 = suggest_bump_chain(4, day_s, "A", "10:00")
+            self.assertTrue(stale_1.success and stale_2.success)
+            self.assertEqual(tuple(stale_1.chain)[0][1], tuple(stale_2.chain)[0][1])
+
+            self.assertTrue(create_day_off_request(3, day_s, "Vacation", "batch staleness test")["success"])
+            self.assertTrue(create_day_off_request(4, day_s, "Vacation", "batch staleness test")["success"])
+
+            result = bulk_approve_auto_ok_requests()
+            self.assertTrue(result["success"], result)
+            self.assertEqual(result["approved"], 2)
+
+            with connection() as conn:
+                rows = conn.execute(
+                    "SELECT original_officer_id, replacement_officer_id FROM schedule_overrides "
+                    "WHERE override_date = ? AND original_officer_id IN (3, 4)",
+                    (day_s,),
+                ).fetchall()
+            replacements = {row["original_officer_id"]: row["replacement_officer_id"] for row in rows}
+            self.assertEqual(len(replacements), 2)
+            self.assertNotEqual(
+                replacements[3],
+                replacements[4],
+                "candidate 2 was approved with the stale pre-batch replacement, "
+                "double-booking the officer already assigned to candidate 1",
+            )
+
     def test_plan_messages_omit_scores_and_chain_unique(self):
         from logic import get_officers_by_seniority
         from logic.plan_explain import explain_coverage_plans

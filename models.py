@@ -67,6 +67,11 @@ class BumpChainSuggestion:
     alternatives_considered: Optional[int] = None
     # Named soft components (OR-Tools / Timefold explainability)
     score_components: Optional[List[Dict]] = None
+    # False when a failed search was cut off by its node/time budget before
+    # exhausting the space (an UNKNOWN, not a proof of infeasibility). True
+    # when the search space was actually exhausted. None when not tracked by
+    # this call site (legacy/other producers).
+    search_complete: Optional[bool] = None
 
 
 @dataclass

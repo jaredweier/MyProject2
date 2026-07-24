@@ -45,6 +45,14 @@ def authenticate_user(username: str, password: str) -> Dict:
             if row:
                 user = dict(row)
                 user.pop("password", None)
+                if user.get("mfa_enabled"):
+                    return {
+                        "success": False,
+                        "mfa_required": True,
+                        "user_id": user["id"],
+                        "auth_source": "ldap",
+                        "message": "Enter your authenticator code to finish signing in",
+                    }
                 log_audit_action("user.login", "app_user", user["id"], user["id"], user["username"])
                 return {"success": True, "user": user, "auth_source": "ldap"}
             return {
@@ -75,6 +83,31 @@ def authenticate_user(username: str, password: str) -> Dict:
         return {"success": False, "message": "Invalid username or password"}
     if not stored.startswith("pbkdf2$"):
         _upgrade_password_hash(user["id"], password)
+    user.pop("password", None)
+
+    if user.get("mfa_enabled"):
+        return {
+            "success": False,
+            "mfa_required": True,
+            "user_id": user["id"],
+            "message": "Enter your authenticator code to finish signing in",
+        }
+
+    log_audit_action("user.login", "app_user", user["id"], user["id"], user["username"])
+    return {"success": True, "user": user}
+
+
+def complete_mfa_login(user_id: int, mfa_code: str) -> Dict:
+    """Finish a login that authenticate_user() paused with mfa_required=True."""
+    from logic.mfa_auth import verify_mfa_login
+
+    result = verify_mfa_login(user_id, mfa_code)
+    if not result.get("success"):
+        return result
+
+    user = get_user_by_id(user_id)
+    if not user:
+        return {"success": False, "message": "User not found"}
     user.pop("password", None)
     log_audit_action("user.login", "app_user", user["id"], user["id"], user["username"])
     return {"success": True, "user": user}
@@ -303,6 +336,20 @@ def list_all_users(include_inactive: bool = True) -> List[Dict]:
     return rows
 
 
+_AUDIT_CHAIN_GENESIS = "0" * 64
+
+
+def _audit_row_hash(
+    prev_hash: str, action: str, entity_type: str, entity_id, user_id, details: str, created_at: str
+) -> str:
+    import hashlib
+
+    payload = "|".join(
+        str(part) for part in (prev_hash, action, entity_type or "", entity_id, user_id, details or "", created_at)
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
 def log_audit_action(
     action: str,
     entity_type: str = "",
@@ -310,16 +357,79 @@ def log_audit_action(
     user_id: Optional[int] = None,
     details: str = "",
 ) -> None:
+    """Append a tamper-evident audit row: each row's hash chains to the prior row's.
+
+    ``BEGIN IMMEDIATE`` serializes concurrent writers on the read-then-append
+    of prev_hash so two simultaneous audit events can't both chain off the
+    same prior row.
+    """
+    from datetime import datetime
+
+    with connection() as conn:
+        cursor = conn.cursor()
+        conn.execute("BEGIN IMMEDIATE")
+        try:
+            cursor.execute("SELECT row_hash FROM audit_log ORDER BY id DESC LIMIT 1")
+            row = cursor.fetchone()
+            prev_hash = (row["row_hash"] if row and row["row_hash"] else None) or _AUDIT_CHAIN_GENESIS
+            created_at = datetime.now().isoformat(timespec="seconds")
+            row_hash = _audit_row_hash(prev_hash, action, entity_type, entity_id, user_id, details, created_at)
+            cursor.execute(
+                """
+                INSERT INTO audit_log (action, entity_type, entity_id, user_id, details, created_at, prev_hash, row_hash)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+                (action, entity_type or None, entity_id, user_id, details or None, created_at, prev_hash, row_hash),
+            )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+
+def verify_audit_chain() -> Dict:
+    """Recompute the hash chain over audit_log and report the first break, if any.
+
+    Independent of insertion — recalculates every row_hash from its stored
+    fields and compares, so a row edited/deleted out from under the chain
+    (or a genesis mismatch) is detected rather than trusted.
+    """
     with connection() as conn:
         cursor = conn.cursor()
         cursor.execute(
-            """
-            INSERT INTO audit_log (action, entity_type, entity_id, user_id, details)
-            VALUES (?, ?, ?, ?, ?)
-        """,
-            (action, entity_type or None, entity_id, user_id, details or None),
+            "SELECT id, action, entity_type, entity_id, user_id, details, created_at, prev_hash, row_hash "
+            "FROM audit_log ORDER BY id ASC"
         )
-        conn.commit()
+        rows = [dict(r) for r in cursor.fetchall()]
+
+    expected_prev = _AUDIT_CHAIN_GENESIS
+    for row in rows:
+        if row["prev_hash"] != expected_prev:
+            return {
+                "success": False,
+                "intact": False,
+                "broken_at_id": row["id"],
+                "message": f"audit_log id={row['id']} prev_hash does not match prior row's hash",
+            }
+        recomputed = _audit_row_hash(
+            row["prev_hash"],
+            row["action"],
+            row["entity_type"],
+            row["entity_id"],
+            row["user_id"],
+            row["details"],
+            row["created_at"],
+        )
+        if recomputed != row["row_hash"]:
+            return {
+                "success": False,
+                "intact": False,
+                "broken_at_id": row["id"],
+                "message": f"audit_log id={row['id']} row_hash does not match its recomputed hash — row was altered",
+            }
+        expected_prev = row["row_hash"]
+
+    return {"success": True, "intact": True, "rows_checked": len(rows), "message": "Audit chain intact"}
 
 
 def set_app_user_active(user_id: int, active: bool, actor_user_id: Optional[int] = None) -> Dict:
