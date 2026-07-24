@@ -16,14 +16,16 @@ if config.config_file_name is not None:
 
 # Repo root (this file lives in migrations/) — needed to import db_engine.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from db_engine import database_url  # noqa: E402 — master plan §9 PostgreSQL move
+from db_engine import database_url, reflect_metadata  # noqa: E402 — master plan §9 PostgreSQL move
 
 config.set_main_option("sqlalchemy.url", database_url())
 
-# No SQLAlchemy models exist yet (schema is still raw sqlite3 DDL in
-# database.py) — autogenerate has nothing to diff against until that lands.
-# This scaffolding only proves the engine/config wiring works.
-target_metadata = None
+# No hand-written SQLAlchemy models exist (schema is still raw sqlite3 DDL
+# in database.py) — target_metadata is reflected directly off the live
+# database instead (see reflect_metadata's SCHEDULER_DB_REFLECT_PATH), so
+# autogenerate diffs the real schema against whatever this connection
+# actually has.
+target_metadata = reflect_metadata()
 
 # other values from the config, defined by the needs of env.py,
 # can be acquired:

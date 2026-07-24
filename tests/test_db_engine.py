@@ -4,7 +4,11 @@ db_engine.py doesn't back any live code path yet; this just proves the URL
 resolution is correct for both backends before anything depends on it.
 """
 
+import tempfile
+from pathlib import Path
+
 import pytest
+from sqlalchemy import create_engine
 
 import db_engine
 
@@ -39,3 +43,28 @@ def test_unknown_backend_raises(monkeypatch):
     monkeypatch.setenv("SCHEDULER_DB_BACKEND", "mongodb")
     with pytest.raises(RuntimeError, match="Unknown SCHEDULER_DB_BACKEND"):
         db_engine.database_url()
+
+
+def test_reflect_metadata_finds_real_tables():
+    """Reflects a real (file-backed, not in-memory) SQLite DB built by
+    database.init_database() — proves reflection sees actual production
+    tables like 'officers' and 'optimizer_jobs', not a hand-typed stand-in
+    that could drift from what's really on disk."""
+    import database
+
+    with tempfile.TemporaryDirectory() as tmp:
+        path = str(Path(tmp) / "reflect_test.db")
+        prev_path = database.DB_PATH
+        database.DB_PATH = path
+        try:
+            database.init_database()
+
+            engine = create_engine(f"sqlite:///{path}")
+            try:
+                metadata = db_engine.reflect_metadata(engine=engine)
+            finally:
+                engine.dispose()
+            assert "officers" in metadata.tables
+            assert "optimizer_jobs" in metadata.tables
+        finally:
+            database.DB_PATH = prev_path
