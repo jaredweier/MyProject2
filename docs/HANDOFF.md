@@ -1,4 +1,52 @@
-## 2026-07-23 NEWEST — Phase 2 items 2 & 5 landed (batch bump-chain staleness fixed)
+## 2026-07-23 NEWEST — Search profile selector (Quick/Balanced/Deep Proof/Custom)
+
+Master plan §4 slice. Audit's assumption was wrong: `staffing_cpsat.py`'s
+`time_limit_sec`/`max_solutions`/`pool_time_limit_sec` are NOT reachable from
+the UI — they're hardcoded internal to `staffing_optimizer.py`'s per-candidate
+CP-SAT calls (line ~2114/2131), several layers below what the simulator UI
+controls. The only knob actually wired end-to-end from UI → `run_staffing_optimizer`
+→ `optimize_staffing_scenarios` is `time_budget_seconds`, plus the existing
+`search_depth` ("standard"/"deep") toggle that changes free-length grid density.
+Built profiles on top of that real surface instead:
+
+- `gui/pages/simulator/state.py`: added `SEARCH_PROFILES` dict (quick=30s/standard,
+  balanced=120s/standard — matches prior unconditional default, deep_proof=300s/deep
+  — matches prior "deep" toggle behavior) and `SimulatorState.search_profile: str = "custom"`.
+- `gui/pages/simulator/page.py`: new "Profile" toggle (Custom/Quick/Balanced/Deep
+  Proof) next to the existing Depth toggle. Non-custom profile sets Depth's value
+  and greys it out (`.props("disable")`, the same pattern already used for
+  btn_gen/btn_compare during a running search); Custom removes the disable and
+  leaves Depth manual. `_optimizer_kwargs`'s `time_budget_seconds` line now checks
+  `state["search_profile"] in SEARCH_PROFILES` first, else falls back to the
+  original depth-based 120/300 calc unchanged — so default ("custom") behavior
+  is byte-identical to before this change.
+
+**Proof:**
+- `tests/test_search_profiles.py` (6 new tests): quick < deep_proof budget,
+  deep_proof > balanced budget + depth="deep", balanced == prior hardcoded
+  120.0/standard, "custom" not a preset key (no-op guard), default state is
+  "custom", static check that page.py wires SEARCH_PROFILES + the disable/
+  remove-disable pattern. All PASS.
+- `python dev.py verify --tier fast` — ALL PASSED.
+- `tests/test_simulator_constraints.py` full run — 31 passed (no regression).
+- UI verified live: started `chronos-web` (`main.py --web`) via browser preview,
+  navigated to Simulator. Confirmed via JS DOM inspection (click on Profile
+  toggle buttons didn't register through ref-coordinate click — used
+  `button.click()` DOM dispatch instead, which Quasar/Vue does pick up):
+  clicking "Quick" selects Standard depth + disables both Depth buttons;
+  clicking "Deep Proof" selects Deep depth + still disabled; clicking "Custom"
+  re-enables Depth (previous Deep selection stays but is now editable). All
+  three states confirmed by reading `button.className`/`.disabled` directly.
+
+Not done (out of scope per task): no UI exposes `max_solutions`/`pool_time_limit_sec`
+since nothing upstream threads them from the simulator page — wiring those would
+mean adding new params through `run_staffing_optimizer`/`optimize_staffing_scenarios`
+down into the per-candidate CP-SAT calls, which is a bigger, riskier change than
+this thin-layer task scoped for. Flagging for whoever picks up the next slice of
+Phase 3: if "Deep Proof" needs true stronger-proof CP-SAT settings (not just a
+longer wall-clock budget), that's the follow-on work.
+
+## 2026-07-23 — Phase 2 items 2 & 5 landed (batch bump-chain staleness fixed)
 
 User approved the thread-local conn-scoping approach (option 2) after the
 prior session's naive fix hit the SQLite lock dead end. Implemented:

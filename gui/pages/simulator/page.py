@@ -27,7 +27,7 @@ from gui.pages.simulator.options_panel import render_options_panel
 from gui.pages.simulator.publish_panel import render_publish_panel
 from gui.pages.simulator.results_panel import render_results_panel_tools
 from gui.pages.simulator.search_flow import open_search_plan_dialog
-from gui.pages.simulator.state import SimulatorState
+from gui.pages.simulator.state import SEARCH_PROFILES, SimulatorState
 from gui.pages.simulator.stepper_rail import render_stepper_rail
 from gui.pages.simulator.styles import apply_simulator_css
 from gui.shell import layout, page_header, panel
@@ -480,6 +480,46 @@ def render_simulator() -> None:
                             pass
 
                     search_depth.on_value_change(_on_depth)
+
+                    with ui.element("div").classes("sim-tool-group"):
+                        ui.html(
+                            '<span class="sim-tool-group-label">Profile</span>',
+                            sanitize=False,
+                        )
+                        search_profile = (
+                            ui.toggle(
+                                {
+                                    "custom": "Custom",
+                                    "quick": "Quick",
+                                    "balanced": "Balanced",
+                                    "deep_proof": "Deep Proof",
+                                },
+                                value="custom",
+                            )
+                            .props("no-caps dense dark")
+                            .tooltip(
+                                "Quick/Balanced/Deep Proof set the search time budget and Depth for "
+                                "you (Depth becomes read-only). Custom leaves Depth under manual control. "
+                                "Profiles never change what counts as feasible."
+                            )
+                        )
+
+                    def _on_profile(e=None):
+                        val = str(getattr(e, "value", None) or search_profile.value or "custom")
+                        state["search_profile"] = val
+                        preset = SEARCH_PROFILES.get(val)
+                        if preset is not None:
+                            search_depth.value = preset["search_depth"]
+                            state["search_depth"] = preset["search_depth"]
+                            search_depth.props("disable")
+                        else:
+                            search_depth.props(remove="disable")
+                        try:
+                            _refresh_space_estimate()
+                        except Exception:
+                            pass
+
+                    search_profile.on_value_change(_on_profile)
                     mode_label = (
                         ui.label("Mode: hard constraints")
                         .classes("text-xs")
@@ -1709,7 +1749,14 @@ def render_simulator() -> None:
                 # P0.3: every UI-launched search is time-boxed; best-so-far is
                 # returned at the budget with budget_exhausted=True. Deep gets
                 # a longer leash. Multi-hour runs must be an explicit opt-in.
-                "time_budget_seconds": 300.0 if state.get("search_depth") == "deep" else 120.0,
+                # Search profile (master plan §4), when not "custom", overrides
+                # the budget here; "custom" (default) leaves this line's
+                # pre-existing depth-based behavior untouched.
+                "time_budget_seconds": (
+                    SEARCH_PROFILES[state["search_profile"]]["time_budget_seconds"]
+                    if state.get("search_profile") in SEARCH_PROFILES
+                    else (300.0 if state.get("search_depth") == "deep" else 120.0)
+                ),
             }
 
         def _refresh_space_estimate():

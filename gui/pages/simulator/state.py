@@ -3,6 +3,19 @@ from typing import Any, Dict, List, Optional
 
 from logic.optimizer_features import default_weight_map
 
+# Search profiles (master plan §4): presets over the existing time-budget /
+# search-depth knobs. Purely additive — "custom" (the default) means no
+# override, existing manual search_depth/time_budget behavior is unchanged.
+# Quick = short budget, first-feasible-ish (standard depth, small budget).
+# Balanced = matches today's pre-existing default (standard depth, 120s).
+# Deep Proof = matches today's pre-existing "deep" toggle (deep depth, 300s),
+# the strongest proof setting this optimizer currently exposes end-to-end.
+SEARCH_PROFILES: Dict[str, Dict[str, Any]] = {
+    "quick": {"search_depth": "standard", "time_budget_seconds": 30.0},
+    "balanced": {"search_depth": "standard", "time_budget_seconds": 120.0},
+    "deep_proof": {"search_depth": "deep", "time_budget_seconds": 300.0},
+}
+
 
 @dataclasses.dataclass
 class SimulatorState:
@@ -44,6 +57,7 @@ class SimulatorState:
     restoring_form: bool = False
     suppress_suggest: bool = False
     search_depth: str = "standard"
+    search_profile: str = "custom"
     max_step_reached: int = 1
 
     def to_dict(self) -> Dict[str, Any]:
