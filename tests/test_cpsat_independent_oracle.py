@@ -16,7 +16,7 @@ import pytest
 
 from logic.coverage_timeline import CoverageWindow, check_coverage_247, check_coverage_window
 from logic.rotation_patterns import OnOffBlock, RotationPattern
-from logic.staffing_cpsat import ortools_available, solve_full_assignment, solve_phase_variant
+from logic.staffing_cpsat import ortools_available, solve_cycle_day_starts, solve_full_assignment, solve_phase_variant
 
 pytestmark = pytest.mark.skipif(not ortools_available(), reason="OR-Tools not installed")
 
@@ -112,6 +112,54 @@ def _oracle_feasible_phase_variant(
                     headcount[d] += 1
         if all(h >= per_day_min for h in headcount):
             return True
+    return False
+
+
+def _oracle_feasible_cycle_day_starts(
+    *,
+    patterns,
+    n_officers: int,
+    shift_length_hours: float,
+    candidate_starts,
+    sim_start_date: date,
+    coverage_247: int,
+    horizon: int,
+    windows=None,
+) -> bool:
+    """Ground truth for solve_cycle_day_starts: unlike solve_full_assignment
+    (one fixed start for the whole horizon), here each officer independently
+    picks a pattern/phase AND a start per working cycle-day. Brute force over
+    every (variant, phase, per-on-day-start) choice per officer."""
+    cycle_len = patterns[0].cycle_length
+    duty_vectors = [p.duty_vector() for p in patterns]
+    days = [sim_start_date + timedelta(days=d) for d in range(horizon)]
+    windows = windows or []
+
+    officer_choices = []
+    for v, duty in enumerate(duty_vectors):
+        on_positions = [d for d in range(cycle_len) if duty[d]]
+        for p in range(cycle_len):
+            for start_combo in product(candidate_starts, repeat=len(on_positions)):
+                officer_choices.append((v, p, on_positions, start_combo))
+
+    for combo in product(officer_choices, repeat=n_officers):
+        assignments = []
+        for v, p, on_positions, start_combo in combo:
+            on_map = dict(zip(on_positions, start_combo))
+            for day_idx, day in enumerate(days):
+                pos = (day_idx - p) % cycle_len
+                if pos not in on_map:
+                    continue
+                start = on_map[pos]
+                end_total = _hhmm_to_minutes(start) + shift_length_hours * 60
+                end_h, end_m = divmod(int(round(end_total)) % (24 * 60), 60)
+                assignments.append((day, start, f"{end_h:02d}:{end_m:02d}"))
+
+        if not all(check_coverage_247(assignments, day, coverage_247)["ok"] for day in days):
+            continue
+        if not all(check_coverage_window(assignments, w, day)["ok"] for day in days for w in windows):
+            continue
+        return True
     return False
 
 
@@ -303,6 +351,69 @@ def test_oracle_matches_solver_phase_variant_infeasible_max_consecutive():
         shift_length_hours=8.0,
         coverage_247=1,
         max_consecutive_work_days=3,
+        time_limit_sec=5.0,
+    )
+    assert (result["status"] == "feasible") == oracle_ok
+
+
+def test_oracle_matches_solver_cycle_day_starts_feasible_complementary_daily_starts():
+    # 2 officers, always-on (7-0), 12h shifts, 2 non-overlapping daily
+    # starts. Unlike solve_full_assignment (one fixed start for the whole
+    # horizon), cycle_day_starts lets each officer pick a start per working
+    # day — one officer at 00:00 and the other at 12:00 every day covers
+    # 24/7. Exercises the per-day-start feature the oracle above targets.
+    pattern = RotationPattern(style="fixed", blocks=[OnOffBlock(days_on=7, days_off=0)], label="7-0")
+    patterns = [pattern]
+    sim_start = date(2026, 1, 5)
+    horizon = math.lcm(pattern.cycle_length, 7)
+    candidate_starts = ["00:00", "12:00"]
+
+    oracle_ok = _oracle_feasible_cycle_day_starts(
+        patterns=patterns,
+        n_officers=2,
+        shift_length_hours=12.0,
+        candidate_starts=candidate_starts,
+        sim_start_date=sim_start,
+        coverage_247=1,
+        horizon=horizon,
+    )
+    result = solve_cycle_day_starts(
+        patterns,
+        n_officers=2,
+        shift_length_hours=12.0,
+        candidate_starts=candidate_starts,
+        sim_start_date=sim_start,
+        coverage_247=1,
+        time_limit_sec=5.0,
+    )
+    assert (result["status"] == "feasible") == oracle_ok
+
+
+def test_oracle_matches_solver_cycle_day_starts_infeasible_single_officer_half_day():
+    # 1 officer can never cover 24/7 with a single 12h shift no matter which
+    # daily start is picked — sound infeasible regardless of per-day choice.
+    pattern = RotationPattern(style="fixed", blocks=[OnOffBlock(days_on=7, days_off=0)], label="7-0")
+    patterns = [pattern]
+    sim_start = date(2026, 1, 5)
+    horizon = math.lcm(pattern.cycle_length, 7)
+    candidate_starts = ["00:00", "12:00"]
+
+    oracle_ok = _oracle_feasible_cycle_day_starts(
+        patterns=patterns,
+        n_officers=1,
+        shift_length_hours=12.0,
+        candidate_starts=candidate_starts,
+        sim_start_date=sim_start,
+        coverage_247=1,
+        horizon=horizon,
+    )
+    result = solve_cycle_day_starts(
+        patterns,
+        n_officers=1,
+        shift_length_hours=12.0,
+        candidate_starts=candidate_starts,
+        sim_start_date=sim_start,
+        coverage_247=1,
         time_limit_sec=5.0,
     )
     assert (result["status"] == "feasible") == oracle_ok
