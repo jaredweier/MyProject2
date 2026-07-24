@@ -12,6 +12,13 @@ pywebview>=5.0
 fastapi>=0.110
 pydantic>=2.0
 
+# DB abstraction layer (master plan §9 PostgreSQL move) — scaffolding only.
+# logic/*.py still talks to SQLite directly via database.py; nothing wired
+# to these yet. See db_engine.py.
+sqlalchemy>=2.0
+alembic>=1.13
+psycopg[binary]>=3.1
+
 # CP-SAT scheduling core (logic/staffing_cpsat.py, logic/cp_sat_bridge.py)
 ortools>=9.10,<10.0
 

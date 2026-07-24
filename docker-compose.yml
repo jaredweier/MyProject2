@@ -6,6 +6,24 @@
 # Docs: docs/deploy/CLOUD_VM.md · docs/deploy/ONLINE_HOSTING.md
 
 services:
+  # Master plan §9 PostgreSQL move — opt-in, not wired to the `chronos`
+  # service yet. SQLite (chronos_persist volume) remains the live default
+  # until logic/*.py is ported off raw sqlite3 (see db_engine.py).
+  postgres:
+    image: postgres:17
+    container_name: chronos-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-chronos}
+      POSTGRES_USER: ${POSTGRES_USER:-chronos}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me-before-production}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - chronos_postgres_data:/var/lib/postgresql/data
+    restart: unless-stopped
+    profiles:
+      - postgres
+
   chronos:
     build: .
     image: chronos-command:latest
@@ -41,3 +59,4 @@ volumes:
   chronos_backups:
   chronos_exports:
   chronos_tenants:
+  chronos_postgres_data:
