@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import csv
 import json
+import math
 import time
 from datetime import date
 from pathlib import Path
@@ -1068,6 +1069,93 @@ def list_search_history(*, limit: int = 10) -> List[Dict]:
         return list(rows)[:limit] if isinstance(rows, list) else []
     except Exception:
         return []
+
+
+_PERF_BUCKETS = (25, 100, 500)  # master plan §4 officer-count tiers
+
+
+def _bucket_for_officers(n: Optional[int]) -> Optional[int]:
+    """Snap an officer count to the nearest master-plan tier at or above it,
+    e.g. 30 -> 100. Returns None if n is missing/invalid."""
+    if not isinstance(n, (int, float)) or n <= 0:
+        return None
+    for b in _PERF_BUCKETS:
+        if n <= b:
+            return b
+    return _PERF_BUCKETS[-1]
+
+
+def wall_time_p95(
+    rows: Optional[List[Dict[str, Any]]] = None,
+    *,
+    officer_bucket: Optional[int] = None,
+    min_samples: int = 5,
+) -> Dict[str, Any]:
+    """P95 rollup of `wall_time_ms` from search-history rows (see
+    `append_search_history`/`list_search_history` above — reuses that store,
+    no parallel logging path).
+
+    Percentile method: nearest-rank on the sorted sample (index
+    ceil(0.95*n) - 1, clamped), i.e. the smallest value at or above which 95%
+    of samples fall. Simple, no interpolation ambiguity, matches how most
+    ops dashboards define p95.
+
+    Honesty: refuses to report a number below `min_samples` (default 5) —
+    returns `ok: False` with a `message` instead of false-precision. Rows
+    missing/non-numeric `wall_time_ms` are dropped before the count check.
+
+    `officer_bucket`, if given (one of 25/100/500), filters to rows whose
+    `num_officers` snaps to that master-plan tier via `_bucket_for_officers`
+    (e.g. bucket=100 includes any num_officers in (25, 100]).
+    """
+    if rows is None:
+        rows = list_search_history(limit=1000)
+    samples: List[int] = []
+    for r in rows:
+        if officer_bucket is not None and _bucket_for_officers(r.get("num_officers")) != officer_bucket:
+            continue
+        wt = r.get("wall_time_ms")
+        if isinstance(wt, (int, float)) and wt >= 0:
+            samples.append(int(wt))
+    n = len(samples)
+    if n < min_samples:
+        return {
+            "ok": False,
+            "n": n,
+            "min_samples": min_samples,
+            "message": f"Not enough data for a p95 (n={n}, need >={min_samples}).",
+        }
+    ordered = sorted(samples)
+    idx = max(0, min(n - 1, math.ceil(0.95 * n) - 1))
+    p95_ms = ordered[idx]
+    return {
+        "ok": True,
+        "n": n,
+        "p95_ms": p95_ms,
+        "p95_s": round(p95_ms / 1000.0, 2),
+        "method": "nearest-rank (ceil(0.95*n), 1-indexed)",
+        "officer_bucket": officer_bucket,
+    }
+
+
+def wall_time_p95_report(*, limit: int = 1000) -> str:
+    """Small text report: overall p95 plus per master-plan officer-count
+    bucket (25/100/500). Callable from a CLI script; keeps UI/report code
+    honest about sample size instead of a bogus precise number."""
+    rows = list_search_history(limit=limit)
+    lines = ["Optimizer wall-time p95 (from logs/optimizer_search_history.json):"]
+    overall = wall_time_p95(rows)
+    if overall["ok"]:
+        lines.append(f"  overall: p95={overall['p95_s']}s (n={overall['n']})")
+    else:
+        lines.append(f"  overall: {overall['message']}")
+    for bucket in _PERF_BUCKETS:
+        res = wall_time_p95(rows, officer_bucket=bucket)
+        if res["ok"]:
+            lines.append(f"  <= {bucket} officers: p95={res['p95_s']}s (n={res['n']})")
+        else:
+            lines.append(f"  <= {bucket} officers: {res['message']}")
+    return "\n".join(lines)
 
 
 def replay_search_history(entry: Dict[str, Any]) -> Dict[str, Any]:

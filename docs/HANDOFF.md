@@ -1,4 +1,42 @@
-## 2026-07-23 NEWEST — Search-history replay (Phase 3 "replay" slice)
+## 2026-07-23 NEWEST — Optimizer wall-time p95 rollup (perf instrumentation)
+
+Master plan §4 latency targets (25/100/500 officers, p95). Prior audit was
+right: `wall_time_ms` was recorded per search but no p95 rollup existed.
+Purely additive, reuses `logs/optimizer_search_history.json` — no second
+logging path, no solver behavior touched.
+
+- `logic/optimizer_features.py` (~1013): new `wall_time_p95(rows=None,
+  officer_bucket=None, min_samples=5)` — nearest-rank percentile
+  (`ceil(0.95*n)-1`, documented in docstring) over `wall_time_ms` from
+  search-history rows (defaults to `list_search_history`). Refuses below
+  `min_samples=5` with `ok:False` + honest message instead of a
+  false-precision number off 1-4 samples. `_bucket_for_officers()` snaps
+  `num_officers` to the master-plan 25/100/500 tiers for `officer_bucket`
+  filtering. `wall_time_p95_report()` composes overall + per-bucket text.
+- `dev.py`: new `perf-p95` subcommand (`cmd_perf_p95`, dispatch table entry)
+  prints `wall_time_p95_report()`.
+- `gui/pages/simulator/results_panel.py` `show_search_history()`: one line
+  under the dialog title, `"p95: Xs (n=N)"` or the honest refusal message,
+  via `wall_time_p95(rows)` on the same rows already loaded for the panel.
+- Not built (per scope): reference-hardware benchmark corpus, CI
+  enforcement gate — both need infra decisions beyond this slice.
+
+**Proof:** new `tests/test_perf_p95.py` (9 tests) — empty/single/below-
+threshold refuse honestly, known-input nearest-rank matches manual calc
+(order-independent), min_samples override, non-numeric/missing
+`wall_time_ms` rows dropped, officer-bucket filter separates buckets,
+report text includes overall + all 3 bucket lines. All PASS.
+`python dev.py verify --tier fast` — ALL PASSED.
+`python dev.py perf-p95` run against the real (this-session-generated)
+history file: `overall: p95=4725.54s (n=20)`, `<=25 officers: p95=12857.93s
+(n=8)`, 100/500 buckets honestly report "Not enough data" (no real data in
+those tiers yet).
+
+**UI verified live** (chronos-web preview): navigated Simulator → Find Best
+→ Search History, screenshot-confirmed `p95: 123.79s (n=12)` line renders
+under "Recent Optimizer Searches" title, above the row list.
+
+## 2026-07-23 — Search-history replay (Phase 3 "replay" slice)
 
 Master plan §14 Phase 3 "replay." Prior audit was right: `append_search_history`
 only logged 6 summary fields, no config snapshot, no re-run path.

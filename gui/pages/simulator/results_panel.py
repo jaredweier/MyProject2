@@ -8,6 +8,7 @@ from logic.optimizer_features import (
     replay_search_history,
     shift_coverage_heatmap,
     unpin_option,
+    wall_time_p95,
     weekend_night_heat_lines,
 )
 
@@ -21,6 +22,9 @@ def render_results_panel_tools(state, _apply_ranked_option, _apply_form_payload,
             ui.card().classes("q-pa-md").style("min-width:22rem;max-width:40rem;background:#0C1A2E;color:#E8EDF4"),
         ):
             ui.label("Recent Optimizer Searches").style("font-weight:700;font-size:1.05rem;color:#F8FAFC")
+            perf = wall_time_p95(rows)
+            perf_text = f"p95: {perf['p95_s']}s (n={perf['n']})" if perf["ok"] else perf["message"]
+            ui.label(perf_text).style("color:#9AABC4;font-size:0.8rem")
             if not rows:
                 ui.label("No searches yet.").style("color:#9AABC4")
             for row in rows:
