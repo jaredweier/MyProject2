@@ -158,6 +158,7 @@ def test_optimize_staffing_scenarios_verification_is_none_without_ranked_rows():
     report = result["simulation_report"]
     assert report.candidates == []
     assert report.verification is None
+    assert isinstance(result.get("infeasibility_conflicts"), list)
 
 
 def test_staffing_problem_spec_defaults_are_empty_not_none():

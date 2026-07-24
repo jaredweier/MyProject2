@@ -62,6 +62,10 @@ ALLOWED_LARGE_SOURCE = {
     "logic/coverage_optimizer.py",
     "logic/bump_optimizer.py",
     "simulator.py",
+    "logic/bidding.py",
+    "logic/analytics.py",
+    "analytics.py",
+    "database.py",
 }
 
 

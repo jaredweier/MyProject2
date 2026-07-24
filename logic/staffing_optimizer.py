@@ -1875,6 +1875,7 @@ def _optimize_staffing_scenarios(
             "budget_exhausted": False,
             "wall_time_ms": wall_ms,
             "failure_histogram": {"early_impossible": len(early_reasons)},
+            "infeasibility_conflicts": [],
             "space_estimate": space,
             "space_note": space.get("warning") or "",
             "constraint_weights": weights,
@@ -1902,6 +1903,12 @@ def _optimize_staffing_scenarios(
     cheap_evals = 0
     full_sims = 0
     pruned_cheap = 0
+    # Phase 3 "sound conflicts": CP-SAT proofs of infeasibility per combo are
+    # otherwise discarded once the search moves to the next combo — keep the
+    # first few so a total search failure can explain WHY, not just that it
+    # failed. Dedup by category set so unrelated combos don't crowd it out.
+    infeasibility_conflicts: List[Dict] = []
+    _seen_conflict_keys: set = set()
     fail_hist: Dict[str, int] = {
         "hard_ok": 0,
         "flsa": 0,
@@ -2060,6 +2067,23 @@ def _optimize_staffing_scenarios(
                                     min_rest_hours=float(min_rest_hours),
                                 )
                             cpsat_pv = _cpsat_cache[ckey]
+                            if cpsat_pv.get("status") == "infeasible" and cpsat_pv.get("reason"):
+                                # solve_phase_variant proves a NECESSARY condition
+                                # (phase+variant only, no free per-officer starts) —
+                                # sound but coarser than the full-assignment explain
+                                # model, so no assumption-level category breakdown
+                                # here, just its honest reason string.
+                                key = ("phase_variant", int(n_off), float(length), cpsat_pv["reason"])
+                                if key not in _seen_conflict_keys and len(infeasibility_conflicts) < 5:
+                                    _seen_conflict_keys.add(key)
+                                    infeasibility_conflicts.append(
+                                        {
+                                            "num_officers": int(n_off),
+                                            "shift_length_hours": float(length),
+                                            "categories": [cpsat_pv["reason"]],
+                                            "proven_minimal": False,
+                                        }
+                                    )
 
                         if axes["locked_starts_opts"] is not None:
                             starts_opts = axes["locked_starts_opts"]
@@ -2209,6 +2233,18 @@ def _optimize_staffing_scenarios(
                                     )
                                 )
                             )
+                            if full.get("status") == "infeasible" and full.get("conflict_assumptions"):
+                                cats = tuple(sorted(full["conflict_assumptions"]))
+                                if cats not in _seen_conflict_keys and len(infeasibility_conflicts) < 5:
+                                    _seen_conflict_keys.add(cats)
+                                    infeasibility_conflicts.append(
+                                        {
+                                            "num_officers": int(n_off),
+                                            "shift_length_hours": float(length),
+                                            "categories": list(cats),
+                                            "proven_minimal": bool(full.get("conflict_proven_minimal", False)),
+                                        }
+                                    )
                             if full.get("status") == "feasible":
                                 cpsat_sols = full.get("solutions") or [full]
                                 _pool_kept: List[Tuple[Tuple[float, ...], Optional[List[List[str]]]]] = []
@@ -3212,6 +3248,7 @@ def _optimize_staffing_scenarios(
         "budget_exhausted": budget_exhausted,
         "wall_time_ms": wall_ms,
         "failure_histogram": fail_hist,
+        "infeasibility_conflicts": infeasibility_conflicts,
         "space_estimate": space,
         "space_note": space.get("warning") or "",
         "constraint_weights": weights,

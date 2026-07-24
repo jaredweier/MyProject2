@@ -43,7 +43,8 @@ def test_coverage_conflict_identified_and_sufficient():
     assert conflicts, "expected a non-empty sufficient conflict set"
     cats = [c["category"] for c in conflicts]
     assert any("coverage_247" in c for c in cats)
-    assert all(c["sufficient_not_minimal"] is True for c in conflicts)
+    # Single-category conflict — deletion shrinking proves it's minimal too.
+    assert all(c["sufficient_not_minimal"] is False for c in conflicts)
 
     # Relax: enough officers now (5 officers can cover 24/7 min of 5 with
     # single 8h shifts on a 5-2 pattern needs more, but bump way up to make
@@ -78,10 +79,41 @@ def test_annual_hours_band_conflict_identified_and_sufficient():
     assert conflicts
     cats = [c["category"] for c in conflicts]
     assert any("annual_hours_target" in c for c in cats)
+    assert all(c["sufficient_not_minimal"] is False for c in conflicts)
 
     relaxed = dict(common, annual_hours_hard=False)
     result2 = solve_full_assignment(**relaxed)
     assert result2["status"] == "feasible"
+
+
+def test_dominant_conflict_shrinks_out_the_redundant_category():
+    """Coverage alone is already infeasible for these officers regardless of
+    the hours band. Deletion shrinking must drop the redundant annual-hours
+    category from the reported conflict set, since relaxing coverage alone
+    does NOT restore feasibility but relaxing annual alone (leaving coverage
+    enforced) still leaves it infeasible — so annual isn't part of the
+    minimal set."""
+    patterns = [_pattern()]
+    kwargs = dict(
+        patterns=patterns,
+        n_officers=3,
+        shift_length_hours=8.0,
+        candidate_starts=["07:00", "15:00", "23:00"],
+        sim_start_date=date(2026, 1, 5),
+        coverage_247=5,  # already infeasible standalone (see first test)
+        annual_hours_target=100.0,
+        annual_hours_variance=1.0,
+        annual_hours_hard=True,
+        time_limit_sec=5.0,
+        max_horizon_days=140,
+    )
+    result = solve_full_assignment(**kwargs)
+    assert result["status"] == "infeasible"
+    conflicts = result["simulation_report"].conflicts
+    cats = [c["category"] for c in conflicts]
+    assert any("coverage_247" in c for c in cats)
+    assert not any("annual_hours_target" in c for c in cats)
+    assert all(c["sufficient_not_minimal"] is False for c in conflicts)
 
 
 def test_feasible_fast_path_no_conflict_field_and_no_slowdown():

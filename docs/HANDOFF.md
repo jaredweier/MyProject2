@@ -1,4 +1,97 @@
-## 2026-07-23 NEWEST — token-scan allowlist fix (unblocked the commit below)
+## 2026-07-24 NEWEST — surface CP-SAT infeasibility proofs to the UI
+
+Master plan §2 "Engine failures are never shown as normal no-results
+outcomes" / §4 "sound conflicts." Prior audit was right: `optimize_staffing_scenarios`
+called `solve_full_assignment` per (officer-count, shift-length) combo but
+only ever checked `full.get("status") == "feasible"` — the `conflict_assumptions`
+proof from an infeasible combo (built in the prior landing) was silently
+discarded once the loop moved to the next combo. The simulator's "No Perfect
+Schedule" dialog had no way to show a real proof, only a reject-reason
+histogram (heuristic, not sound).
+
+- `logic/staffing_optimizer.py`: new `infeasibility_conflicts` accumulator
+  (~1906) captures up to 5 deduped (by category-set) CP-SAT proofs at the
+  `full.get("status") == "infeasible"` site (~2218) — `{num_officers,
+  shift_length_hours, categories, proven_minimal}` per combo. Exposed as
+  `result["infeasibility_conflicts"]` on both the exhaustive-search failure
+  return (~3206) and the early-impossible-proof return (~1865, always `[]`
+  there — that path proves impossibility a different way, pre-CP-SAT).
+- `gui/pages/simulator/page.py` `_apply_opt_result`: when showing the no-match
+  dialog, appends the first CP-SAT proof as a sentence — "CP-SAT proof (N
+  officers, Xh shift): no assignment satisfies <categories> together" (plus
+  "(sufficient, not proven minimal)" when shrinking didn't converge) — into
+  the same `note` string already passed to `_show_no_match_dialog`.
+- Not built (per scope): `cpsat_pv`'s own infeasible signal (a separate,
+  earlier proof pass used to skip redundant search, ~2333/2405) isn't
+  wired into this accumulator — it doesn't carry `conflict_assumptions`
+  today, only a status flag; out of scope for this slice.
+
+**Proof:** `tests/test_scheduling_contracts.py::test_optimize_staffing_scenarios_verification_is_none_without_ranked_rows`
+now asserts `infeasibility_conflicts` is present as a list on the failure
+result. `-k "cpsat or staffing or scheduling_contracts"` (57 tests) — no
+regression. `python dev.py verify --tier fast` — ALL PASSED (14s).
+
+**Live verification (2026-07-24, follow-up):** browser click-through on the
+Simulator's Requirements form was attempted but abandoned — the form
+re-renders aggressively enough (NiceGUI toggle buttons) that automated clicks
+landed without reliably flipping the Given/Solve-for state, confirmed by
+"Active locks"/"Layouts in space" staying unchanged across repeated attempts.
+Rather than keep fighting that, verified the real path directly:
+`optimize_staffing_scenarios(officer_counts=[10], shift_length_hours=8.0,
+rotation_variations=['5-2'], coverage_247=5, ...)` — a case where the raw
+headcount (10) clears the naive officer-count check but the CP-SAT
+`solve_phase_variant` proof still finds it infeasible — returns
+`infeasibility_conflicts: [{'num_officers': 10, 'shift_length_hours': 8.0,
+'categories': ['CP-SAT proved no phase/variant assignment satisfies 24/7
+coverage + annual-hours band together'], 'proven_minimal': False}]`. Confirms
+both new wiring points (the `full`/full-assignment capture AND the
+`cpsat_pv`/phase-variant capture) are live through the real entry point, not
+just reachable in isolation. Separately confirmed a 2-officers/coverage=30
+case hits the cheaper "early proof" arithmetic short-circuit instead (officers
+< coverage_247) — correct per master plan stage-1 "use only mathematically
+sound lower bounds" and consistent with why that path always reports
+`infeasibility_conflicts: []` (no CP-SAT ever runs there). The GUI's
+`_apply_opt_result` note-string construction was code-reviewed against this
+exact shape (`categories`, `num_officers`, `shift_length_hours`,
+`proven_minimal` keys all match) but the rendered dialog itself was not
+screenshot-verified this session.
+
+## 2026-07-23 — conflict-set minimality (deletion-based shrinking)
+
+Master plan §4 Phase 3 "distinguish a sufficient conflict set from a proven
+minimal one." Prior landing (`_explain_full_assignment_infeasibility`)
+returned OR-Tools' sufficient set only, explicitly disclaimed as not minimal.
+
+- `logic/staffing_cpsat.py` `_explain_full_assignment_infeasibility`
+  (~268-465): after `SufficientAssumptionsForInfeasibility()`, deletion-shrinks
+  the set — for each category, retries the explain model with that one
+  category's assumption dropped (others still enforced); INFEASIBLE means it
+  was redundant (drop for good), FEASIBLE means it's necessary (keep).
+  Inconclusive (timeout) keeps the category but marks the whole result
+  `proven_minimal=False`. New `shrink_time_limit_sec` param (default 5.0),
+  budget shared across all shrink attempts. Returns `(labels, proven_minimal)`
+  tuple instead of a bare list.
+- `_solve_full_assignment` unpacks the tuple into `conflict_assumptions` +
+  new `conflict_proven_minimal` key on the infeasible-branch result dict.
+- `_cpsat_result_to_report`: `sufficient_not_minimal` per category is now
+  `not conflict_proven_minimal` (was a hardcoded `True`) — categories that
+  survive shrinking are honestly reported as proven minimal, not just
+  sufficient.
+- Not built (per scope): no change to the pool/diversity path, cache,
+  objective, or UI. `shrink_time_limit_sec` is not yet surfaced to callers
+  (uses the 5s default everywhere).
+
+**Proof:** `tests/test_cpsat_conflict_explanation.py` updated — coverage and
+annual-hours single-category tests now assert `sufficient_not_minimal is
+False` (shrink proves the single-element set is minimal, correctly). New
+`test_dominant_conflict_shrinks_out_the_redundant_category`: coverage_247=5
+alone is already infeasible for 3 officers (independent of the hours band);
+asserts the reported conflict set drops the redundant `annual_hours_target`
+category and keeps only `coverage_247`, still proven minimal. All 4 tests
+PASS. `-k "cpsat or staffing"` (46 tests) — no regression.
+`python dev.py verify --tier fast` — ALL PASSED (15s).
+
+## 2026-07-23 — token-scan allowlist fix (unblocked the commit below)
 
 The CP-SAT conflict-explanation work below was implemented and fully proven
 but couldn't commit: `logic/staffing_cpsat.py` grew to 52.6 KB, crossing the

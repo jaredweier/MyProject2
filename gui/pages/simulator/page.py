@@ -2584,6 +2584,16 @@ def render_simulator() -> None:
                     top = ", ".join(f"{k}={v}" for k, v in sorted(hist.items(), key=lambda x: -x[1]) if v)
                     if top:
                         note = (note + "\n" if note else "") + f"Reject reasons: {top}"
+                conflicts = result.get("infeasibility_conflicts") or []
+                if conflicts:
+                    c0 = conflicts[0]
+                    proof = (
+                        f"CP-SAT proof ({c0['num_officers']} officers, {c0['shift_length_hours']}h shift): "
+                        f"no assignment satisfies {', '.join(c0['categories'])} together"
+                        + ("" if c0.get("proven_minimal") else " (sufficient, not proven minimal)")
+                        + "."
+                    )
+                    note = (note + "\n" if note else "") + proof
                 evals = int(result.get("scenarios_evaluated") or 0)
                 full_n = int(result.get("full_sims_run") or 0)
                 tips = explain_staffing_result(result)

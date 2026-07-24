@@ -281,7 +281,8 @@ def _explain_full_assignment_infeasibility(
     horizon: int,
     cycle_len: int,
     explain_time_limit_sec: float = 5.0,
-) -> Optional[List[str]]:
+    shrink_time_limit_sec: float = 5.0,
+) -> Optional[Tuple[List[str], bool]]:
     """Phase 3 "exact feasibility and proof" — explain WHY the model at
     `_solve_full_assignment` is infeasible via OR-Tools assumption literals.
 
@@ -290,15 +291,27 @@ def _explain_full_assignment_infeasibility(
     fixed True via `AddAssumptions`. If that model is also infeasible,
     `SufficientAssumptionsForInfeasibility()` returns a SUFFICIENT set of
     those assumptions — i.e. relaxing every category in the returned set is
-    enough to restore feasibility. This is deliberately NOT claimed to be a
-    PROVEN MINIMAL conflict set: OR-Tools does not guarantee minimality here
-    (that would need QuickXplain-style iterative shrinking, out of scope).
+    enough to restore feasibility.
+
+    That sufficient set is then deletion-shrunk toward minimality: for each
+    category still in the set, retry the explain-model solve with that one
+    category's assumption dropped (all others still enforced). If it stays
+    INFEASIBLE, the dropped category wasn't needed and is removed for good;
+    if it turns FEASIBLE, the category is necessary and stays. This is the
+    standard deletion-based conflict-minimization technique (a linear-time
+    relative of QuickXplain). If a shrink attempt times out inconclusively,
+    its category is kept (never dropped on uncertainty) and the whole result
+    is reported as not proven minimal — a shrink that completes cleanly for
+    every category proves the surviving set is minimal (no element can be
+    removed while remaining infeasible).
 
     Only runs after the caller's own solve already proved INFEASIBLE, so it
     adds zero cost to the feasible fast path. Returns None (not an empty
     list) if the explain solve itself times out or is inconclusive — callers
     must not treat None as "no conflict".
     """
+    import time as _time
+
     from ortools.sat.python import cp_model
 
     n_int = int(n_officers)
@@ -338,11 +351,13 @@ def _explain_full_assignment_infeasibility(
 
     assumptions: List["cp_model.IntVar"] = []
     labels: Dict[int, str] = {}
+    var_by_index: Dict[int, "cp_model.IntVar"] = {}
 
     def _add_assumption(name: str, label: str) -> "cp_model.IntVar":
         v = model2.NewBoolVar(name)
         assumptions.append(v)
         labels[v.Index()] = label
+        var_by_index[v.Index()] = v
         return v
 
     # Fatigue cap: variants whose max cyclic run exceeds the limit are
@@ -442,8 +457,29 @@ def _explain_full_assignment_infeasibility(
     status2 = solver2.Solve(model2)
     if status2 != cp_model.INFEASIBLE:
         return None
-    conflict_indices = solver2.SufficientAssumptionsForInfeasibility()
-    return [labels[i] for i in conflict_indices if i in labels]
+    conflict_indices = list(solver2.SufficientAssumptionsForInfeasibility())
+
+    candidate = [i for i in conflict_indices if i in labels]
+    proven_minimal = True
+    deadline = _time.monotonic() + float(shrink_time_limit_sec)
+    for idx in list(candidate):
+        remaining = deadline - _time.monotonic()
+        if remaining <= 0.1:
+            proven_minimal = False
+            break
+        trial = [i for i in candidate if i != idx]
+        model2.ClearAssumptions()
+        model2.AddAssumptions([var_by_index[i] for i in trial])
+        shrink_solver = cp_model.CpSolver()
+        shrink_solver.parameters.max_time_in_seconds = max(0.1, min(2.0, remaining))
+        shrink_solver.parameters.num_search_workers = 4
+        trial_status = shrink_solver.Solve(model2)
+        if trial_status == cp_model.INFEASIBLE:
+            candidate = trial  # idx wasn't needed — drop it for good
+        elif trial_status != cp_model.FEASIBLE and trial_status != cp_model.OPTIMAL:
+            proven_minimal = False  # inconclusive — keep idx, can't prove minimality
+
+    return [labels[i] for i in candidate], proven_minimal
 
 
 def _solve_full_assignment(
@@ -728,8 +764,9 @@ def _solve_full_assignment(
             if solutions:
                 break  # pool exhausted — NOT a proof about the problem
             conflict_assumptions = None
+            conflict_proven_minimal = False
             try:
-                conflict_assumptions = _explain_full_assignment_infeasibility(
+                explain_result = _explain_full_assignment_infeasibility(
                     patterns=patterns,
                     n_officers=n_officers,
                     shift_length_hours=shift_length_hours,
@@ -744,6 +781,8 @@ def _solve_full_assignment(
                     horizon=horizon,
                     cycle_len=cycle_len,
                 )
+                if explain_result is not None:
+                    conflict_assumptions, conflict_proven_minimal = explain_result
             except Exception:
                 conflict_assumptions = None  # explain path is best-effort, never fatal
             return {
@@ -753,11 +792,14 @@ def _solve_full_assignment(
                     "CP-SAT proved no (variant, phase, start) assignment satisfies 24/7 + window "
                     "coverage + annual-hours band together, over a full LCM(cycle,7)-day horizon"
                 ),
-                # Sufficient (not proven minimal) conflict set via OR-Tools
+                # Deletion-shrunk conflict set via OR-Tools
                 # AddAssumptions/SufficientAssumptionsForInfeasibility — see
                 # _explain_full_assignment_infeasibility docstring. None means
                 # the explain solve was inconclusive, NOT "no conflict".
+                # `conflict_proven_minimal` is True only if every category in
+                # the set survived a deletion attempt (no shrink timeout).
                 "conflict_assumptions": conflict_assumptions,
+                "conflict_proven_minimal": conflict_proven_minimal,
             }
         if status not in (cp_model.OPTIMAL, cp_model.FEASIBLE):
             if solutions:
@@ -926,7 +968,13 @@ def _cpsat_result_to_report(result: Dict, status, kwargs: Dict) -> SimulationRep
         policy_hash=compute_policy_hash(kwargs),
         warnings=[result["reason"]] if result.get("reason") else [],
         conflicts=(
-            [{"category": c, "sufficient_not_minimal": True} for c in result["conflict_assumptions"]]
+            [
+                {
+                    "category": c,
+                    "sufficient_not_minimal": not result.get("conflict_proven_minimal", False),
+                }
+                for c in result["conflict_assumptions"]
+            ]
             if result.get("conflict_assumptions")
             else []
         ),
